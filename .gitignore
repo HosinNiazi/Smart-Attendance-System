@@ -1,0 +1,12 @@
+node_modules/
+dist/
+.env
+.env.*
+!.env.example
+server/.env
+server/uploads/
+*.log
+.DS_Store
+Thumbs.db
+backup-before-api-integration/
+server/src/server.before-migration-fix.js

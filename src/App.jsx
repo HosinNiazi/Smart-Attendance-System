@@ -1,0 +1,2210 @@
+﻿import React from "react";
+import { adaptBootstrap, toEnStatus } from "./api/adapter.js";
+import { useEffect, useMemo, useRef, useState } from "react";
+import { Icon } from "./components/shared.jsx";
+import {
+  Courses,
+  Dashboard,
+  FaceAttendance,
+  ManualAttendance,
+  Profile,
+  Reports,
+  Sessions,
+  Settings,
+  StudentPortal,
+  Students,
+} from "./components/pages.jsx";
+import { VoiceAttendance } from "./voice/VoiceAttendance.jsx";
+import {
+  exportAudioProfiles,
+  restoreAudioProfiles,
+} from "./voice/audioStore.js";
+import {
+  api,
+  createCourse,
+  createSession,
+  fetchBootstrap,
+  finalizeSession as finalizeSessionApi,
+  getApiUser,
+  migrateBrowserSnapshot,
+  saveSettingsPayload,
+  saveVoiceSample,
+  signIn,
+  updateStudent,
+  uploadStudentPhoto,
+  upsertAttendance,
+} from "./api/client.js";
+
+const initialStudents = [
+  {
+    id: "40123001",
+    name: "آرمان محمدی",
+    major: "مهندسی کامپیوتر",
+    term: "۳",
+    phone: "۰۹۱۲۱۲۳۴۵۶۷",
+    status: "فعال",
+  },
+  {
+    id: "40123002",
+    name: "نگار رضایی",
+    major: "مهندسی کامپیوتر",
+    term: "۳",
+    phone: "۰۹۳۵۱۲۳۴۵۶۷",
+    status: "فعال",
+  },
+  {
+    id: "40123003",
+    name: "پارسا کریمی",
+    major: "فناوری اطلاعات",
+    term: "۲",
+    phone: "۰۹۱۵۱۲۳۴۵۶۷",
+    status: "فعال",
+  },
+  {
+    id: "40123004",
+    name: "سارا احمدی",
+    major: "مهندسی کامپیوتر",
+    term: "۴",
+    phone: "۰۹۹۰۱۲۳۴۵۶۷",
+    status: "فعال",
+  },
+  {
+    id: "40123005",
+    name: "امیرحسین مرادی",
+    major: "فناوری اطلاعات",
+    term: "۲",
+    phone: "۰۹۱۲۹۸۷۶۵۴۳",
+    status: "غیرفعال",
+  },
+  {
+    id: "40123006",
+    name: "مریم جعفری",
+    major: "مهندسی کامپیوتر",
+    term: "۳",
+    phone: "۰۹۳۶۱۲۳۴۵۶۷",
+    status: "فعال",
+  },
+];
+const initialCourses = [
+  {
+    id: "CS301",
+    title: "برنامه‌سازی پیشرفته",
+    teacher: "مهندس نادری",
+    time: "شنبه، ۱۰:۰۰ تا ۱۲:۰۰",
+    room: "کلاس ۲۰۴",
+    count: 28,
+  },
+  {
+    id: "CS204",
+    title: "پایگاه داده",
+    teacher: "دکتر حسینی",
+    time: "یکشنبه، ۱۳:۰۰ تا ۱۵:۰۰",
+    room: "آزمایشگاه ۱",
+    count: 24,
+  },
+  {
+    id: "CS210",
+    title: "ساختمان داده",
+    teacher: "مهندس احمدی",
+    time: "دوشنبه، ۰۸:۰۰ تا ۱۰:۰۰",
+    room: "کلاس ۱۰۲",
+    count: 32,
+  },
+  {
+    id: "MA205",
+    title: "ریاضی گسسته",
+    teacher: "دکتر کریمی",
+    time: "سه‌شنبه، ۱۰:۰۰ تا ۱۲:۰۰",
+    room: "کلاس ۳۰۱",
+    count: 26,
+  },
+];
+const navGroups = [
+  {
+    title: "نمای کلی",
+    items: [{ id: "dashboard", label: "داشبورد", icon: "bi-grid-1x2" }],
+  },
+  {
+    title: "مدیریت آموزشی",
+    items: [
+      { id: "students", label: "دانشجویان", icon: "bi-people" },
+      { id: "courses", label: "درس‌ها و کلاس‌ها", icon: "bi-journal-bookmark" },
+      { id: "sessions", label: "جلسات کلاس", icon: "bi-calendar3" },
+    ],
+  },
+  {
+    title: "حضور و غیاب",
+    items: [
+      { id: "manual", label: "ثبت دستی حضور", icon: "bi-clipboard-check" },
+      { id: "voice", label: "تشخیص صدا", icon: "bi-mic" },
+      { id: "face", label: "تشخیص چهره", icon: "bi-camera-video" },
+      { id: "class-camera", label: "دوربین کلاس", icon: "bi-camera-reels" },
+      { id: "reports", label: "گزارش‌ها", icon: "bi-bar-chart-line" },
+    ],
+  },
+  {
+    title: "سیستم",
+    items: [
+      { id: "profile", label: "پروفایل من", icon: "bi-person-circle" },
+      { id: "settings", label: "تنظیمات", icon: "bi-gear" },
+    ],
+  },
+];
+const ROLE_PERMISSIONS = {
+  admin: new Set(
+    navGroups.flatMap((group) => group.items.map((item) => item.id)),
+  ),
+  teacher: new Set([
+    "dashboard",
+    "courses",
+    "sessions",
+    "manual",
+    "voice",
+    "face",
+    "class-camera",
+    "reports",
+    "profile",
+  ]),
+};
+const todayAttendance = [
+  {
+    id: "40123001",
+    name: "آرمان محمدی",
+    course: "برنامه‌سازی پیشرفته",
+    time: "۱۰:۰۲",
+    status: "حاضر",
+  },
+  {
+    id: "40123002",
+    name: "نگار رضایی",
+    course: "برنامه‌سازی پیشرفته",
+    time: "۱۰:۰۴",
+    status: "حاضر",
+  },
+  {
+    id: "40123003",
+    name: "پارسا کریمی",
+    course: "پایگاه داده",
+    time: "۱۳:۰۸",
+    status: "تأخیر",
+  },
+  {
+    id: "40123004",
+    name: "سارا احمدی",
+    course: "برنامه‌سازی پیشرفته",
+    time: "—",
+    status: "غایب",
+  },
+  {
+    id: "40123006",
+    name: "مریم جعفری",
+    course: "ساختمان داده",
+    time: "۰۸:۰۱",
+    status: "حاضر",
+  },
+];
+const faDate = new Intl.DateTimeFormat("fa-IR", {
+  weekday: "long",
+  day: "numeric",
+  month: "long",
+  year: "numeric",
+});
+const PRESENT_STATUS = "\u062d\u0627\u0636\u0631";
+const ACCESS_ROLE_LABELS = {
+  admin: "\u0645\u062f\u06cc\u0631",
+  teacher: "\u0627\u0633\u062a\u0627\u062f",
+  student: "\u062f\u0627\u0646\u0634\u062c\u0648",
+};
+
+function AccessRoleSelect({ value, onChange }) {
+  const [open, setOpen] = useState(false);
+  const rootRef = useRef(null);
+  const buttonRef = useRef(null);
+  const options = Object.entries(ACCESS_ROLE_LABELS);
+  const selectedLabel = ACCESS_ROLE_LABELS[value];
+
+  useEffect(() => {
+    if (!open) return undefined;
+    const closeOnOutsideClick = (event) => {
+      if (!rootRef.current?.contains(event.target)) setOpen(false);
+    };
+    const closeOnEscape = (event) => {
+      if (event.key === "Escape") {
+        setOpen(false);
+        buttonRef.current?.focus();
+      }
+    };
+    document.addEventListener("pointerdown", closeOnOutsideClick);
+    document.addEventListener("keydown", closeOnEscape);
+    return () => {
+      document.removeEventListener("pointerdown", closeOnOutsideClick);
+      document.removeEventListener("keydown", closeOnEscape);
+    };
+  }, [open]);
+
+  const moveSelection = (direction) => {
+    const current = options.findIndex(([optionValue]) => optionValue === value);
+    const next = (current + direction + options.length) % options.length;
+    onChange(options[next][0]);
+  };
+
+  return (
+    <div
+      className={`input-icon-wrap login-role-field${open ? " is-open" : ""}`}
+      ref={rootRef}
+    >
+      <Icon name="bi-person-badge" />
+      <button
+        ref={buttonRef}
+        id="access-role"
+        type="button"
+        className="form-select login-role-trigger"
+        aria-haspopup="listbox"
+        aria-expanded={open}
+        aria-controls="access-role-options"
+        onClick={() => setOpen((current) => !current)}
+        onKeyDown={(event) => {
+          if (event.key === "ArrowDown" || event.key === "ArrowUp") {
+            event.preventDefault();
+            if (!open) setOpen(true);
+            moveSelection(event.key === "ArrowDown" ? 1 : -1);
+          }
+          if (event.key === "Enter" || event.key === " ") {
+            event.preventDefault();
+            setOpen((current) => !current);
+          }
+        }}
+      >
+        <span>{selectedLabel}</span>
+      </button>
+      {open && (
+        <div
+          className="login-role-menu"
+          id="access-role-options"
+          role="listbox"
+          aria-labelledby="access-role"
+        >
+          {options.map(([optionValue, label]) => (
+            <button
+              key={optionValue}
+              type="button"
+              role="option"
+              aria-selected={value === optionValue}
+              className={`login-role-option${value === optionValue ? " is-selected" : ""}`}
+              onClick={() => {
+                onChange(optionValue);
+                setOpen(false);
+                buttonRef.current?.focus();
+              }}
+            >
+              <span className="login-role-option-icon">
+                <Icon
+                  name={
+                    optionValue === "admin"
+                      ? "bi-shield-check"
+                      : optionValue === "teacher"
+                        ? "bi-easel"
+                        : "bi-mortarboard"
+                  }
+                />
+              </span>
+              <span>{label}</span>
+              {value === optionValue && <Icon name="bi-check2" />}
+            </button>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function readStoredValue(key, fallback) {
+  try {
+    const value = localStorage.getItem(key);
+    return value ? JSON.parse(value) : fallback;
+  } catch {
+    return fallback;
+  }
+}
+
+function writeStoredValue(key, value) {
+  try {
+    localStorage.setItem(key, JSON.stringify(value));
+    return true;
+  } catch (error) {
+    console.warn(`Could not persist ${key}`, error);
+    return false;
+  }
+}
+
+function readSessionProfile() {
+  try {
+    const value = sessionStorage.getItem("smart-attendance:profile");
+    const parsed = value ? JSON.parse(value) : null;
+    return parsed && typeof parsed === "object" ? parsed : {};
+  } catch {
+    return {};
+  }
+}
+
+function normalizeStudentLogin(value) {
+  return String(value || "")
+    .trim()
+    .toLocaleLowerCase("fa-IR")
+    .replace(/[يى]/g, "ی")
+    .replace(/ك/g, "ک")
+    .replace(/[۰-۹]/g, (digit) => String("۰۱۲۳۴۵۶۷۸۹".indexOf(digit)))
+    .replace(/[٠-٩]/g, (digit) => String("٠١٢٣٤٥٦٧٨٩".indexOf(digit)));
+}
+
+function getLocalDate() {
+  const now = new Date();
+  return new Date(now.getTime() - now.getTimezoneOffset() * 60_000)
+    .toISOString()
+    .slice(0, 10);
+}
+
+export default function App() {
+  const [active, setActive] = useState("dashboard");
+  const [mobileMenu, setMobileMenu] = useState(false);
+  const [theme, setTheme] = useState(() =>
+    readStoredValue("smart-attendance:theme", "light") === "dark"
+      ? "dark"
+      : "light",
+  );
+  const [students, setStudents] = useState(() => {
+    const saved = readStoredValue("smart-attendance:students", initialStudents);
+    return Array.isArray(saved)
+      ? saved.filter(
+          (student) =>
+            student && student.id != null && typeof student.name === "string",
+        )
+      : initialStudents;
+  });
+  const [courses, setCourses] = useState(() => {
+    const saved = readStoredValue("smart-attendance:courses", null);
+    if (!Array.isArray(saved)) {
+      const defaultRoster = initialStudents
+        .filter((student) => student.status !== "غیرفعال")
+        .map((student) => student.id);
+      return initialCourses.map((course) => ({
+        ...course,
+        studentIds: defaultRoster,
+        count: defaultRoster.length,
+      }));
+    }
+    return saved
+      .filter(
+        (course) =>
+          course &&
+          typeof course.id === "string" &&
+          typeof course.title === "string",
+      )
+      .map((course) => {
+        const studentIds = Array.isArray(course.studentIds)
+          ? course.studentIds
+          : [];
+        return { ...course, studentIds, count: studentIds.length };
+      });
+  });
+  const [attendance, setAttendance] = useState(() => {
+    const saved = readStoredValue(
+      "smart-attendance:attendance",
+      todayAttendance,
+    );
+    return Array.isArray(saved)
+      ? saved.filter(
+          (record) =>
+            record &&
+            record.id != null &&
+            typeof record.name === "string" &&
+            typeof record.course === "string",
+        )
+      : todayAttendance;
+  });
+  const attendanceRef = useRef(attendance);
+  const [query, setQuery] = useState("");
+  const [courseFilter, setCourseFilter] = useState("همه درس‌ها");
+  const [toast, setToast] = useState("");
+  const [storageWarning, setStorageWarning] = useState("");
+  const [modal, setModal] = useState(false);
+  const [studentForm, setStudentForm] = useState({
+    id: "",
+    name: "",
+    major: "مهندسی کامپیوتر",
+    term: "۳",
+    phone: "",
+  });
+  const [sessionCourse, setSessionCourse] = useState(initialCourses[0].title);
+  const [sessionDate, setSessionDate] = useState(getLocalDate);
+  const [sessionHistory, setSessionHistory] = useState(() => {
+    const saved = readStoredValue("smart-attendance:sessions", {});
+    return saved && typeof saved === "object" && !Array.isArray(saved)
+      ? saved
+      : {};
+  });
+  const sessionId = `${sessionCourse}::${sessionDate}`;
+  const [cameraState, setCameraState] = useState("idle");
+  const [cameras, setCameras] = useState([]);
+  const [selectedCameraId, setSelectedCameraId] = useState(() =>
+    readStoredValue("smart-attendance:camera-device", ""),
+  );
+  const videoRef = useRef(null);
+  const streamRef = useRef(null);
+  const [settings, setSettings] = useState({
+    name: "سامانه حضوربان",
+    lateAfter: "10",
+    notifications: true,
+    faceRecognition: true,
+  });
+  const [login, setLogin] = useState(true); // HosienNiazi
+  const [loginRole, setLoginRole] = useState(() => {
+    const savedRole = readSessionProfile().role;
+    return ACCESS_ROLE_LABELS[savedRole] ? savedRole : "admin";
+  });
+  const [profilePhoto, setProfilePhoto] = useState(
+    () => readSessionProfile().photo || "",
+  );
+  const [loginName, setLoginName] = useState(
+    () => readSessionProfile().email || "admin@hozorban.local",
+  );
+  const [studentNumber, setStudentNumber] = useState(
+    () => readSessionProfile().studentId || "",
+  );
+  const [voiceProfiles, setVoiceProfiles] = useState([]);
+  const [loginPassword, setLoginPassword] = useState("");
+  const [loginError, setLoginError] = useState("");
+  const [loginPending, setLoginPending] = useState(false);
+
+  useEffect(() => {
+    if (!toast) return;
+    const t = setTimeout(() => setToast(""), 3000);
+    return () => clearTimeout(t);
+  }, [toast]);
+  useEffect(() => {
+    document.documentElement.dataset.theme = theme;
+    if (!writeStoredValue("smart-attendance:theme", theme))
+      setStorageWarning(
+        "فضای ذخیره‌سازی مرورگر کافی نیست؛ از اطلاعات پشتیبان بگیرید.",
+      );
+  }, [theme]);
+  useEffect(
+    () => () => streamRef.current?.getTracks().forEach((track) => track.stop()),
+    [],
+  );
+  useEffect(() => {
+    if (!writeStoredValue("smart-attendance:students", students))
+      setStorageWarning(
+        "ذخیرهٔ فهرست دانشجویان انجام نشد؛ فضای مرورگر پر یا مسدود است.",
+      );
+  }, [students]);
+  useEffect(() => {
+    if (!writeStoredValue("smart-attendance:courses", courses))
+      setStorageWarning(
+        "ذخیرهٔ درس‌ها و کلاس‌ها انجام نشد؛ فضای ذخیره‌سازی مرورگر را بررسی کنید.",
+      );
+  }, [courses]);
+  useEffect(() => {
+    attendanceRef.current = attendance;
+    if (!writeStoredValue("smart-attendance:attendance", attendance))
+      setStorageWarning(
+        "ذخیرهٔ رکوردهای حضور انجام نشد؛ برای جلوگیری از دست‌رفتن اطلاعات، پشتیبان بگیرید.",
+      );
+  }, [attendance]);
+  useEffect(() => {
+    if (!writeStoredValue("smart-attendance:sessions", sessionHistory))
+      setStorageWarning(
+        "ذخیرهٔ جلسه‌ها انجام نشد؛ فضای ذخیره‌سازی مرورگر را بررسی کنید.",
+      );
+  }, [sessionHistory]);
+  useEffect(() => {
+    const saved = readStoredValue("smart-attendance:settings", null);
+    if (saved && typeof saved === "object" && !Array.isArray(saved)) {
+      setSettings((current) => ({
+        ...current,
+        ...saved,
+        lateAfter: String(saved.lateAfter ?? current.lateAfter),
+      }));
+    }
+  }, []);
+  const filteredStudents = useMemo(
+    () =>
+      students.filter(
+        (s) =>
+          s.status !== "غیرفعال" &&
+          `${s.name} ${s.id} ${s.major}`
+            .toLowerCase()
+            .includes(query.toLowerCase()),
+      ),
+    [students, query],
+  );
+  const filteredAttendance = useMemo(
+    () =>
+      attendance.filter(
+        (a) =>
+          (courseFilter === "همه درس‌ها" || a.course === courseFilter) &&
+          `${a.name} ${a.id} ${a.course}`
+            .toLowerCase()
+            .includes(query.toLowerCase()),
+      ),
+    [attendance, courseFilter, query],
+  );
+  const pageName =
+    navGroups.flatMap((g) => g.items).find((i) => i.id === active)?.label ||
+    "داشبورد";
+  const studentAccount =
+    loginRole === "student"
+      ? students.find((student) => {
+          const account = normalizeStudentLogin(studentNumber || loginName);
+          return (
+            account &&
+            (account === normalizeStudentLogin(student.id) ||
+              account === normalizeStudentLogin(student.name) ||
+              (student.databaseId &&
+                account === normalizeStudentLogin(student.databaseId)))
+          );
+        }) || null
+      : null;
+  const studentRecords = studentAccount
+    ? attendance.filter(
+        (record) => String(record.id) === String(studentAccount.id),
+      )
+    : [];
+  const allowedPages = ROLE_PERMISSIONS[loginRole] || ROLE_PERMISSIONS.teacher;
+  const visibleNavGroups = navGroups
+    .map((group) => ({
+      ...group,
+      items: group.items.filter((item) => allowedPages.has(item.id)),
+    }))
+    .filter((group) => group.items.length > 0);
+
+  function notify(message) {
+    setToast(message);
+  }
+
+  function applyServerData(adapted) {
+    setStudents(adapted.students);
+    setCourses(adapted.courses);
+    setAttendance(adapted.attendance);
+    setSessionHistory(adapted.sessionHistory);
+    if (adapted.settings) setSettings(adapted.settings);
+    setVoiceProfiles(adapted.voiceProfiles || []);
+  }
+
+  async function loadFromServer({ silent = false } = {}) {
+    const data = await fetchBootstrap();
+    const adapted = adaptBootstrap(data);
+    applyServerData(adapted);
+    if (!silent) {
+      notify(
+        `اطلاعات از دیتابیس بارگذاری شد؛ ${adapted.students.length} دانشجو، ${adapted.courses.length} درس و ${adapted.attendance.length} رکورد حضور.`,
+      );
+    }
+    return adapted;
+  }
+
+  function studentDatabaseId(frontendId) {
+    return students.find((item) => String(item.id) === String(frontendId))
+      ?.databaseId;
+  }
+
+  function persistAttendance({
+    frontendStudentId,
+    status,
+    method,
+    sessionKey = sessionId,
+    reason = "",
+  }) {
+    const session = sessionHistory[sessionKey];
+    const dbSessionId = session?.databaseId;
+    const dbStudentId = studentDatabaseId(frontendStudentId);
+    if (!dbSessionId || !dbStudentId) {
+      notify("برای ثبت در دیتابیس ابتدا جلسه را از تقویم ایجاد کنید.");
+      return Promise.resolve(false);
+    }
+    return upsertAttendance({
+      sessionId: dbSessionId,
+      studentId: dbStudentId,
+      status: toEnStatus(status),
+      method,
+      reason,
+    })
+      .then(() => loadFromServer({ silent: true }))
+      .catch((error) => {
+        notify(error.message || "ذخیرهٔ حضور در دیتابیس انجام نشد.");
+        return false;
+      });
+  }
+
+  async function refreshBootstrapSilently() {
+    try {
+      await loadFromServer({ silent: true });
+    } catch (error) {
+      console.warn("Bootstrap refresh failed", error);
+    }
+  }
+
+  useEffect(() => {
+    if (!courses.length) return;
+    if (!courses.some((course) => course.title === sessionCourse)) {
+      setSessionCourse(courses[0].title);
+    }
+  }, [courses, sessionCourse]);
+
+  async function migrateLocalData() {
+    try {
+      const result = await migrateBrowserSnapshot();
+      notify(
+        `${result.students.toLocaleString("fa-IR")} دانشجو، ${result.courses.toLocaleString("fa-IR")} کلاس، ${result.sessions.toLocaleString("fa-IR")} جلسه و ${result.attendance.toLocaleString("fa-IR")} رکورد حضور منتقل شد.`,
+      );
+    } catch (error) {
+      notify(error.message || "انتقال داده به سرور انجام نشد.");
+    }
+  }
+  function commitAttendance(update) {
+    const next = update(attendanceRef.current);
+    if (!writeStoredValue("smart-attendance:attendance", next)) {
+      setStorageWarning(
+        "ذخیرهٔ حضور در مرورگر انجام نشد؛ فضای ذخیره‌سازی را بررسی کنید و پیش از بستن صفحه پشتیبان بگیرید.",
+      );
+      return false;
+    }
+    attendanceRef.current = next;
+    setAttendance(next);
+    return true;
+  }
+  async function saveSettings() {
+    const name = settings.name.trim();
+    const lateAfterNumber = Number(settings.lateAfter);
+    if (!name) {
+      notify(
+        "\u0646\u0627\u0645 \u0633\u0627\u0645\u0627\u0646\u0647 \u0631\u0627 \u0648\u0627\u0631\u062f \u06a9\u0646\u06cc\u062f.",
+      );
+      return;
+    }
+    if (
+      !Number.isFinite(lateAfterNumber) ||
+      lateAfterNumber < 0 ||
+      lateAfterNumber > 120
+    ) {
+      notify(
+        "\u062d\u062f \u0645\u062c\u0627\u0632 \u062a\u0623\u062e\u06cc\u0631 \u0628\u0627\u06cc\u062f \u0639\u062f\u062f\u06cc \u0628\u06cc\u0646 \u0635\u0641\u0631 \u062a\u0627 \u06f1\u06f2\u06f0 \u0628\u0627\u0634\u062f.",
+      );
+      return;
+    }
+    const normalized = {
+      ...settings,
+      name,
+      lateAfter: String(Math.round(lateAfterNumber)),
+    };
+    try {
+      await saveSettingsPayload({
+        systemName: normalized.name,
+        lateAfterMinutes: Math.round(lateAfterNumber),
+        notificationsEnabled: normalized.notifications !== false,
+        faceRecognitionEnabled: normalized.faceRecognition !== false,
+      });
+      writeStoredValue("smart-attendance:settings", normalized);
+      setSettings(normalized);
+      notify("تنظیمات در دیتابیس ذخیره شد.");
+    } catch (error) {
+      notify(error.message || "ذخیرهٔ تنظیمات انجام نشد.");
+    }
+  }
+  async function exportBackup() {
+    try {
+      let voiceProfiles = [];
+      let voiceDataUnavailable = false;
+      try {
+        voiceProfiles = await exportAudioProfiles();
+      } catch {
+        voiceDataUnavailable = true;
+      }
+      const backup = {
+        product: "hozorban",
+        schemaVersion: 1,
+        createdAt: new Date().toISOString(),
+        data: {
+          students,
+          courses,
+          attendance,
+          sessionHistory,
+          settings,
+          theme,
+          voiceProfiles,
+        },
+      };
+      const url = URL.createObjectURL(
+        new Blob([JSON.stringify(backup)], { type: "application/json" }),
+      );
+      const link = document.createElement("a");
+      link.href = url;
+      link.download = `hozorban-backup-${getLocalDate()}.json`;
+      link.click();
+      URL.revokeObjectURL(url);
+      notify(
+        voiceDataUnavailable
+          ? "پشتیبان ساخته شد، اما ذخیره‌ساز صوت در دسترس نبود و نمونه‌های صوتی داخل فایل نیستند."
+          : "نسخهٔ پشتیبان اطلاعات آماده شد.",
+      );
+    } catch {
+      notify("ساخت نسخهٔ پشتیبان انجام نشد؛ فضای مرورگر را بررسی کنید.");
+    }
+  }
+  async function restoreBackup(file) {
+    if (!file) return;
+    if (file.size > 30 * 1024 * 1024)
+      return notify("حجم فایل پشتیبان بیش از ۳۰ مگابایت است.");
+    try {
+      const backup = JSON.parse(await file.text());
+      const data = backup?.data;
+      if (
+        backup?.product !== "hozorban" ||
+        backup?.schemaVersion !== 1 ||
+        !data ||
+        !Array.isArray(data.students) ||
+        !Array.isArray(data.attendance) ||
+        !data.sessionHistory ||
+        typeof data.sessionHistory !== "object" ||
+        Array.isArray(data.sessionHistory)
+      )
+        throw new Error("ساختار فایل پشتیبان معتبر نیست.");
+      if (
+        !data.students.every(
+          (student) =>
+            student && student.id != null && typeof student.name === "string",
+        )
+      )
+        throw new Error("اطلاعات دانشجویان در فایل معتبر نیست.");
+      if (
+        !data.attendance.every(
+          (record) =>
+            record &&
+            record.id != null &&
+            typeof record.name === "string" &&
+            typeof record.course === "string",
+        )
+      )
+        throw new Error("رکوردهای حضور در فایل معتبر نیستند.");
+      if (
+        data.courses != null &&
+        (!Array.isArray(data.courses) ||
+          !data.courses.every(
+            (course) =>
+              course &&
+              typeof course.id === "string" &&
+              typeof course.title === "string",
+          ))
+      )
+        throw new Error("اطلاعات درس‌ها و کلاس‌ها در فایل معتبر نیست.");
+      if (
+        !window.confirm(
+          "اطلاعات فعلی با اطلاعات داخل فایل پشتیبان جایگزین شود؟",
+        )
+      )
+        return;
+      if (Array.isArray(data.voiceProfiles))
+        await restoreAudioProfiles(data.voiceProfiles);
+      setStudents(data.students);
+      const restoredCourses = Array.isArray(data.courses)
+        ? data.courses
+        : initialCourses.map((course) => ({
+            ...course,
+            studentIds: data.students
+              .filter((student) => student.status !== "غیرفعال")
+              .map((student) => student.id),
+          }));
+      setCourses(
+        restoredCourses.map((course) => {
+          const studentIds = Array.isArray(course.studentIds)
+            ? course.studentIds.filter((id) =>
+                data.students.some(
+                  (student) => String(student.id) === String(id),
+                ),
+              )
+            : [];
+          return { ...course, studentIds, count: studentIds.length };
+        }),
+      );
+      setAttendance(data.attendance);
+      setSessionHistory(data.sessionHistory);
+      if (data.settings && typeof data.settings === "object")
+        setSettings((current) => ({ ...current, ...data.settings }));
+      if (data.theme === "dark" || data.theme === "light") setTheme(data.theme);
+      setStorageWarning("");
+      notify(
+        "بازیابی انجام شد. برای بارگذاری نمونه‌های صوتی بازیابی‌شده، صفحه را تازه‌سازی کنید.",
+      );
+    } catch (error) {
+      notify(error?.message || "فایل انتخاب‌شده قابل بازیابی نیست.");
+    }
+  }
+  function saveProfile(nextProfile) {
+    const name = nextProfile.name.trim();
+    if (!name) {
+      notify("نام نمایشی را وارد کنید.");
+      return;
+    }
+    const value = { name, photo: nextProfile.photo || "", role: loginRole };
+    try {
+      sessionStorage.setItem("smart-attendance:profile", JSON.stringify(value));
+      setLoginName(name);
+      setProfilePhoto(value.photo);
+      notify("پروفایل برای نشست فعلی ذخیره شد.");
+    } catch (error) {
+      console.warn("Could not save session profile", error);
+      notify("ذخیره پروفایل انجام نشد؛ تصویر کوچک‌تری انتخاب کنید.");
+    }
+  }
+  function chooseRole(role) {
+    setLoginRole(role);
+    setLoginError("");
+    setLoginName(
+      role === "admin"
+        ? "admin@hozorban.local"
+        : role === "teacher"
+          ? "teacher@hozorban.local"
+          : "student@hozorban.local",
+    );
+  }
+  function go(id) {
+    if (!allowedPages.has(id)) {
+      notify("دسترسی به این بخش برای نقش کاربری شما فعال نیست.");
+      return;
+    }
+    setActive(id);
+    setMobileMenu(false);
+    setQuery("");
+  }
+
+  async function addStudent(e) {
+    e.preventDefault();
+
+    const studentNumberValue = studentForm.id.trim();
+    const fullName = studentForm.name.trim();
+
+    if (!studentNumberValue || !fullName) {
+      return notify("شماره دانشجویی و نام را وارد کنید.");
+    }
+
+    if (students.some((s) => s.id === studentNumberValue)) {
+      return notify("این شماره دانشجویی قبلاً ثبت شده است.");
+    }
+
+    try {
+      await api("/students", {
+        method: "POST",
+        body: JSON.stringify({
+          studentNumber: studentNumberValue,
+          fullName,
+          major: studentForm.major || "",
+          term: studentForm.term || "",
+          phone: studentForm.phone || "",
+          status: "active",
+        }),
+      });
+
+      await loadFromServer({ silent: true });
+      setStudentForm({
+        id: "",
+        name: "",
+        major: "مهندسی کامپیوتر",
+        term: "۳",
+        phone: "",
+      });
+
+      setModal(false);
+      notify("دانشجو با موفقیت در دیتابیس ذخیره شد.");
+    } catch (error) {
+      console.error("Add student error:", error);
+      notify(error.message || "ثبت دانشجو با مشکل مواجه شد.");
+    }
+  }
+
+  async function addCourse(course) {
+    const normalizedId = String(course.id || "")
+      .trim()
+      .toLocaleUpperCase("en-US");
+    const normalizedTitle = String(course.title || "")
+      .trim()
+      .toLocaleLowerCase("fa-IR");
+    if (
+      courses.some(
+        (item) =>
+          item.id.toLocaleUpperCase("en-US") === normalizedId ||
+          item.title.trim().toLocaleLowerCase("fa-IR") === normalizedTitle,
+      )
+    ) {
+      notify("کد یا نام این درس قبلاً ثبت شده است.");
+      return false;
+    }
+    const memberDatabaseIds = [
+      ...new Set(
+        (course.studentIds || [])
+          .map((id) => studentDatabaseId(id))
+          .filter(Boolean),
+      ),
+    ];
+    if (!memberDatabaseIds.length) {
+      notify("برای کلاس حداقل یک دانشجوی فعال انتخاب کنید.");
+      return false;
+    }
+    try {
+      await createCourse({
+        code: normalizedId,
+        title: String(course.title || "").trim(),
+        teacherName: String(course.teacher || "").trim(),
+        room: course.room || "",
+        weekday: course.day || "",
+        startTime: course.startTime || null,
+        endTime: course.endTime || null,
+        studentIds: memberDatabaseIds,
+      });
+      await loadFromServer({ silent: true });
+      notify("درس و کلاس در دیتابیس ثبت شد و در تقویم جلسه‌ها در دسترس است.");
+      return true;
+    } catch (error) {
+      notify(error.message || "ثبت درس انجام نشد.");
+      return false;
+    }
+  }
+  function setAttendanceStatus(id, status, course, sessionId, reason = "") {
+    const now = new Date();
+    const targetSessionId = sessionId || course + "::" + getLocalDate();
+    const session = sessionHistory[targetSessionId];
+    const student = students.find((item) => String(item.id) === String(id));
+    const note = String(reason || "").trim();
+    const time =
+      status === "غایب" || status === "غیبت موجه"
+        ? "—"
+        : new Intl.DateTimeFormat("fa-IR", {
+            hour: "2-digit",
+            minute: "2-digit",
+          }).format(now);
+    const committed = commitAttendance((previous) => {
+      const index = previous.findIndex(
+        (record) =>
+          String(record.id ?? record.studentId) === String(id) &&
+          record.course === course &&
+          (sessionId ? record.sessionId === sessionId : !record.sessionId),
+      );
+      const existing = index >= 0 ? previous[index] : null;
+      if (!existing && !student) return previous;
+      const record = {
+        ...(existing || {}),
+        id: student?.id ?? existing?.id ?? id,
+        name: student?.name || existing?.name || "",
+        course,
+        sessionId: targetSessionId,
+        sessionDate:
+          session?.date || targetSessionId.split("::").at(-1) || getLocalDate(),
+        teacher:
+          session?.teacher ||
+          existing?.teacher ||
+          courses.find((item) => item.title === course)?.teacher ||
+          loginName,
+        status,
+        time,
+        method: "manual",
+        history: [
+          ...(existing?.history || []),
+          {
+            from: existing?.status || "ثبت‌نشده",
+            to: status,
+            changedAt: now.toISOString(),
+            changedBy: loginName,
+            reason: note,
+            method: "manual",
+          },
+        ],
+        updatedAt: now.toISOString(),
+      };
+      return index >= 0
+        ? previous.map((item, itemIndex) =>
+            itemIndex === index ? record : item,
+          )
+        : [record, ...previous];
+    });
+    if (!committed) return;
+    setSessionHistory((current) => ({
+      ...current,
+      [targetSessionId]: {
+        ...current[targetSessionId],
+        id: targetSessionId,
+        course,
+        date:
+          current[targetSessionId]?.date ||
+          targetSessionId.split("::").at(-1) ||
+          getLocalDate(),
+        audit: [
+          ...(current[targetSessionId]?.audit || []),
+          {
+            studentId: id,
+            status,
+            changedAt: now.toISOString(),
+            changedBy: loginName,
+            reason: note,
+            method: "manual",
+          },
+        ],
+      },
+    }));
+    persistAttendance({
+      frontendStudentId: id,
+      status,
+      method: "manual",
+      sessionKey: targetSessionId,
+      reason: note,
+    });
+  }
+  async function refreshCameras({
+    requestPermission = false,
+    preferBuiltIn = false,
+  } = {}) {
+    if (!navigator.mediaDevices?.enumerateDevices) return [];
+    if (requestPermission) {
+      const permissionStream = await navigator.mediaDevices.getUserMedia({
+        video: true,
+        audio: false,
+      });
+      permissionStream.getTracks().forEach((track) => track.stop());
+    }
+    const devices = await navigator.mediaDevices.enumerateDevices();
+    const list = devices.filter(
+      (device) => device.kind === "videoinput" && device.deviceId,
+    );
+    setCameras(list);
+    setSelectedCameraId((current) => {
+      if (
+        !preferBuiltIn &&
+        current &&
+        list.some((device) => device.deviceId === current)
+      )
+        return current;
+      const laptop = list.find((device) =>
+        /integrated|built.?in|internal|laptop|front camera/i.test(
+          device.label || "",
+        ),
+      );
+      const preferred = laptop || list[0];
+      const id = preferred?.deviceId || "";
+      return id;
+    });
+    return list;
+  }
+  useEffect(() => {
+    refreshCameras().catch(() => {});
+    const handleDeviceChange = () => refreshCameras().catch(() => {});
+    navigator.mediaDevices?.addEventListener?.(
+      "devicechange",
+      handleDeviceChange,
+    );
+    return () =>
+      navigator.mediaDevices?.removeEventListener?.(
+        "devicechange",
+        handleDeviceChange,
+      );
+  }, []);
+  async function startCamera(
+    deviceId = selectedCameraId,
+    forceLaptopCamera = false,
+  ) {
+    if (typeof deviceId !== "string") deviceId = selectedCameraId;
+    const friendlyCameraError = (error) => {
+      const name = error?.name || "";
+      if (
+        name === "NotAllowedError" ||
+        name === "PermissionDeniedError" ||
+        name === "SecurityError"
+      ) {
+        return "مرورگر اجازهٔ دوربین را نمی‌دهد. کنار نوار آدرس روی قفل/تنظیمات سایت بزنید و Camera را روی Allow بگذارید؛ سپس در Windows Settings > Privacy & security > Camera، گزینه‌های Camera access و Let desktop apps access your camera را روشن کنید و صفحه را Refresh کنید.";
+      }
+      if (name === "NotFoundError" || name === "DevicesNotFoundError") {
+        return "وب‌کم پیدا نشد. مطمئن شوید دوربین داخلی لپ‌تاپ در Device Manager فعال است و کلید فیزیکی/کلید Fn دوربین خاموش نیست.";
+      }
+      if (name === "NotReadableError" || name === "TrackStartError") {
+        return "وب‌کم در برنامهٔ دیگری در حال استفاده است. برنامه‌هایی مثل Camera، Zoom، Teams، OBS، DroidCam یا Camo را ببندید و دوباره امتحان کنید.";
+      }
+      if (
+        name === "OverconstrainedError" ||
+        name === "ConstraintNotSatisfiedError"
+      ) {
+        return "وب‌کم داخلی شناسایی شد، اما مرورگر نتوانست آن را باز کند. صفحه را Refresh کنید و دوباره تلاش کنید.";
+      }
+      if (!window.isSecureContext || !navigator.mediaDevices?.getUserMedia) {
+        return "دوربین فقط در آدرس امن کار می‌کند. پروژه را با npm run dev اجرا کنید و آدرس http://localhost:5173 را باز کنید؛ از IP شبکه یا فایل مستقیم App.jsx استفاده نکنید.";
+      }
+      return `خطای دوربین: ${error?.message || name || "نامشخص"}. مجوز مرورگر و تنظیمات دوربین ویندوز را بررسی کنید.`;
+    };
+
+    if (!window.isSecureContext || !navigator.mediaDevices?.getUserMedia) {
+      setCameraState("error");
+      return notify(
+        "دوربین در این آدرس قابل دسترسی نیست. ترمینال را در پوشهٔ پروژه باز کنید، npm run dev بزنید و آدرس localhost که Vite نمایش می‌دهد (معمولاً http://localhost:5173) را باز کنید.",
+      );
+    }
+
+    setCameraState("connecting");
+    try {
+      // مجوز دوربین را می‌گیریم تا مرورگر نام دستگاه‌ها را نشان دهد.
+      const permissionStream = await navigator.mediaDevices.getUserMedia({
+        video: true,
+        audio: false,
+      });
+      permissionStream.getTracks().forEach((track) => track.stop());
+
+      const hadSavedChoice =
+        !forceLaptopCamera &&
+        Boolean(readStoredValue("smart-attendance:camera-device", ""));
+      const availableCameras = await refreshCameras({
+        preferBuiltIn: forceLaptopCamera || (!hadSavedChoice && !deviceId),
+      });
+
+      if (availableCameras.length === 0) {
+        throw new DOMException(
+          "هیچ دوربینی توسط مرورگر شناسایی نشد.",
+          "NotFoundError",
+        );
+      }
+
+      const laptopCameraPattern =
+        /integrated|built.?in|internal|laptop|hd webcam|user.?facing|front camera/i;
+      const chosenCamera =
+        (hadSavedChoice &&
+          availableCameras.find((camera) => camera.deviceId === deviceId)) ||
+        availableCameras.find((camera) =>
+          laptopCameraPattern.test(camera.label || ""),
+        ) ||
+        availableCameras[0];
+      if (!forceLaptopCamera) {
+        setSelectedCameraId(chosenCamera.deviceId);
+        writeStoredValue(
+          "smart-attendance:camera-device",
+          chosenCamera.deviceId,
+        );
+      }
+
+      streamRef.current?.getTracks().forEach((track) => track.stop());
+
+      // قید exact مانع از انتخاب خودکار دوربین دیگری می‌شود.
+      const stream = await navigator.mediaDevices.getUserMedia({
+        video: {
+          deviceId: { exact: chosenCamera.deviceId },
+          width: { ideal: 1280 },
+          height: { ideal: 720 },
+        },
+        audio: false,
+      });
+
+      streamRef.current = stream;
+      setCameraState("live");
+      notify(`دوربین متصل شد: ${chosenCamera.label || "دوربین انتخاب‌شده"}`);
+    } catch (error) {
+      streamRef.current?.getTracks().forEach((track) => track.stop());
+      streamRef.current = null;
+      setCameraState("error");
+      notify(friendlyCameraError(error));
+    }
+  }
+  function stopCamera() {
+    streamRef.current?.getTracks().forEach((track) => track.stop());
+    streamRef.current = null;
+    setCameraState("idle");
+  }
+  function selectCamera(deviceId) {
+    setSelectedCameraId(deviceId);
+    writeStoredValue("smart-attendance:camera-device", deviceId);
+    if (cameraState === "live") startCamera(deviceId);
+  }
+  async function saveStudentPhoto(studentId, files) {
+    const selectedFiles = Array.from(files || []).slice(0, 5);
+    if (!selectedFiles.length) return;
+    const dbId = studentDatabaseId(studentId);
+    if (!dbId) return notify("شناسهٔ دیتابیسی دانشجو پیدا نشد.");
+    try {
+      let saved = 0;
+      for (const file of selectedFiles) {
+        if (!file.type.startsWith("image/")) continue;
+        await uploadStudentPhoto(dbId, file);
+        saved += 1;
+      }
+      if (!saved) return notify("فایل تصویری معتبری انتخاب نشد.");
+      await loadFromServer({ silent: true });
+      notify(`${saved} عکس مرجع برای دانشجو در دیتابیس ذخیره شد.`);
+    } catch (error) {
+      notify(error.message || "ذخیره عکس انجام نشد. لطفاً تصاویر دیگری انتخاب کنید.");
+    }
+  }
+  function markFaceAttendance(
+    studentId,
+    status,
+    { silent = false, method = "manual" } = {},
+  ) {
+    const student = students.find(
+      (item) => String(item.id) === String(studentId),
+    );
+    if (!student) return false;
+    const session = sessionHistory[sessionId];
+    if (
+      session?.studentIds?.length &&
+      !session.studentIds.some((id) => String(id) === String(studentId))
+    ) {
+      notify(`${student.name} در فهرست این جلسه نیست.`);
+      return false;
+    }
+    const now = new Date();
+    const [year, month, day] = sessionDate.split("-").map(Number);
+    const [startHour = 0, startMinute = 0] = (session?.startTime || "00:00")
+      .split(":")
+      .map(Number);
+    const [endHour = 23, endMinute = 59] = (session?.endTime || "23:59")
+      .split(":")
+      .map(Number);
+    const start = new Date(year, month - 1, day, startHour, startMinute);
+    const end = new Date(year, month - 1, day, endHour, endMinute);
+    const openAt = new Date(
+      start.getTime() - Number(session?.openBeforeMinutes ?? 15) * 60_000,
+    );
+    const closeAt = new Date(
+      end.getTime() + Number(session?.closeAfterMinutes ?? 30) * 60_000,
+    );
+    if (now < openAt || now > closeAt) {
+      notify("ثبت خودکار حضور خارج از بازهٔ مجاز این جلسه است.");
+      return false;
+    }
+    const grace = Number(session?.graceMinutes ?? settings.lateAfter ?? 10);
+    const finalStatus =
+      status === PRESENT_STATUS &&
+      now > new Date(start.getTime() + grace * 60_000)
+        ? "تأخیر"
+        : status;
+    const time = new Intl.DateTimeFormat("fa-IR", {
+      hour: "2-digit",
+      minute: "2-digit",
+    }).format(now);
+    const committed = commitAttendance((current) => {
+      const index = current.findIndex(
+        (item) =>
+          item.sessionId === sessionId &&
+          String(item.id ?? item.studentId) === String(studentId),
+      );
+      const previousRecord = index >= 0 ? current[index] : null;
+      const history = [
+        ...(previousRecord?.history || []),
+        {
+          from: previousRecord?.status || "ثبت‌نشده",
+          to: finalStatus,
+          changedAt: now.toISOString(),
+          changedBy: loginName,
+          reason: "ثبت خودکار حضور",
+        },
+      ];
+      const record = {
+        id: student.id,
+        name: student.name,
+        course: sessionCourse,
+        sessionId,
+        sessionDate,
+        time,
+        teacher:
+          session?.teacher ||
+          courses.find((item) => item.title === sessionCourse)?.teacher ||
+          loginName,
+        status: finalStatus,
+        method,
+        history,
+      };
+      return index >= 0
+        ? current.map((item, itemIndex) =>
+            itemIndex === index ? { ...item, ...record } : item,
+          )
+        : [record, ...current];
+    });
+    if (!committed) {
+      notify(
+        "ثبت حضور در ذخیره‌ساز مرورگر انجام نشد؛ فضای ذخیره‌سازی را بررسی کنید.",
+      );
+      return false;
+    }
+    setSessionHistory((current) => ({
+      ...current,
+      [sessionId]: {
+        ...current[sessionId],
+        id: sessionId,
+        course: sessionCourse,
+        date: sessionDate,
+        teacher:
+          current[sessionId]?.teacher ||
+          courses.find((item) => item.title === sessionCourse)?.teacher ||
+          loginName,
+        studentIds: current[sessionId]?.studentIds?.length
+          ? current[sessionId].studentIds
+          : students
+              .filter((item) => item.status !== "غیرفعال")
+              .map((item) => item.id),
+        updatedAt: new Date().toISOString(),
+        started: true,
+        audit: [
+          ...(current[sessionId]?.audit || []),
+          {
+            studentId: student.id,
+            status: finalStatus,
+            changedAt: now.toISOString(),
+            changedBy: loginName,
+            reason:
+              method === "voice"
+                ? "ثبت با تشخیص صدا"
+                : method === "face"
+                  ? "ثبت با تشخیص چهره"
+                  : "ثبت خودکار حضور",
+            method,
+          },
+        ],
+      },
+    }));
+    if (!silent) notify(`${student.name}: ${finalStatus} ثبت شد.`);
+    persistAttendance({
+      frontendStudentId: student.id,
+      status: finalStatus,
+      method,
+      sessionKey: sessionId,
+      reason:
+        method === "voice"
+          ? "ثبت با تشخیص صدا"
+          : method === "face" || method === "class_camera"
+            ? "ثبت با تشخیص چهره"
+            : "ثبت دستی",
+    });
+    return true;
+  }
+  function openSession(event) {
+    if (!event?.id) return;
+    setSessionCourse(event.course);
+    setSessionDate(event.date);
+    const now = new Date().toISOString();
+    const session = {
+      ...event,
+      started: true,
+      startedAt: event.startedAt || now,
+      updatedAt: now,
+      teacher:
+        event.teacher ||
+        courses.find((item) => item.title === event.course)?.teacher ||
+        loginName,
+    };
+    setSessionHistory((current) => ({ ...current, [event.id]: session }));
+    const roster = event.studentIds?.length
+      ? event.studentIds
+      : students
+          .filter((student) => student.status !== "غیرفعال")
+          .map((student) => student.id);
+    const committed = commitAttendance((current) => {
+      const records = [...current];
+      roster.forEach((studentId) => {
+        if (
+          records.some(
+            (record) =>
+              record.sessionId === event.id && record.id === studentId,
+          )
+        )
+          return;
+        const student = students.find((item) => item.id === studentId);
+        if (student)
+          records.unshift({
+            id: student.id,
+            name: student.name,
+            course: event.course,
+            sessionId: event.id,
+            sessionDate: event.date,
+            time: "—",
+            status: "ثبت‌نشده",
+            teacher: session.teacher,
+            history: [
+              {
+                from: "—",
+                to: "ثبت‌نشده",
+                changedAt: now,
+                changedBy: loginName,
+                reason: "شروع جلسه",
+              },
+            ],
+          });
+      });
+      return records;
+    });
+    if (!committed) {
+      notify(
+        "فهرست حضور جلسه ذخیره نشد؛ فضای ذخیره‌سازی مرورگر را بررسی کنید.",
+      );
+      return;
+    }
+    go("face");
+  }
+  async function finalizeSession(id) {
+    const session = sessionHistory[id];
+    if (!session) return;
+    const now = new Date().toISOString();
+    const committed = commitAttendance((current) =>
+      current.map((record) =>
+        record.sessionId === id && record.status === "ثبت‌نشده"
+          ? {
+              ...record,
+              status: "غایب",
+              method: "system",
+              history: [
+                ...(record.history || []),
+                {
+                  from: "ثبت‌نشده",
+                  to: "غایب",
+                  changedAt: now,
+                  changedBy: loginName,
+                  reason: "پایان جلسه",
+                  method: "system",
+                },
+              ],
+            }
+          : record,
+      ),
+    );
+    if (!committed) {
+      notify("پایان جلسه انجام نشد چون ذخیرهٔ حضور ممکن نبود.");
+      return;
+    }
+    setSessionHistory((current) => ({
+      ...current,
+      [id]: {
+        ...current[id],
+        finalized: true,
+        finalizedAt: now,
+        updatedAt: now,
+      },
+    }));
+    if (session.databaseId) {
+      try {
+        const result = await finalizeSessionApi(session.databaseId);
+        await loadFromServer({ silent: true });
+        notify(
+          `جلسه پایان یافت؛ ${Number(result?.absent || 0).toLocaleString("fa-IR")} نفر غایب ثبت شد.`,
+        );
+        return;
+      } catch (error) {
+        notify(error.message || "پایان جلسه در دیتابیس ثبت نشد.");
+        return;
+      }
+    }
+    notify("جلسه پایان یافت و وضعیت‌های ثبت‌نشده غیبت خوردند.");
+  }
+  function exportCsv(records = attendance) {
+    const rows = [
+      [
+        "شماره دانشجویی",
+        "نام دانشجو",
+        "درس",
+        "تاریخ جلسه",
+        "استاد",
+        "ساعت",
+        "وضعیت",
+        "تاریخچه تغییر",
+      ],
+      ...records.map((record) => [
+        record.id,
+        record.name,
+        record.course,
+        record.sessionDate || sessionHistory[record.sessionId]?.date || "",
+        record.teacher || sessionHistory[record.sessionId]?.teacher || "",
+        record.time,
+        record.status,
+        (record.history || [])
+          .map(
+            (entry) =>
+              `${entry.from} ← ${entry.to} (${entry.changedBy}${entry.reason ? `: ${entry.reason}` : ""})`,
+          )
+          .join(" | "),
+      ]),
+    ];
+    const csv =
+      "\ufeff" +
+      rows
+        .map((r) =>
+          r.map((v) => `"${String(v).replaceAll('"', '""')}"`).join(","),
+        )
+        .join("\n");
+    const url = URL.createObjectURL(
+      new Blob([csv], { type: "text/csv;charset=utf-8;" }),
+    );
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = "attendance-report.csv";
+    a.click();
+    URL.revokeObjectURL(url);
+    notify("فایل گزارش آماده شد.");
+  }
+
+  if (login)
+    return (
+      <div className="login-screen">
+        <button
+          className="icon-button theme-toggle login-theme-toggle"
+          type="button"
+          aria-label={
+            theme === "dark" ? "فعال‌کردن تم روشن" : "فعال‌کردن تم تیره"
+          }
+          title={theme === "dark" ? "تم روشن" : "تم تیره"}
+          onClick={() =>
+            setTheme((current) => (current === "dark" ? "light" : "dark"))
+          }
+        >
+          <Icon name={theme === "dark" ? "bi-sun" : "bi-moon-stars"} />
+        </button>
+        <div className="login-art">
+          <div className="login-brand">
+            <span className="brand-mark">
+              <Icon name="bi-fingerprint" />
+            </span>
+            <span>حضوربان</span>
+          </div>
+          <div className="login-hero">
+            <div className="hero-orb orb-one" />
+            <div className="hero-orb orb-two" />
+            <div className="hero-card">
+              <div className="hero-card-top">
+                <span className="live-dot" /> گزارش امروز{" "}
+                <span className="hero-date">۱۴۰۵/۰۷/۲۶</span>
+              </div>
+              <div className="hero-big-number">۹۲٪</div>
+              <div className="hero-progress">
+                <span />
+              </div>
+              <div className="hero-card-bottom">
+                <span>
+                  <i className="bi bi-people" /> ۲۸ دانشجو
+                </span>
+                <span>
+                  <i className="bi bi-check-circle" /> ۲۶ حاضر
+                </span>
+              </div>
+            </div>
+            <div className="floating-chip chip-a">
+              <Icon name="bi-shield-check" /> حضور امن و دقیق
+            </div>
+            <div className="floating-chip chip-b">
+              <Icon name="bi-camera" /> تشخیص چهره
+            </div>
+          </div>
+          <div className="login-art-bottom">
+            <span>مدیریت هوشمند کلاس‌ها</span>
+            <span>نسخه نمایشی ۱.۰</span>
+          </div>
+        </div>
+        <div className="login-form-wrap">
+          <form
+            className="login-form"
+            onSubmit={async (e) => {
+              e.preventDefault();
+              setLoginError("");
+              setLoginPending(true);
+              try {
+                const result = await signIn(loginName.trim(), loginPassword);
+
+                try {
+                  await loadFromServer({ silent: true });
+                  notify(
+                    "اتصال به PostgreSQL برقرار شد و اطلاعات از دیتابیس بارگذاری شد.",
+                  );
+                } catch (apiError) {
+                  console.error("Bootstrap error:", apiError);
+                  notify(
+                    "ورود موفق بود، اما دریافت اطلاعات دیتابیس با مشکل مواجه شد.",
+                  );
+                }
+                const signedInName = result.user.name;
+                const signedInStudentId = result.user.studentId || "";
+                setLoginName(signedInName);
+                setLoginRole(result.user.role);
+                setStudentNumber(signedInStudentId);
+                setProfilePhoto(result.user.avatarUrl || "");
+                sessionStorage.setItem(
+                  "smart-attendance:profile",
+                  JSON.stringify({
+                    name: signedInName,
+                    role: result.user.role,
+                    userId: result.user.id,
+                    email: loginName.trim().toLowerCase(),
+                    studentId: signedInStudentId,
+                  }),
+                );
+                setLoginPassword("");
+                setLogin(false);
+              } catch (error) {
+                setLoginError(error.message || "ورود به سامانه انجام نشد.");
+              } finally {
+                setLoginPending(false);
+              }
+              return;
+            }}
+          >
+            <div className="mobile-login-brand">
+              <span className="brand-mark">
+                <Icon name="bi-fingerprint" />
+              </span>{" "}
+              حضوربان
+            </div>
+            <span className="eyebrow">خوش آمدید</span>
+            <h1>
+              {loginRole === "admin"
+                ? "ورود به پنل مدیریت"
+                : loginRole === "teacher"
+                  ? "ورود به پنل استاد"
+                  : "ورود به پنل دانشجویی"}
+            </h1>
+            <p className="login-subtitle">
+              {loginRole === "admin"
+                ? "برای مدیریت سامانه، کاربران و گزارش‌ها وارد شوید."
+                : loginRole === "teacher"
+                  ? "برای مدیریت جلسات و ثبت حضور و غیاب کلاس‌ها وارد شوید."
+                  : "برای مشاهدهٔ وضعیت حضور و درس‌های خود وارد شوید."}
+            </p>
+            <label className="form-label" htmlFor="access-role">
+              {"\u0646\u0648\u0639 \u062f\u0633\u062a\u0631\u0633\u06cc"}
+            </label>
+            <AccessRoleSelect value={loginRole} onChange={chooseRole} />
+            <label className="form-label" htmlFor="username">
+              نام کاربری
+            </label>
+            <div className="input-icon-wrap">
+              <Icon name="bi-person" />
+              <input
+                id="username"
+                className="form-control"
+                value={loginName}
+                onChange={(e) => setLoginName(e.target.value)}
+                type="email"
+                autoComplete="email"
+                placeholder="نام کاربری خود را وارد کنید"
+                required
+              />
+            </div>
+            <label className="form-label mt-3" htmlFor="password">
+              رمز عبور
+            </label>
+            <div className="input-icon-wrap">
+              <Icon name="bi-lock" />
+              <input
+                id="password"
+                className="form-control"
+                type="password"
+                value={loginPassword}
+                onChange={(e) => setLoginPassword(e.target.value)}
+                autoComplete="current-password"
+                placeholder="رمز عبور"
+                required
+              />
+            </div>
+            {loginError && (
+              <p className="login-error" role="alert">
+                {loginError}
+              </p>
+            )}
+            <div className="login-hint">
+              <Icon name="bi-info-circle" /> حساب‌های نمایشی: admin@hozorban.local /
+              Admin@123456 &nbsp;·&nbsp; teacher@hozorban.local / Teacher@123456
+              &nbsp;·&nbsp; student@hozorban.local / Student@123456
+            </div>
+            <button
+              className="btn btn-primary w-100 login-submit"
+              type="submit"
+              disabled={loginPending}
+            >
+              ورود به سامانه <Icon name="bi-arrow-left-short" />
+            </button>
+            <div className="login-footer">
+              © ۱۴۰۵ حضوربان · سامانه مدیریت حضور و غیاب
+            </div>
+          </form>
+        </div>
+      </div>
+    );
+
+  if (loginRole === "student") {
+    return (
+      <StudentPortal
+        student={studentAccount}
+        records={studentRecords}
+        courses={courses}
+        photo={profilePhoto}
+        onLogout={() => {
+          setLogin(true);
+          setLoginName("student@hozorban.local");
+          setLoginPassword("");
+        }}
+      />
+    );
+  }
+
+  return (
+    <div className="app-shell">
+      {mobileMenu && (
+        <button
+          className="mobile-overlay"
+          aria-label="بستن منو"
+          onClick={() => setMobileMenu(false)}
+        />
+      )}
+      <aside className={`sidebar ${mobileMenu ? "sidebar-open" : ""}`}>
+        <div className="sidebar-brand">
+          <span className="brand-mark">
+            <Icon name="bi-fingerprint" />
+          </span>
+          <div>
+            <strong>حضوربان</strong>
+            <small>سامانه هوشمند آموزشی</small>
+          </div>
+          <button
+            className="sidebar-close"
+            onClick={() => setMobileMenu(false)}
+          >
+            <Icon name="bi-x-lg" />
+          </button>
+        </div>
+        <div className="workspace-switch">
+          <span className="workspace-icon">
+            <Icon name="bi-mortarboard-fill" />
+          </span>
+          <div>
+            <strong>دانشگاه نمونه</strong>
+            <small>
+              {loginRole === "admin" ? "پنل مدیریت آموزشی" : "پنل استاد"}
+            </small>
+          </div>
+          <Icon name="bi-chevron-down" className="workspace-chevron" />
+        </div>
+        <nav className="side-nav">
+          {visibleNavGroups.map((group) => (
+            <div className="nav-group" key={group.title}>
+              <div className="nav-group-title">{group.title}</div>
+              {group.items.map((item) => (
+                <button
+                  key={item.id}
+                  className={`nav-link-custom ${active === item.id ? "active" : ""}`}
+                  onClick={() => go(item.id)}
+                >
+                  <Icon name={item.icon} />
+                  <span>{item.label}</span>
+                  {item.id === "face" && <span className="nav-new">AI</span>}
+                </button>
+              ))}
+            </div>
+          ))}
+        </nav>
+        <div className="sidebar-bottom">
+          <div className="help-card">
+            <div className="help-icon">
+              <Icon name="bi-headset" />
+            </div>
+            <strong>به راهنمایی نیاز دارید؟</strong>
+            <p>راهنمای استفاده از سامانه را ببینید.</p>
+            <button
+              onClick={() =>
+                notify("راهنمای سامانه در نسخه بعدی اضافه می‌شود.")
+              }
+            >
+              مشاهده راهنما <Icon name="bi-arrow-left" />
+            </button>
+          </div>
+          <div className="sidebar-version">
+            <span className="version-dot" /> نسخه ۱.۰.۰{" "}
+            <span>نسخه آزمایشی</span>
+          </div>
+        </div>
+      </aside>
+      <main className="main-area">
+        <header className="topbar">
+          <div className="topbar-right">
+            <button
+              className="mobile-menu-btn"
+              onClick={() => setMobileMenu(true)}
+            >
+              <Icon name="bi-list" />
+            </button>
+            <div className="breadcrumb-text">
+              <span>سامانه</span>
+              <Icon name="bi-chevron-left" />
+              <strong>{pageName}</strong>
+            </div>
+          </div>
+          <div className="topbar-left">
+            <div className="top-date">
+              <Icon name="bi-calendar3" /> {faDate.format(new Date())}
+            </div>
+            <button
+              className="icon-button notification-button"
+              title="اعلان‌ها"
+              onClick={() => notify("در حال حاضر اعلان جدیدی ندارید.")}
+            >
+              <Icon name="bi-bell" />
+              <span />
+            </button>
+            <button
+              className="icon-button theme-toggle"
+              type="button"
+              aria-label={
+                theme === "dark" ? "فعال‌کردن تم روشن" : "فعال‌کردن تم تیره"
+              }
+              title={theme === "dark" ? "تم روشن" : "تم تیره"}
+              onClick={() =>
+                setTheme((current) => (current === "dark" ? "light" : "dark"))
+              }
+            >
+              <Icon name={theme === "dark" ? "bi-sun" : "bi-moon-stars"} />
+            </button>
+            <div className="topbar-divider" />
+            <button className="user-menu" onClick={() => go("profile")}>
+              {profilePhoto ? (
+                <img
+                  className="avatar avatar-photo"
+                  src={profilePhoto}
+                  alt=""
+                />
+              ) : (
+                <span className="avatar">
+                  {loginName.trim().charAt(0) || "م"}
+                </span>
+              )}
+              <span className="user-menu-copy">
+                <strong>{loginName}</strong>
+                <small>{ACCESS_ROLE_LABELS[loginRole]}</small>
+              </span>
+              <Icon name="bi-chevron-down" />
+            </button>
+          </div>
+        </header>
+        <div className="page-content">
+          {storageWarning && (
+            <div className="storage-warning" role="alert">
+              <Icon name="bi-exclamation-triangle" />
+              <span>{storageWarning}</span>
+              <button
+                type="button"
+                aria-label="بستن پیام"
+                onClick={() => setStorageWarning("")}
+              >
+                ×
+              </button>
+            </div>
+          )}
+          {active === "dashboard" && (
+            <Dashboard
+              students={students}
+              courses={courses}
+              attendance={attendance}
+              onNavigate={go}
+              onExport={exportCsv}
+              accessRole={loginRole}
+            />
+          )}
+          {active === "students" && (
+            <Students
+              students={filteredStudents}
+              query={query}
+              setQuery={setQuery}
+              onAdd={() => setModal(true)}
+              onDelete={async (id) => {
+                try {
+                  const student = students.find((item) => item.id === id);
+
+                  if (!student?.databaseId) {
+                    return notify("شناسه دانشجو در دیتابیس پیدا نشد.");
+                  }
+
+                  await updateStudent(student.databaseId, { status: "inactive" });
+                  await loadFromServer({ silent: true });
+                  notify("دانشجو با موفقیت غیرفعال شد.");
+                } catch (error) {
+                  notify(error.message || "غیرفعال‌سازی دانشجو انجام نشد.");
+                }
+              }}
+            />
+          )}
+          {active === "courses" && (
+            <Courses
+              courses={courses}
+              students={students}
+              onAddCourse={addCourse}
+              onNavigate={go}
+            />
+          )}
+          {active === "sessions" && (
+            <Sessions
+              courses={courses}
+              students={students}
+              attendance={attendance}
+              sessions={sessionHistory}
+              onSchedule={async (course, date, details) => {
+                const courseObj = courses.find(
+                  (item) => item.title === course,
+                );
+                if (!courseObj?.databaseId) {
+                  notify("درس انتخاب‌شده در دیتابیس پیدا نشد.");
+                  return;
+                }
+                const memberDatabaseIds = [
+                  ...new Set(
+                    (details.studentIds || [])
+                      .map((id) => studentDatabaseId(id))
+                      .filter(Boolean),
+                  ),
+                ];
+                if (!memberDatabaseIds.length) {
+                  notify("فهرست دانشجویان جلسه خالی است.");
+                  return;
+                }
+                try {
+                  await createSession({
+                    courseId: courseObj.databaseId,
+                    date,
+                    teacherName: details.teacher || courseObj.teacher || loginName,
+                    startTime: details.startTime,
+                    endTime: details.endTime,
+                    graceMinutes: Number(details.graceMinutes ?? 10),
+                    openBeforeMinutes: Number(details.openBeforeMinutes ?? 15),
+                    closeAfterMinutes: Number(details.closeAfterMinutes ?? 30),
+                    studentIds: memberDatabaseIds,
+                  });
+                  await loadFromServer({ silent: true });
+                  notify("جلسه در دیتابیس ایجاد شد و رکوردهای حضور آماده‌اند.");
+                } catch (error) {
+                  notify(error.message || "ایجاد جلسه انجام نشد.");
+                }
+              }}
+              onOpenSession={openSession}
+              onFinalizeSession={finalizeSession}
+              onNavigate={go}
+            />
+          )}
+          {active === "manual" && (
+            <ManualAttendance
+              attendance={filteredAttendance}
+              query={query}
+              setQuery={setQuery}
+              courses={courses}
+              courseFilter={courseFilter}
+              setCourseFilter={setCourseFilter}
+              onStatus={setAttendanceStatus}
+              onExport={exportCsv}
+            />
+          )}
+          {(active === "face" || active === "class-camera") && (
+            <FaceAttendance
+              variant={active === "class-camera" ? "classroom" : "face"}
+              courses={courses}
+              students={students.filter((student) => {
+                const course = courses.find(
+                  (item) => item.title === sessionCourse,
+                );
+                const roster =
+                  sessionHistory[sessionId]?.studentIds || course?.studentIds;
+                return !Array.isArray(roster) || roster.includes(student.id);
+              })}
+              attendance={attendance}
+              sessionCourse={sessionCourse}
+              setSessionCourse={setSessionCourse}
+              sessionDate={sessionDate}
+              setSessionDate={setSessionDate}
+              sessionId={sessionId}
+              onSaveStudentPhoto={saveStudentPhoto}
+              onMarkAttendance={markFaceAttendance}
+              onRecognitionNotice={notify}
+              cameraState={cameraState}
+              cameras={cameras}
+              selectedCameraId={selectedCameraId}
+              onSelectCamera={selectCamera}
+              videoRef={videoRef}
+              streamRef={streamRef}
+              startCamera={
+                active === "class-camera"
+                  ? startCamera
+                  : () => startCamera("", true)
+              }
+              stopCamera={stopCamera}
+            />
+          )}
+          {active === "voice" && (
+            <VoiceAttendance
+              courses={courses}
+              students={students.filter((student) => {
+                const course = courses.find(
+                  (item) => item.title === sessionCourse,
+                );
+                const roster =
+                  sessionHistory[sessionId]?.studentIds || course?.studentIds;
+                return !Array.isArray(roster) || roster.includes(student.id);
+              })}
+              attendance={attendance}
+              sessionCourse={sessionCourse}
+              setSessionCourse={setSessionCourse}
+              sessionDate={sessionDate}
+              setSessionDate={setSessionDate}
+              sessionId={sessionId}
+              onMarkAttendance={markFaceAttendance}
+              onNotice={notify}
+              voiceProfiles={voiceProfiles}
+              onSaveVoiceSample={async (frontendStudentId, sample) => {
+                const dbId = studentDatabaseId(frontendStudentId);
+                if (!dbId) throw new Error("شناسهٔ دیتابیسی دانشجو پیدا نشد.");
+                await saveVoiceSample(
+                  dbId,
+                  sample.features,
+                  sample.featureVersion,
+                );
+                await loadFromServer({ silent: true });
+              }}
+            />
+          )}
+          {active === "reports" && (
+            <Reports
+              attendance={attendance}
+              students={students}
+              courses={courses}
+              sessions={sessionHistory}
+              onExport={exportCsv}
+              onPrint={() => window.print()}
+            />
+          )}
+          {active === "settings" && (
+            <Settings
+              settings={settings}
+              setSettings={setSettings}
+              onSave={saveSettings}
+              onBackup={exportBackup}
+              onRestore={restoreBackup}
+            />
+          )}
+          {active === "profile" && (
+            <Profile
+              name={loginName}
+              role={ACCESS_ROLE_LABELS[loginRole]}
+              photo={profilePhoto}
+              onSave={saveProfile}
+            />
+          )}
+        </div>
+        <footer className="main-footer">
+          <span>© ۱۴۰۵ حضوربان. تمامی حقوق محفوظ است.</span>
+          <span>
+            ساخته‌شده برای مدیریت هوشمند آموزش <Icon name="bi-heart-fill" />
+          </span>
+        </footer>
+      </main>
+      {modal && (
+        <div
+          className="modal-backdrop-custom"
+          onMouseDown={(e) => {
+            if (e.target === e.currentTarget) setModal(false);
+          }}
+        >
+          <form className="custom-modal" onSubmit={addStudent}>
+            <div className="modal-head">
+              <div>
+                <span className="eyebrow">مدیریت آموزشی</span>
+                <h3>افزودن دانشجوی جدید</h3>
+              </div>
+              <button
+                type="button"
+                className="icon-button"
+                onClick={() => setModal(false)}
+              >
+                <Icon name="bi-x-lg" />
+              </button>
+            </div>
+            <div className="row g-3">
+              <div className="col-12 col-md-6">
+                <label className="form-label">نام و نام خانوادگی *</label>
+                <input
+                  className="form-control"
+                  value={studentForm.name}
+                  onChange={(e) =>
+                    setStudentForm({ ...studentForm, name: e.target.value })
+                  }
+                  placeholder="مثلاً علی محمدی"
+                  required
+                />
+              </div>
+              <div className="col-12 col-md-6">
+                <label className="form-label">شماره دانشجویی *</label>
+                <input
+                  className="form-control"
+                  value={studentForm.id}
+                  onChange={(e) =>
+                    setStudentForm({ ...studentForm, id: e.target.value })
+                  }
+                  placeholder="مثلاً ۴۰۱۲۳۰۰۷"
+                  required
+                />
+              </div>
+              <div className="col-12 col-md-6">
+                <label className="form-label">رشته تحصیلی</label>
+                <select
+                  className="form-select"
+                  value={studentForm.major}
+                  onChange={(e) =>
+                    setStudentForm({ ...studentForm, major: e.target.value })
+                  }
+                >
+                  <option>مهندسی کامپیوتر</option>
+                  <option>فناوری اطلاعات</option>
+                  <option>علوم کامپیوتر</option>
+                </select>
+              </div>
+              <div className="col-12 col-md-6">
+                <label className="form-label">ترم</label>
+                <select
+                  className="form-select"
+                  value={studentForm.term}
+                  onChange={(e) =>
+                    setStudentForm({ ...studentForm, term: e.target.value })
+                  }
+                >
+                  {["۱", "۲", "۳", "۴", "۵", "۶"].map((t) => (
+                    <option key={t}>{t}</option>
+                  ))}
+                </select>
+              </div>
+              <div className="col-12">
+                <label className="form-label">شماره تماس</label>
+                <input
+                  className="form-control"
+                  value={studentForm.phone}
+                  onChange={(e) =>
+                    setStudentForm({ ...studentForm, phone: e.target.value })
+                  }
+                  placeholder="اختیاری"
+                />
+              </div>
+            </div>
+            <div className="modal-actions">
+              <button
+                type="button"
+                className="btn btn-light"
+                onClick={() => setModal(false)}
+              >
+                انصراف
+              </button>
+              <button type="submit" className="btn btn-primary">
+                <Icon name="bi-plus-lg" /> ثبت دانشجو
+              </button>
+            </div>
+          </form>
+        </div>
+      )}
+      {toast && (
+        <div className="toast-custom">
+          <Icon name="bi-check-circle-fill" />
+          {toast}
+          <button onClick={() => setToast("")}>
+            <Icon name="bi-x" />
+          </button>
+        </div>
+      )}
+    </div>
+  );
+}
