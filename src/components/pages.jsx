@@ -14,6 +14,18 @@ function eyeAspectRatio(points) {
   );
 }
 
+function formatSessionDate(value) {
+  if (!value) return "—";
+  const raw = String(value).slice(0, 10);
+  const date = new Date(`${raw}T00:00:00`);
+  if (Number.isNaN(date.getTime())) return raw;
+  return date.toLocaleDateString("fa-IR", {
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  });
+}
+
 function attendanceStatusKind(status) {
   if ([PRESENT_STATUS, "حاضر", "خروج زودهنگام"].includes(status))
     return "present";
@@ -808,6 +820,7 @@ export function ManualAttendance({
                 <th>دانشجو</th>
                 <th>شماره دانشجویی</th>
                 <th>درس</th>
+                <th>تاریخ جلسه</th>
                 <th>ساعت ثبت</th>
                 <th>وضعیت فعلی</th>
                 <th>تغییر وضعیت</th>
@@ -826,6 +839,7 @@ export function ManualAttendance({
                   </td>
                   <td className="id-cell">{a.id}</td>
                   <td>{a.course}</td>
+                  <td dir="ltr">{formatSessionDate(a.sessionDate)}</td>
                   <td>{a.time}</td>
                   <td>
                     <Badge
@@ -907,7 +921,7 @@ export function ManualAttendance({
               ))}
               {!attendance.length && (
                 <tr>
-                  <td colSpan="6">
+                  <td colSpan="7">
                     <EmptyState
                       icon="bi-clipboard-x"
                       title="رکوردی برای نمایش نیست"
@@ -1428,7 +1442,7 @@ export function FaceAttendance({
       icon: "bi-calendar2-check",
       title: "انتخاب کلاس و تاریخ",
       detail: sessionReady
-        ? `${sessionCourse} · ${sessionDate}`
+        ? `${sessionCourse} · ${formatSessionDate(sessionDate)}`
         : "کلاس و تاریخ جلسه را در تنظیمات انتخاب کنید",
       status: sessionReady ? "done" : "active",
     },
@@ -1939,6 +1953,14 @@ export function FaceAttendance({
                       </div>
                     </div>
                     <div className="face-student-actions">
+                      {student.faceImage && (
+                        <img
+                          src={student.faceImage}
+                          alt={`تصویر ${student.name}`}
+                          className="face-current-photo"
+                          title="عکس مرجع فعلی"
+                        />
+                      )}
                       <label className="btn btn-light-outline face-photo-button">
                         <Icon name="bi-image" />{" "}
                         {student.faceImage ? "تغییر عکس" : "ثبت عکس"}
@@ -1946,7 +1968,6 @@ export function FaceAttendance({
                           type="file"
                           accept="image/*"
                           capture="user"
-                          multiple
                           onChange={(event) => {
                             onSaveStudentPhoto(
                               student.id,
@@ -2395,8 +2416,8 @@ export function Settings({
             </label>
           </div>
           <div className="settings-warning">
-            <Icon name="bi-info-circle" /> این تنظیمات در نسخه نمایشی نگهداری
-            می‌شوند و هنوز به سرور متصل نیستند.
+            <Icon name="bi-database-check" /> این تنظیمات در PostgreSQL ذخیره
+            می‌شوند و برای همهٔ کاربران سازمان اعمال می‌شوند.
           </div>
         </section>
       </div>

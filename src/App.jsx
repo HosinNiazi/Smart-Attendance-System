@@ -1217,20 +1217,16 @@ export default function App() {
     if (cameraState === "live") startCamera(deviceId);
   }
   async function saveStudentPhoto(studentId, files) {
-    const selectedFiles = Array.from(files || []).slice(0, 5);
+    const selectedFiles = Array.from(files || []);
     if (!selectedFiles.length) return;
+    const file = selectedFiles[0];
+    if (!file.type.startsWith("image/")) return notify("فایل تصویری معتبری انتخاب نشد.");
     const dbId = studentDatabaseId(studentId);
     if (!dbId) return notify("شناسهٔ دیتابیسی دانشجو پیدا نشد.");
     try {
-      let saved = 0;
-      for (const file of selectedFiles) {
-        if (!file.type.startsWith("image/")) continue;
-        await uploadStudentPhoto(dbId, file);
-        saved += 1;
-      }
-      if (!saved) return notify("فایل تصویری معتبری انتخاب نشد.");
+      await uploadStudentPhoto(dbId, file);
       await loadFromServer({ silent: true });
-      notify(`${saved} عکس مرجع برای دانشجو در دیتابیس ذخیره شد.`);
+      notify("عکس مرجع دانشجو در دیتابیس ذخیره شد (عکس قبلی جایگزین شد).");
     } catch (error) {
       notify(error.message || "ذخیره عکس انجام نشد. لطفاً تصاویر دیگری انتخاب کنید.");
     }

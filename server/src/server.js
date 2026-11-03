@@ -416,6 +416,23 @@ app.post(
       .digest("hex");
 
     try {
+      // Delete existing face images for this student (single reference photo per student)
+      const oldRefs = await pool.query(
+        `SELECT object_key FROM biometric_references
+         WHERE student_id = $1 AND kind = 'face_image'`,
+        [req.params.studentId],
+      );
+      for (const ref of oldRefs.rows) {
+        await fs.promises
+          .unlink(path.join(uploadsRoot, "students", ref.object_key))
+          .catch(() => {});
+      }
+      await pool.query(
+        `DELETE FROM biometric_references
+         WHERE student_id = $1 AND kind = 'face_image'`,
+        [req.params.studentId],
+      );
+
       const result = await pool.query(
         `INSERT INTO biometric_references
          (student_id, kind, object_key, mime_type, checksum)
@@ -536,11 +553,24 @@ app.delete(
   "/api/courses/:courseId",
   authorize("admin"),
   asyncRoute(async (req, res) => {
-    const { rowCount } = await pool.query(
-      "DELETE FROM courses WHERE organization_id=$1 AND id=$2",
-      [req.user.org, req.params.courseId],
-    );
-    if (!rowCount) return res.sendStatus(404);
+    // class_sessions.course_id is RESTRICT, so remove the course's sessions
+    // (their roster and attendance rows cascade) before deleting the course.
+    const deleted = await withTransaction(async (client) => {
+      const found = await client.query(
+        "SELECT id FROM courses WHERE organization_id=$1 AND id=$2",
+        [req.user.org, req.params.courseId],
+      );
+      if (!found.rows[0]) return false;
+      await client.query("DELETE FROM class_sessions WHERE course_id=$1", [
+        req.params.courseId,
+      ]);
+      await client.query(
+        "DELETE FROM courses WHERE organization_id=$1 AND id=$2",
+        [req.user.org, req.params.courseId],
+      );
+      return true;
+    });
+    if (!deleted) return res.sendStatus(404);
     res.sendStatus(204);
   }),
 );
@@ -561,7 +591,7 @@ app.post(
            (student_id, kind, object_key, mime_type, features, feature_version)
          VALUES ($1,'voice_sample','inline-features','application/json',$2,$3)
          RETURNING id, student_id AS "studentId", features, feature_version AS "featureVersion", created_at AS "createdAt"`,
-        [req.params.studentId, req.body.features, req.body.featureVersion],
+        [req.params.studentId, JSON.stringify(req.body.features), req.body.featureVersion],
       );
       const stale = await client.query(
         `SELECT id FROM biometric_references
