@@ -2964,3 +2964,91 @@ export function StudentPortal({
     </div>
   );
 }
+
+export function Registrations({ registrations = [], onApprove, onReject, onRefresh }) {
+  return (
+    <>
+      <PanelTitle
+        eyebrow="مدیریت کاربران"
+        title="پذیرش درخواست‌های ثبت‌نام"
+        description="درخواست‌های ثبت‌نام دانشجویان جدید را بررسی و تأیید کنید."
+        action={
+          <button className="btn btn-light-outline" onClick={onRefresh}>
+            <Icon name="bi-arrow-clockwise" /> بروزرسانی
+          </button>
+        }
+      />
+      <div className="content-card data-card">
+        {registrations.length ? (
+          <div className="table-responsive">
+            <table className="table custom-table align-middle">
+              <thead>
+                <tr>
+                  <th>نام و نام خانوادگی</th>
+                  <th>نام کاربری</th>
+                  <th>کد ملی</th>
+                  <th>رشته/ترم</th>
+                  <th>تلفن</th>
+                  <th>وضعیت</th>
+                  <th>عملیات</th>
+                </tr>
+              </thead>
+              <tbody>
+                {registrations.map((r) => (
+                  <tr key={r.id}>
+                    <td><strong>{r.fullName}</strong></td>
+                    <td>{r.username}</td>
+                    <td>{r.nationalId || "—"}</td>
+                    <td>{r.major || "—"} {r.term ? `· ترم ${r.term}` : ""}</td>
+                    <td>{r.phone || "—"}</td>
+                    <td>
+                      <Badge
+                        tone={
+                          r.status === "approved"
+                            ? "success"
+                            : r.status === "rejected"
+                              ? "danger"
+                              : "warning"
+                        }
+                      >
+                        {r.status === "approved"
+                          ? "تأیید شده"
+                          : r.status === "rejected"
+                            ? "رد شده"
+                            : "در انتظار"}
+                      </Badge>
+                    </td>
+                    <td>
+                      {r.status === "pending" && (
+                        <div className="student-actions-cell">
+                          <button
+                            className="btn btn-success-soft"
+                            onClick={() => onApprove(r.id)}
+                          >
+                            <Icon name="bi-check-lg" /> تأیید
+                          </button>
+                          <button
+                            className="btn btn-light-outline"
+                            onClick={() => onReject(r.id)}
+                          >
+                            <Icon name="bi-x-lg" /> رد
+                          </button>
+                        </div>
+                      )}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        ) : (
+          <EmptyState
+            icon="bi-person-check"
+            title="درخواستی موجود نیست"
+            text="هنوز درخواست ثبت‌نامی ثبت نشده است."
+          />
+        )}
+      </div>
+    </>
+  );
+}

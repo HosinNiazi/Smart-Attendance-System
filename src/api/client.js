@@ -92,3 +92,15 @@ export function upsertAttendance(payload) {
 export function saveSettingsPayload(payload) {
   return api('/settings', { method: 'PUT', body: JSON.stringify(payload) });
 }
+export function createRegistration(payload) {
+  return api('/registrations', { method: 'POST', body: JSON.stringify(payload) });
+}
+export function fetchRegistrations() {
+  return api('/registrations');
+}
+export function approveRegistration(id) {
+  return api(`/registrations/${id}/approve`, { method: 'PATCH' });
+}
+export function rejectRegistration(id) {
+  return api(`/registrations/${id}/reject`, { method: 'PATCH' });
+}

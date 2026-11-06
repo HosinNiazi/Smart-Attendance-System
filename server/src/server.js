@@ -259,7 +259,123 @@ app.post(
   }),
 );
 
+app.post(
+  "/api/registrations",
+  validate(
+    z.object({
+      fullName: z.string().trim().min(2).max(120),
+      username: z.string().trim().min(3).max(120),
+      password: z.string().min(8).max(128),
+      nationalId: z.string().trim().max(20).optional().default(""),
+      major: z.string().trim().max(120).optional().default(""),
+      term: z.string().trim().max(20).optional().default(""),
+      phone: z.string().trim().max(40).optional().default(""),
+    }),
+  ),
+  asyncRoute(async (req, res) => {
+    const orgRow = await pool.query(
+      "SELECT id FROM organizations WHERE name = $1 ORDER BY created_at LIMIT 1",
+      ["سازمان پیش‌فرض"],
+    );
+    if (!orgRow.rows[0])
+      return res.status(500).json({ message: "سازمان پیش‌فرض یافت نشد." });
+    const orgId = orgRow.rows[0].id;
+    const { fullName, username, password, nationalId, major, term, phone } =
+      req.body;
+    const passwordHash = await bcrypt.hash(password, 10);
+    const { rows } = await pool.query(
+      `INSERT INTO registration_requests
+         (organization_id, full_name, username, password_hash, national_id, major, term, phone)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8)
+       RETURNING id, full_name AS "fullName", username, national_id AS "nationalId", major, term, phone, status, created_at AS "createdAt"`,
+      [orgId, fullName, username, passwordHash, nationalId, major, term, phone],
+    );
+    res.status(201).json(rows[0]);
+  }),
+);
+
 app.use("/api", authenticate);
+app.get(
+  "/api/registrations",
+  authorize("admin"),
+  asyncRoute(async (req, res) => {
+    const { rows } = await pool.query(
+      `SELECT id, full_name AS "fullName", username, national_id AS "nationalId", major, term, phone, status, created_at AS "createdAt", reviewed_at AS "reviewedAt"
+         FROM registration_requests
+        WHERE organization_id = $1
+        ORDER BY created_at DESC`,
+      [req.user.org],
+    );
+    res.json(rows);
+  }),
+);
+
+app.patch(
+  "/api/registrations/:id/approve",
+  authorize("admin"),
+  asyncRoute(async (req, res) => {
+    const client = await pool.connect();
+    try {
+      await client.query("BEGIN");
+      const { rows } = await client.query(
+        `SELECT * FROM registration_requests WHERE id = $1 AND organization_id = $2 AND status = 'pending'`,
+        [req.params.id, req.user.org],
+      );
+      if (!rows[0]) {
+        await client.query("ROLLBACK");
+        return res.status(404).json({ message: "درخواست یافت نشد یا قبلاً بررسی شده." });
+      }
+      const r = rows[0];
+      const studentNumber = r.national_id || r.username;
+      const studentRows = await client.query(
+        `INSERT INTO students (organization_id, student_number, full_name, major, term, phone, status)
+         VALUES ($1,$2,$3,$4,$5,$6,'active')
+         ON CONFLICT (organization_id, student_number) DO UPDATE
+           SET full_name=EXCLUDED.full_name, major=EXCLUDED.major, term=EXCLUDED.term, phone=EXCLUDED.phone, status='active', updated_at=now()
+         RETURNING id`,
+        [req.user.org, studentNumber, r.full_name, r.major, r.term, r.phone],
+      );
+      const studentId = studentRows.rows[0].id;
+      const userRows = await client.query(
+        `INSERT INTO users (organization_id, email, password_hash, display_name, role, student_id, is_active)
+         VALUES ($1,$2,$3,$4,'student',$5,true)
+         ON CONFLICT (organization_id, email) DO UPDATE
+           SET password_hash=EXCLUDED.password_hash, display_name=EXCLUDED.display_name, student_id=EXCLUDED.student_id, is_active=true, updated_at=now()
+         RETURNING id`,
+        [req.user.org, r.username, r.password_hash, r.full_name, studentNumber],
+      );
+      const userId = userRows.rows[0].id;
+      await client.query(
+        `UPDATE registration_requests
+            SET status='approved', reviewed_at=now(), reviewed_by=$1, approved_student_id=$2, approved_user_id=$3
+          WHERE id=$4`,
+        [req.user.sub, studentId, userId, r.id],
+      );
+      await client.query("COMMIT");
+      res.json({ ok: true, studentId, userId });
+    } catch (error) {
+      await client.query("ROLLBACK");
+      throw error;
+    } finally {
+      client.release();
+    }
+  }),
+);
+
+app.patch(
+  "/api/registrations/:id/reject",
+  authorize("admin"),
+  asyncRoute(async (req, res) => {
+    const { rowCount } = await pool.query(
+      `UPDATE registration_requests SET status='rejected', reviewed_at=now(), reviewed_by=$1
+        WHERE id=$2 AND organization_id=$3 AND status='pending'`,
+      [req.user.sub, req.params.id, req.user.org],
+    );
+    if (!rowCount) return res.status(404).json({ message: "درخواست یافت نشد یا قبلاً بررسی شده." });
+    res.json({ ok: true });
+  }),
+);
+
 app.get(
   "/api/me",
   asyncRoute(async (req, res) => {

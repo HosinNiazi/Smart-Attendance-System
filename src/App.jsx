@@ -1,5 +1,4 @@
 ﻿import React from "react";
-import { adaptBootstrap, toEnStatus } from "./api/adapter.js";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Icon } from "./components/shared.jsx";
 import {
@@ -8,6 +7,7 @@ import {
   FaceAttendance,
   ManualAttendance,
   Profile,
+  Registrations,
   Reports,
   Sessions,
   Settings,
@@ -23,6 +23,10 @@ import {
   api,
   createCourse,
   createSession,
+  createRegistration,
+  fetchRegistrations,
+  approveRegistration,
+  rejectRegistration,
   fetchBootstrap,
   finalizeSession as finalizeSessionApi,
   getApiUser,
@@ -62,6 +66,7 @@ const navGroups = [
     title: "سیستم",
     items: [
       { id: "profile", label: "پروفایل من", icon: "bi-person-circle" },
+      { id: "registrations", label: "پذیرش درخواست‌ها", icon: "bi-person-check" },
       { id: "settings", label: "تنظیمات", icon: "bi-gear" },
     ],
   },
@@ -278,6 +283,7 @@ export default function App() {
         return { ...course, studentIds, count: studentIds.length };
       });
   });
+  const [registrations, setRegistrations] = useState([]);
   const [attendance, setAttendance] = useState(() => {
     const saved = readStoredValue("smart-attendance:attendance", null);
     return Array.isArray(saved)
@@ -326,7 +332,7 @@ export default function App() {
     notifications: true,
     faceRecognition: true,
   });
-  const [login, setLogin] = useState(true); // HosienNiazi
+  const [login, setLogin] = useState(() => !sessionStorage.getItem("smart-attendance:api-token"));
   const [loginRole, setLoginRole] = useState(() => {
     const savedRole = readSessionProfile().role;
     return ACCESS_ROLE_LABELS[savedRole] ? savedRole : "admin";
@@ -344,6 +350,17 @@ export default function App() {
   const [loginPassword, setLoginPassword] = useState("");
   const [loginError, setLoginError] = useState("");
   const [loginPending, setLoginPending] = useState(false);
+  const [regModal, setRegModal] = useState(false);
+  const [regForm, setRegForm] = useState({
+    fullName: "",
+    username: "",
+    password: "",
+    nationalId: "",
+    major: "",
+    term: "",
+    phone: "",
+  });
+  const [regPending, setRegPending] = useState(false);
 
   useEffect(() => {
     if (!toast) return;
@@ -464,6 +481,14 @@ export default function App() {
     const data = await fetchBootstrap();
     const adapted = adaptBootstrap(data);
     applyServerData(adapted);
+    if (loginRole === "admin") {
+      try {
+        const regs = await fetchRegistrations();
+        setRegistrations(Array.isArray(regs) ? regs : []);
+      } catch (error) {
+        console.warn("fetchRegistrations failed", error);
+      }
+    }
     if (!silent) {
       notify(
         `اطلاعات از دیتابیس بارگذاری شد؛ ${adapted.students.length} دانشجو، ${adapted.courses.length} درس و ${adapted.attendance.length} رکورد حضور.`,
@@ -1659,11 +1684,110 @@ export default function App() {
             >
               ورود به سامانه <Icon name="bi-arrow-left-short" />
             </button>
+            <button
+              className="btn btn-light-outline w-100"
+              type="button"
+              onClick={() => setRegModal(true)}
+            >
+              <Icon name="bi-person-plus" /> ثبت‌نام دانشجوی جدید
+            </button>
             <div className="login-footer">
               © ۱۴۰۵ حضوربان · سامانه مدیریت حضور و غیاب
             </div>
           </form>
         </div>
+        {regModal && (
+          <div
+            className="modal-backdrop-custom"
+            role="presentation"
+            onMouseDown={(e) => {
+              if (e.target === e.currentTarget && !regPending)
+                setRegModal(false);
+            }}
+          >
+            <section
+              className="custom-modal"
+              role="dialog"
+              aria-modal="true"
+              style={{ maxWidth: 520 }}
+            >
+              <div className="modal-head">
+                <div>
+                  <div className="eyebrow">ثبت‌نام دانشجو</div>
+                  <h3>فرم ثبت‌نام</h3>
+                </div>
+                <button
+                  className="icon-button"
+                  type="button"
+                  disabled={regPending}
+                  onClick={() => setRegModal(false)}
+                >
+                  <Icon name="bi-x-lg" />
+                </button>
+              </div>
+              <div className="course-form-grid">
+                {[
+                  ["fullName", "نام و نام خانوادگی", "text"],
+                  ["username", "نام کاربری (ایمیل)", "email"],
+                  ["password", "رمز عبور", "password"],
+                  ["nationalId", "کد ملی", "text"],
+                  ["major", "رشته", "text"],
+                  ["term", "ترم", "text"],
+                  ["phone", "تلفن", "text"],
+                ].map(([key, label, type]) => (
+                  <label className="form-label" key={key}>
+                    {label}
+                    <input
+                      className="form-control"
+                      type={type}
+                      value={regForm[key]}
+                      disabled={regPending}
+                      onChange={(e) =>
+                        setRegForm((c) => ({ ...c, [key]: e.target.value }))
+                      }
+                    />
+                  </label>
+                ))}
+              </div>
+              <div className="modal-actions" style={{ marginTop: 12 }}>
+                <button
+                  className="btn btn-primary"
+                  disabled={regPending}
+                  onClick={async () => {
+                    setRegPending(true);
+                    try {
+                      await createRegistration(regForm);
+                      notify("درخواست ثبت‌نام ارسال شد؛ پس از تأیید مدیر می‌توانید وارد شوید.");
+                      setRegModal(false);
+                      setRegForm({
+                        fullName: "",
+                        username: "",
+                        password: "",
+                        nationalId: "",
+                        major: "",
+                        term: "",
+                        phone: "",
+                      });
+                    } catch (error) {
+                      notify(error.message || "ارسال درخواست انجام نشد.");
+                    } finally {
+                      setRegPending(false);
+                    }
+                  }}
+                >
+                  ارسال درخواست
+                </button>
+                <button
+                  className="btn btn-light"
+                  disabled={regPending}
+                  onClick={() => setRegModal(false)}
+                >
+                  انصراف
+                </button>
+              </div>
+            </section>
+          </div>
+        )}
       </div>
     );
 
@@ -2029,6 +2153,30 @@ export default function App() {
               role={ACCESS_ROLE_LABELS[loginRole]}
               photo={profilePhoto}
               onSave={saveProfile}
+            />
+          )}
+          {active === "registrations" && (
+            <Registrations
+              registrations={registrations}
+              onApprove={async (id) => {
+                try {
+                  await approveRegistration(id);
+                  await loadFromServer({ silent: true });
+                  notify("درخواست تأیید شد.");
+                } catch (error) {
+                  notify(error.message || "تأیید انجام نشد.");
+                }
+              }}
+              onReject={async (id) => {
+                try {
+                  await rejectRegistration(id);
+                  await loadFromServer({ silent: true });
+                  notify("درخواست رد شد.");
+                } catch (error) {
+                  notify(error.message || "رد انجام نشد.");
+                }
+              }}
+              onRefresh={() => loadFromServer({ silent: true })}
             />
           )}
         </div>
