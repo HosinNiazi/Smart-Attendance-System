@@ -1,18 +1,18 @@
 import React, { useEffect, useState } from "react";
-import { Badge, EmptyState, Icon, PanelTitle, StatCard } from "./shared.jsx";
+import { Badge, EmptyState, Icon, PanelTitle, StatCard, StudentAvatar } from "./shared.jsx";
+import {
+  CLASSROOM_SCAN_INTERVAL_MS,
+  FACE_SCAN_INTERVAL_MS,
+  averageEyeRatio,
+  createLivenessState,
+  livenessPhaseLabel,
+  tickLivenessLost,
+  updateLiveness,
+} from "../face/liveness.js";
 
 const PRESENT_STATUS = "\u062d\u0627\u0636\u0631";
 const ABSENT_STATUS = "\u063a\u0627\u06cc\u0628";
 const LATE_STATUS = "\u062a\u0623\u062e\u06cc\u0631";
-
-function eyeAspectRatio(points) {
-  if (!points || points.length < 6) return 1;
-  const distance = (a, b) => Math.hypot(a.x - b.x, a.y - b.y);
-  return (
-    (distance(points[1], points[5]) + distance(points[2], points[4])) /
-    (2 * Math.max(distance(points[0], points[3]), 1))
-  );
-}
 
 function formatSessionDate(value) {
   if (!value) return "—";
@@ -300,7 +300,7 @@ export function Dashboard({
           </button>
         </div>
 
-        <AttendanceTable rows={latestAttendance} compact />
+        <AttendanceTable rows={latestAttendance} students={students} compact />
       </section>
 
       <section className="content-card courses-strip">
@@ -344,7 +344,7 @@ export function Dashboard({
   );
 }
 
-export function Students({ students, query, setQuery, onAdd, onDelete }) {
+export function Students({ students, query, setQuery, onAdd, onDelete, onSavePhoto }) {
   return (
     <>
       <PanelTitle
@@ -391,9 +391,11 @@ export function Students({ students, query, setQuery, onAdd, onDelete }) {
                   <tr key={s.id}>
                     <td>
                       <div className="student-cell">
-                        <span className={`student-avatar avatar-${i % 5}`}>
-                          {s.name.charAt(0)}
-                        </span>
+                        <StudentAvatar
+                          name={s.name}
+                          photo={s.faceImage}
+                          index={i}
+                        />
                         <strong>{s.name}</strong>
                       </div>
                     </td>
@@ -407,16 +409,47 @@ export function Students({ students, query, setQuery, onAdd, onDelete }) {
                       </Badge>
                     </td>
                     <td>
-                      <button
-                        className="row-action danger-action"
-                        title="حذف دانشجو"
-                        onClick={() => {
-                          if (window.confirm(`دانشجوی «${s.name}» حذف شود؟`))
-                            onDelete(s.id);
-                        }}
-                      >
-                        <Icon name="bi-trash3" />
-                      </button>
+                      <div className="student-actions-cell">
+                        <label
+                          className="row-action photo-action"
+                          title={
+                            s.faceImage
+                              ? "تغییر عکس پروفایل"
+                              : "ثبت عکس پروفایل"
+                          }
+                        >
+                          <Icon
+                            name={
+                              s.faceImage ? "bi-pencil-square" : "bi-camera"
+                            }
+                          />
+                          <input
+                            type="file"
+                            accept="image/*"
+                            capture="user"
+                            hidden
+                            onChange={(event) => {
+                              onSavePhoto?.(
+                                s.id,
+                                Array.from(event.target.files || []),
+                              );
+                              event.target.value = "";
+                            }}
+                          />
+                        </label>
+                        <button
+                          className="row-action danger-action"
+                          title="حذف دانشجو"
+                          onClick={() => {
+                            if (
+                              window.confirm(`دانشجوی «${s.name}» حذف شود؟`)
+                            )
+                              onDelete(s.id);
+                          }}
+                        >
+                          <Icon name="bi-trash3" />
+                        </button>
+                      </div>
                     </td>
                   </tr>
                 ))}
@@ -432,8 +465,9 @@ export function Students({ students, query, setQuery, onAdd, onDelete }) {
         )}
       </div>
       <div className="page-note">
-        <Icon name="bi-info-circle" /> اطلاعات در فضای ذخیره‌سازی همین مرورگر
-        نگهداری می‌شود؛ برای انتقال به دستگاه دیگر از پشتیبان‌گیری استفاده کنید.
+        <Icon name="bi-info-circle" /> اطلاعات در دیتابیس PostgreSQL ذخیره و در
+        همهٔ بخش‌ها استفاده می‌شود؛ هر دانشجو فقط یک عکس پروفایل دارد که همان
+        عکس مرجع تشخیص چهره نیز هست.
       </div>
     </>
   );
@@ -755,6 +789,7 @@ export function Courses({
 export { Sessions } from "./Sessions.jsx";
 export function ManualAttendance({
   attendance,
+  students = [],
   query,
   setQuery,
   courses,
@@ -764,6 +799,9 @@ export function ManualAttendance({
   onExport,
 }) {
   const [reason, setReason] = useState("");
+  const photoById = new Map(
+    students.map((student) => [String(student.id), student.faceImage || ""]),
+  );
   return (
     <>
       <PanelTitle
@@ -831,9 +869,11 @@ export function ManualAttendance({
                 <tr key={`${a.id}-${a.course}-${a.sessionId || a.sessionDate || i}`}>
                   <td>
                     <div className="student-cell">
-                      <span className={`student-avatar avatar-${i % 5}`}>
-                        {a.name.charAt(0)}
-                      </span>
+                      <StudentAvatar
+                        name={a.name}
+                        photo={photoById.get(String(a.id)) || ""}
+                        index={i}
+                      />
                       <strong>{a.name}</strong>
                     </div>
                   </td>
@@ -944,7 +984,10 @@ export function ManualAttendance({
     </>
   );
 }
-export function AttendanceTable({ rows, compact = false }) {
+export function AttendanceTable({ rows, students = [], compact = false }) {
+  const photoById = new Map(
+    students.map((student) => [String(student.id), student.faceImage || ""]),
+  );
   if (!rows?.length)
     return (
       <EmptyState
@@ -973,9 +1016,11 @@ export function AttendanceTable({ rows, compact = false }) {
             >
               <td>
                 <div className="student-cell">
-                  <span className={`student-avatar avatar-${i % 5}`}>
-                    {a.name.charAt(0)}
-                  </span>
+                  <StudentAvatar
+                    name={a.name}
+                    photo={photoById.get(String(a.id)) || ""}
+                    index={i}
+                  />
                   <div>
                     <strong>{a.name}</strong>
                     <small className="student-id-small">{a.id}</small>
@@ -1078,6 +1123,12 @@ export function FaceAttendance({
     };
   }, []);
 
+  // فقط وقتی عکس پروفایل‌ها واقعاً عوض شود بازسازی می‌شود؛ بارگذاری مجدد
+  // دیتابیس پس از هر ثبت حضور، دیسکریپتورها را دوباره نمی‌سازد (صرفه‌جویی در منابع).
+  const photoKey = students
+    .map((student) => `${student.id}:${student.faceImage || ""}`)
+    .join("|");
+
   useEffect(() => {
     if (modelStatus !== "ready") return;
     let cancelled = false;
@@ -1089,12 +1140,9 @@ export function FaceAttendance({
     async function buildDescriptors() {
       const registered = [];
       let invalid = 0;
-      for (const student of students) {
-        const photos = student.faceImages?.length
-          ? student.faceImages
-          : student.faceImage
-            ? [student.faceImage]
-            : [];
+      for (const student of studentsRef.current) {
+        // فقط یک عکس پروفایلی برای هر دانشجو مبناست (همان عکسی که در کل پروژه دیده می‌شود).
+        const photos = student.faceImage ? [student.faceImage] : [];
         for (const photo of photos) {
           try {
             const image = await faceapi.fetchImage(photo);
@@ -1129,7 +1177,7 @@ export function FaceAttendance({
     return () => {
       cancelled = true;
     };
-  }, [modelStatus, students]);
+  }, [modelStatus, photoKey]);
 
   useEffect(() => {
     setLastRecognized(null);
@@ -1178,13 +1226,12 @@ export function FaceAttendance({
         if (cancelled) return;
         if (!results.length) {
           recognitionStreakRef.current.clear();
-          for (const [key, liveness] of livenessRef.current.entries()) {
-            liveness.lostFrames += 1;
-            if (liveness.lostFrames > 5) livenessRef.current.delete(key);
-          }
+          for (const [key, liveness] of livenessRef.current.entries())
+            if (!tickLivenessLost(liveness, false)) livenessRef.current.delete(key);
           if (classroomMode) setFaceBoxes([]);
-          const noFaceMessage =
-            "چهره دیده نشد؛ نور روبه‌رو را بیشتر کنید و فقط یک نفر مقابل دوربین بایستد.";
+          const noFaceMessage = classroomMode
+            ? "چهره‌ای در کادر نیست؛ نور و زاویهٔ دوربین را بررسی کنید."
+            : "چهره دیده نشد؛ نور روبه‌رو را بیشتر کنید و فقط یک نفر مقابل دوربین بایستد.";
           setRecognitionMessage((current) =>
             current === noFaceMessage ? current : noFaceMessage,
           );
@@ -1199,6 +1246,7 @@ export function FaceAttendance({
         const cropY = box ? (vh * scale - box.height) / 2 : 0;
         const currentIds = new Set();
         const claimed = new Set();
+        let livenessHint = null;
         const nextBoxes = results.map((result, faceIndex) => {
           const studentDistances = new Map();
           for (const reference of faceDescriptors) {
@@ -1230,45 +1278,17 @@ export function FaceAttendance({
             claimed.add(student.id);
             const streak = (recognitionStreakRef.current.get(key) || 0) + 1;
             recognitionStreakRef.current.set(key, streak);
-            let liveness = livenessRef.current.get(key);
-            if (!liveness) {
-              liveness = {
-                eyesClosed: false,
-                verified: false,
-                openBaseline: 0,
-                openSamples: 0,
-                lostFrames: 0,
-              };
-              livenessRef.current.set(key, liveness);
-            }
-            liveness.lostFrames = 0;
-            if (!classroomMode && !liveness.verified) {
-              const leftEyeRatio = eyeAspectRatio(
-                result.landmarks.getLeftEye(),
-              );
-              const rightEyeRatio = eyeAspectRatio(
-                result.landmarks.getRightEye(),
-              );
-              const eyeRatio = (leftEyeRatio + rightEyeRatio) / 2;
-              if (eyeRatio > 0.2 && eyeRatio < 0.75) {
-                liveness.openBaseline =
-                  liveness.openSamples < 4
-                    ? Math.max(liveness.openBaseline, eyeRatio)
-                    : liveness.openBaseline * 0.85 + eyeRatio * 0.15;
-                liveness.openSamples += 1;
+            let liveness = null;
+            if (!classroomMode) {
+              liveness = livenessRef.current.get(key);
+              if (!liveness) {
+                liveness = createLivenessState();
+                livenessRef.current.set(key, liveness);
               }
-              const closeThreshold = Math.max(
-                0.11,
-                liveness.openBaseline * 0.66,
-              );
-              const reopenThreshold = Math.max(
-                closeThreshold + 0.045,
-                liveness.openBaseline * 0.82,
-              );
-              if (liveness.openSamples >= 2 && eyeRatio < closeThreshold)
-                liveness.eyesClosed = true;
-              else if (liveness.eyesClosed && eyeRatio > reopenThreshold)
-                liveness.verified = true;
+              liveness.lostFrames = 0;
+              if (!liveness.verified)
+                // ماشین وضعیت پلک (کالیبره → بسته → باز → تأیید) از face/liveness.js
+                updateLiveness(liveness, averageEyeRatio(result.landmarks));
             }
             label = student.name;
             const existing = attendanceRef.current.find(
@@ -1291,14 +1311,11 @@ export function FaceAttendance({
                   time: existing.time || "",
                 });
               }
-            } else if (
-              ["غایب", "غیبت موجه", "خروج زودهنگام"].includes(existing?.status)
-            ) {
-              tone = "review";
-              label = `${student.name} · ${existing.status}`;
             } else if (!classroomMode && !liveness.verified) {
+              // وضعیت قبلی (غایب/غیبت موجه/…) مانع نیست؛ با پلک‌تائید شدن، حضور ثبت می‌شود.
               tone = "review";
-              label = `${student.name} · برای تأیید زنده‌بودن پلک بزنید`;
+              livenessHint = livenessPhaseLabel(liveness);
+              label = `${student.name} · ${livenessHint}`;
               const livenessNoticeKey = `${sessionId}:${student.id}`;
               if (!notifiedLivenessRef.current.has(livenessNoticeKey)) {
                 notifiedLivenessRef.current.add(livenessNoticeKey);
@@ -1306,7 +1323,7 @@ export function FaceAttendance({
                   `${student.name} شناسایی شد؛ برای ثبت حضور یک‌بار پلک بزنید.`,
                 );
               }
-            } else if (streak >= 2) {
+            } else if (streak >= (classroomMode ? 1 : 2)) {
               const noticeKey = `${sessionId}:${student.id}`;
               if (!notifiedSessionRef.current.has(noticeKey)) {
                 notifiedSessionRef.current.add(noticeKey);
@@ -1368,19 +1385,19 @@ export function FaceAttendance({
         for (const key of recognitionStreakRef.current.keys())
           if (!currentIds.has(key)) recognitionStreakRef.current.delete(key);
         for (const [key, liveness] of livenessRef.current.entries()) {
-          if (!currentIds.has(key)) {
-            liveness.lostFrames += 1;
-            if (liveness.lostFrames > 5) livenessRef.current.delete(key);
-          }
+          if (!currentIds.has(key) && !tickLivenessLost(liveness, true))
+            livenessRef.current.delete(key);
         }
         if (classroomMode) setFaceBoxes(nextBoxes);
         if (!faceDescriptors.length) {
           setRecognitionMessage(
             "چهره دیده شد؛ ابتدا عکس مرجع دانشجویان را ثبت کنید",
           );
-        } else if (nextBoxes.some((item) => item.label.includes("پلک بزنید"))) {
+        } else if (livenessHint) {
           setRecognitionMessage(
-            "هویت تطبیق شد؛ برای تأیید زنده‌بودن پلک بزنید",
+            livenessHint.includes("پلک بزنید")
+              ? "هویت تطبیق شد؛ برای تأیید زنده‌بودن یک‌بار پلک بزنید"
+              : livenessHint,
           );
         } else if (!nextBoxes.some((item) => item.tone === "recognized")) {
           const unknownMessage =
@@ -1414,7 +1431,11 @@ export function FaceAttendance({
         scanBusyRef.current = false;
       }
     }
-    const timer = window.setInterval(scanFrame, classroomMode ? 500 : 450);
+    // فاصلهٔ کوتاه لازم است تا پلک ۱۰۰–۴۰۰ میلی‌ثانیه‌ای بین فریم‌ها از دست نرود.
+    const timer = window.setInterval(
+      scanFrame,
+      classroomMode ? CLASSROOM_SCAN_INTERVAL_MS : FACE_SCAN_INTERVAL_MS,
+    );
     return () => {
       cancelled = true;
       window.clearInterval(timer);
@@ -1568,29 +1589,31 @@ export function FaceAttendance({
                       <div className="scan-line" />
                     </>
                   )}
-                  <span className="scan-label">
-                    <Icon
-                      name={
-                        modelStatus === "error"
-                          ? "bi-exclamation-triangle"
-                          : modelStatus !== "ready" ||
-                              descriptorsStatus === "loading"
-                            ? "bi-hourglass-split"
-                            : recognitionMessage.includes("ثبت شده")
-                              ? "bi-check-circle"
-                              : "bi-broadcast"
-                      }
-                    />
-                    {modelStatus === "error"
-                      ? "مدل تشخیص بارگذاری نشد"
-                      : modelStatus !== "ready"
-                        ? "در حال آماده‌سازی مدل تشخیص"
-                        : descriptorsStatus === "loading"
-                          ? "در حال بررسی عکس‌های مرجع"
-                          : !faceDescriptors.length
-                            ? "چهره دیده شد؛ ابتدا عکس مرجع ثبت کنید"
-                            : recognitionMessage}
-                  </span>
+                  {!classroomMode && (
+                    <span className="scan-label">
+                      <Icon
+                        name={
+                          modelStatus === "error"
+                            ? "bi-exclamation-triangle"
+                            : modelStatus !== "ready" ||
+                                descriptorsStatus === "loading"
+                              ? "bi-hourglass-split"
+                              : recognitionMessage.includes("ثبت شده")
+                                ? "bi-check-circle"
+                                : "bi-broadcast"
+                        }
+                      />
+                      {modelStatus === "error"
+                        ? "مدل تشخیص بارگذاری نشد"
+                        : modelStatus !== "ready"
+                          ? "در حال آماده‌سازی مدل تشخیص"
+                          : descriptorsStatus === "loading"
+                            ? "در حال بررسی عکس‌های مرجع"
+                            : !faceDescriptors.length
+                              ? "چهره دیده شد؛ ابتدا عکس مرجع ثبت کنید"
+                              : recognitionMessage}
+                    </span>
+                  )}
                 </div>
                 {classroomMode && (
                   <div className="face-box-layer" aria-live="polite">
@@ -1854,13 +1877,25 @@ export function FaceAttendance({
                     item.sessionId === sessionId &&
                     String(item.id) === String(student.id),
                 );
-                const kind = record
-                  ? attendanceStatusKind(record.status)
-                  : "unknown";
+                const kind = attendanceStatusKind(
+                  !record || record.status === "ثبت‌نشده"
+                    ? ABSENT_STATUS
+                    : record.status,
+                );
                 return (
                   <article key={student.id}>
-                    <span className={"classroom-roster-avatar " + kind}>
-                      {student.name.charAt(0)}
+                    <span
+                      className={
+                        "classroom-roster-avatar " +
+                        kind +
+                        (student.faceImage ? " has-photo" : "")
+                      }
+                    >
+                      {student.faceImage ? (
+                        <img src={student.faceImage} alt={student.name} />
+                      ) : (
+                        student.name.charAt(0)
+                      )}
                     </span>
                     <div>
                       <strong>{student.name}</strong>
@@ -1877,7 +1912,9 @@ export function FaceAttendance({
                               : "neutral"
                       }
                     >
-                      {record?.status || "ثبت‌نشده"}
+                      {!record || record.status === "ثبت‌نشده"
+                        ? ABSENT_STATUS
+                        : record.status}
                     </Badge>
                   </article>
                 );
@@ -1922,6 +1959,11 @@ export function FaceAttendance({
                   (item) =>
                     item.sessionId === sessionId && item.id === student.id,
                 );
+                // بدون رکورد یا رکورد «ثبت‌نشده» ⇒ ابتدا غایب نمایش داده می‌شود.
+                const shownStatus =
+                  !record || record.status === "ثبت‌نشده"
+                    ? ABSENT_STATUS
+                    : record.status;
                 return (
                   <article className="face-student" key={student.id}>
                     <div className="face-student-profile">
@@ -1939,16 +1981,14 @@ export function FaceAttendance({
                         <strong>{student.name}</strong>
                         <small>{student.id}</small>
                         <small>
-                          {(
-                            student.faceImages?.length ||
-                            (student.faceImage ? 1 : 0)
-                          ).toLocaleString("fa-IR")}{" "}
-                          عکس مرجع
+                          {student.faceImage
+                            ? "دارای عکس پروفایل"
+                            : "بدون عکس پروفایل"}
                         </small>
                         <small
-                          className={`face-attendance-status ${record ? attendanceStatusKind(record.status) : "unmarked"}`}
+                          className={`face-attendance-status ${attendanceStatusKind(shownStatus)}`}
                         >
-                          {record ? record.status : "—"}
+                          {shownStatus}
                         </small>
                       </div>
                     </div>
@@ -1958,12 +1998,14 @@ export function FaceAttendance({
                           src={student.faceImage}
                           alt={`تصویر ${student.name}`}
                           className="face-current-photo"
-                          title="عکس مرجع فعلی"
+                          title="عکس پروفایل این دانشجو"
                         />
                       )}
                       <label className="btn btn-light-outline face-photo-button">
                         <Icon name="bi-image" />{" "}
-                        {student.faceImage ? "تغییر عکس" : "ثبت عکس"}
+                        {student.faceImage
+                          ? "تغییر عکس پروفایل"
+                          : "ثبت عکس پروفایل"}
                         <input
                           type="file"
                           accept="image/*"
@@ -1979,11 +2021,10 @@ export function FaceAttendance({
                       </label>
                       <button
                         type="button"
-                        className={`btn btn-success-soft ${record && attendanceStatusKind(record.status) === "present" ? "selected" : ""}`}
-                        aria-pressed={Boolean(
-                          record &&
-                          attendanceStatusKind(record.status) === "present",
-                        )}
+                        className={`btn btn-success-soft ${attendanceStatusKind(shownStatus) === "present" ? "selected" : ""}`}
+                        aria-pressed={
+                          attendanceStatusKind(shownStatus) === "present"
+                        }
                         onClick={() =>
                           onMarkAttendance(student.id, PRESENT_STATUS, {
                             method: "manual",
@@ -1994,11 +2035,10 @@ export function FaceAttendance({
                       </button>
                       <button
                         type="button"
-                        className={`btn btn-light-outline ${record && attendanceStatusKind(record.status) === "absent" ? "selected" : ""}`}
-                        aria-pressed={Boolean(
-                          record &&
-                          attendanceStatusKind(record.status) === "absent",
-                        )}
+                        className={`btn btn-light-outline ${attendanceStatusKind(shownStatus) === "absent" ? "selected" : ""}`}
+                        aria-pressed={
+                          attendanceStatusKind(shownStatus) === "absent"
+                        }
                         onClick={() =>
                           onMarkAttendance(student.id, ABSENT_STATUS, {
                             method: "manual",
@@ -2238,7 +2278,7 @@ export function Reports({
           </div>
         </div>
         <div className="report-print-table">
-          <AttendanceTable rows={filtered} />
+          <AttendanceTable rows={filtered} students={students} />
         </div>
       </section>
       <section className="content-card report-audit-card">
@@ -2750,8 +2790,8 @@ export function StudentPortal({
           </div>
         </div>
         <div className="student-portal-user">
-          {photo ? (
-            <img src={photo} alt="" />
+          {photo || student.faceImage ? (
+            <img src={photo || student.faceImage} alt="" />
           ) : (
             <span className="student-portal-avatar">
               {student.name.charAt(0)}

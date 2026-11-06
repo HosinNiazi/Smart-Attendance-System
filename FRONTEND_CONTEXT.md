@@ -147,19 +147,24 @@ src/
 ## 5. Face Recognition Pipeline (`FaceAttendance`)
 
 1. **Model Load** (`useEffect []`): dynamic `import("@vladmandic/face-api")`, load 3 models from `/models/` (tinyFaceDetector, faceLandmark68TinyNet, faceRecognitionNet) → `modelStatus="ready"`.
-2. **Descriptor Build** (`useEffect [modelStatus, students]`): for each student, take `faceImage` (first reference photo), `fetchImage`, `detectSingleFace().withFaceLandmarks().withFaceDescriptor()` → array of `{studentId, descriptor}`.
-3. **Live Scan** (`useEffect [cameraState, modelStatus]` @ ~30fps):
+2. **Descriptor Build** (`useEffect [modelStatus, students]`): each student has **exactly one profile photo** (`student.faceImage`; backend `POST /students/:id/photos` deletes previous refs), `fetchImage`, `detectSingleFace().withFaceLandmarks().withFaceDescriptor()` → array of `{studentId, descriptor}`.
+3. **Live Scan** (`useEffect [cameraState, modelStatus]` @ `FACE_SCAN_INTERVAL_MS=160` (تشخیص چهره با پلک) / `CLASSROOM_SCAN_INTERVAL_MS=200` (دوربین کلاس: بدون پلک، ثبت روی یک فریم معتبر، چند چهره هم‌زمان)):
    - `detectAllFaces(video).withFaceLandmarks().withFaceDescriptors()`
    - For each face: Euclidean distance to all registered descriptors → best match if `< 0.54` AND margin to 2nd best `> 0.035`.
-   - **Liveness** (non-classroom): eye-aspect-ratio (EAR) blink detection — requires open→close→open sequence before auto-mark.
-   - Streak counter: 2 consecutive frames → `onMarkAttendance(studentId, "حاضر", {method:"face"})`.
+   - **Liveness** (non-classroom): shared state machine in `src/face/liveness.js` — `createLivenessState()` → `updateLiveness(state, averageEyeRatio(landmarks))` → calibrating(8 samples) → ready → closing/closed → opening → `verified`. Hints are surfaced via `livenessPhaseLabel()` into `recognitionMessage`. Lost-face cleanup uses `tickLivenessLost(state, keepVerified)`.
+   - Previous status (`غایب`/`غیبت موجه`/…) does **not** block registration: after liveness verification, 2 consecutive frames → `onMarkAttendance(studentId, "حاضر", {method:"face"})`.
+   - Streak counter: 2 consecutive frames → auto-mark present.
 4. **UI Overlay**: `faceBoxes` state → absolutely positioned boxes with labels (recognized/review/unknown) + scan-line animation.
+
+**Attendance defaults**: every session member starts as **`غایب` (absent)** — `openSession` converts `ثبت‌نشده` rows locally and `seedSessionAbsents()` pushes `status:"absent", method:"system"` to `PUT /api/attendance` (chunked, 8 parallel, once per session via `absentsSeededRef`; also triggered on entering the `face`/`class-camera` page). Only face detection (after blink) or a manual button changes it.
+
+**Profile photo**: the face-reference photo is the student's profile picture everywhere (Students table, Manual Attendance, Dashboard/Reports tables, classroom roster, face roster, student portal) via `StudentAvatar` in `shared.jsx`.
 
 **Key Tunables** (in `pages.jsx`):
 - `scoreThreshold: 0.5` (detection)
 - `distance < 0.54` (match)
 - `margin > 0.035` (uniqueness)
-- `EAR closeThreshold ≈ 0.11`, `reopenThreshold ≈ openBaseline * 0.82`
+- EAR thresholds live in `src/face/liveness.js` (`MIN/MAX_BASELINE`, `CLOSE_RATIO`, `REOPEN_RATIO`)
 
 ---
 

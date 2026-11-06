@@ -54,4 +54,21 @@ export function EmptyState({ icon = "bi-inbox", title, text }) {
     </div>
   );
 }
+/** آواتار دانشجو: عکس پروفایل (عکس تشخیص چهره) یا حرف اول نام. */
+export function StudentAvatar({ name = "", photo = "", index = 0, className = "" }) {
+  const cls = className || `student-avatar avatar-${index % 5}`;
+  if (photo)
+    return (
+      <a
+        href={photo}
+        target="_blank"
+        rel="noopener noreferrer"
+        className={`${cls} has-photo`}
+        title="مشاهدهٔ عکس پروفایل"
+      >
+        <img src={photo} alt={name} loading="lazy" />
+      </a>
+    );
+  return <span className={cls}>{name.charAt(0) || "—"}</span>;
+}
 

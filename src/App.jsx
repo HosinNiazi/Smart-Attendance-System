@@ -35,90 +35,6 @@ import {
   upsertAttendance,
 } from "./api/client.js";
 
-const initialStudents = [
-  {
-    id: "40123001",
-    name: "آرمان محمدی",
-    major: "مهندسی کامپیوتر",
-    term: "۳",
-    phone: "۰۹۱۲۱۲۳۴۵۶۷",
-    status: "فعال",
-  },
-  {
-    id: "40123002",
-    name: "نگار رضایی",
-    major: "مهندسی کامپیوتر",
-    term: "۳",
-    phone: "۰۹۳۵۱۲۳۴۵۶۷",
-    status: "فعال",
-  },
-  {
-    id: "40123003",
-    name: "پارسا کریمی",
-    major: "فناوری اطلاعات",
-    term: "۲",
-    phone: "۰۹۱۵۱۲۳۴۵۶۷",
-    status: "فعال",
-  },
-  {
-    id: "40123004",
-    name: "سارا احمدی",
-    major: "مهندسی کامپیوتر",
-    term: "۴",
-    phone: "۰۹۹۰۱۲۳۴۵۶۷",
-    status: "فعال",
-  },
-  {
-    id: "40123005",
-    name: "امیرحسین مرادی",
-    major: "فناوری اطلاعات",
-    term: "۲",
-    phone: "۰۹۱۲۹۸۷۶۵۴۳",
-    status: "غیرفعال",
-  },
-  {
-    id: "40123006",
-    name: "مریم جعفری",
-    major: "مهندسی کامپیوتر",
-    term: "۳",
-    phone: "۰۹۳۶۱۲۳۴۵۶۷",
-    status: "فعال",
-  },
-];
-const initialCourses = [
-  {
-    id: "CS301",
-    title: "برنامه‌سازی پیشرفته",
-    teacher: "مهندس نادری",
-    time: "شنبه، ۱۰:۰۰ تا ۱۲:۰۰",
-    room: "کلاس ۲۰۴",
-    count: 28,
-  },
-  {
-    id: "CS204",
-    title: "پایگاه داده",
-    teacher: "دکتر حسینی",
-    time: "یکشنبه، ۱۳:۰۰ تا ۱۵:۰۰",
-    room: "آزمایشگاه ۱",
-    count: 24,
-  },
-  {
-    id: "CS210",
-    title: "ساختمان داده",
-    teacher: "مهندس احمدی",
-    time: "دوشنبه، ۰۸:۰۰ تا ۱۰:۰۰",
-    room: "کلاس ۱۰۲",
-    count: 32,
-  },
-  {
-    id: "MA205",
-    title: "ریاضی گسسته",
-    teacher: "دکتر کریمی",
-    time: "سه‌شنبه، ۱۰:۰۰ تا ۱۲:۰۰",
-    room: "کلاس ۳۰۱",
-    count: 26,
-  },
-];
 const navGroups = [
   {
     title: "نمای کلی",
@@ -166,43 +82,6 @@ const ROLE_PERMISSIONS = {
     "profile",
   ]),
 };
-const todayAttendance = [
-  {
-    id: "40123001",
-    name: "آرمان محمدی",
-    course: "برنامه‌سازی پیشرفته",
-    time: "۱۰:۰۲",
-    status: "حاضر",
-  },
-  {
-    id: "40123002",
-    name: "نگار رضایی",
-    course: "برنامه‌سازی پیشرفته",
-    time: "۱۰:۰۴",
-    status: "حاضر",
-  },
-  {
-    id: "40123003",
-    name: "پارسا کریمی",
-    course: "پایگاه داده",
-    time: "۱۳:۰۸",
-    status: "تأخیر",
-  },
-  {
-    id: "40123004",
-    name: "سارا احمدی",
-    course: "برنامه‌سازی پیشرفته",
-    time: "—",
-    status: "غایب",
-  },
-  {
-    id: "40123006",
-    name: "مریم جعفری",
-    course: "ساختمان داده",
-    time: "۰۸:۰۱",
-    status: "حاضر",
-  },
-];
 const faDate = new Intl.DateTimeFormat("fa-IR", {
   weekday: "long",
   day: "numeric",
@@ -210,6 +89,7 @@ const faDate = new Intl.DateTimeFormat("fa-IR", {
   year: "numeric",
 });
 const PRESENT_STATUS = "\u062d\u0627\u0636\u0631";
+const ABSENT_STATUS = "\u063a\u0627\u06cc\u0628";
 const ACCESS_ROLE_LABELS = {
   admin: "\u0645\u062f\u06cc\u0631",
   teacher: "\u0627\u0633\u062a\u0627\u062f",
@@ -373,26 +253,17 @@ export default function App() {
       : "light",
   );
   const [students, setStudents] = useState(() => {
-    const saved = readStoredValue("smart-attendance:students", initialStudents);
+    const saved = readStoredValue("smart-attendance:students", null);
     return Array.isArray(saved)
       ? saved.filter(
           (student) =>
             student && student.id != null && typeof student.name === "string",
         )
-      : initialStudents;
+      : [];
   });
   const [courses, setCourses] = useState(() => {
     const saved = readStoredValue("smart-attendance:courses", null);
-    if (!Array.isArray(saved)) {
-      const defaultRoster = initialStudents
-        .filter((student) => student.status !== "غیرفعال")
-        .map((student) => student.id);
-      return initialCourses.map((course) => ({
-        ...course,
-        studentIds: defaultRoster,
-        count: defaultRoster.length,
-      }));
-    }
+    if (!Array.isArray(saved)) return [];
     return saved
       .filter(
         (course) =>
@@ -408,10 +279,7 @@ export default function App() {
       });
   });
   const [attendance, setAttendance] = useState(() => {
-    const saved = readStoredValue(
-      "smart-attendance:attendance",
-      todayAttendance,
-    );
+    const saved = readStoredValue("smart-attendance:attendance", null);
     return Array.isArray(saved)
       ? saved.filter(
           (record) =>
@@ -420,9 +288,10 @@ export default function App() {
             typeof record.name === "string" &&
             typeof record.course === "string",
         )
-      : todayAttendance;
+      : [];
   });
   const attendanceRef = useRef(attendance);
+  const absentsSeededRef = useRef(new Set());
   const [query, setQuery] = useState("");
   const [courseFilter, setCourseFilter] = useState("همه درس‌ها");
   const [toast, setToast] = useState("");
@@ -435,7 +304,7 @@ export default function App() {
     term: "۳",
     phone: "",
   });
-  const [sessionCourse, setSessionCourse] = useState(initialCourses[0].title);
+  const [sessionCourse, setSessionCourse] = useState("");
   const [sessionDate, setSessionDate] = useState(getLocalDate);
   const [sessionHistory, setSessionHistory] = useState(() => {
     const saved = readStoredValue("smart-attendance:sessions", {});
@@ -806,14 +675,7 @@ export default function App() {
       if (Array.isArray(data.voiceProfiles))
         await restoreAudioProfiles(data.voiceProfiles);
       setStudents(data.students);
-      const restoredCourses = Array.isArray(data.courses)
-        ? data.courses
-        : initialCourses.map((course) => ({
-            ...course,
-            studentIds: data.students
-              .filter((student) => student.status !== "غیرفعال")
-              .map((student) => student.id),
-          }));
+      const restoredCourses = Array.isArray(data.courses) ? data.courses : [];
       setCourses(
         restoredCourses.map((course) => {
           const studentIds = Array.isArray(course.studentIds)
@@ -1226,7 +1088,9 @@ export default function App() {
     try {
       await uploadStudentPhoto(dbId, file);
       await loadFromServer({ silent: true });
-      notify("عکس مرجع دانشجو در دیتابیس ذخیره شد (عکس قبلی جایگزین شد).");
+      notify(
+        "عکس پروفایل دانشجو ذخیره شد؛ همین عکس در تشخیص چهره و همهٔ بخش‌های پروژه استفاده می‌شود.",
+      );
     } catch (error) {
       notify(error.message || "ذخیره عکس انجام نشد. لطفاً تصاویر دیگری انتخاب کنید.");
     }
@@ -1394,37 +1258,51 @@ export default function App() {
       : students
           .filter((student) => student.status !== "غیرفعال")
           .map((student) => student.id);
+    const pendingIds = [];
     const committed = commitAttendance((current) => {
       const records = [...current];
       roster.forEach((studentId) => {
-        if (
-          records.some(
-            (record) =>
-              record.sessionId === event.id && record.id === studentId,
-          )
-        )
-          return;
         const student = students.find((item) => item.id === studentId);
-        if (student)
-          records.unshift({
-            id: student.id,
-            name: student.name,
-            course: event.course,
-            sessionId: event.id,
-            sessionDate: event.date,
-            time: "—",
-            status: "ثبت‌نشده",
-            teacher: session.teacher,
-            history: [
-              {
-                from: "—",
-                to: "ثبت‌نشده",
-                changedAt: now,
-                changedBy: loginName,
-                reason: "شروع جلسه",
-              },
-            ],
-          });
+        if (!student) return;
+        const index = records.findIndex(
+          (record) =>
+            record.sessionId === event.id && record.id === studentId,
+        );
+        const existing = index >= 0 ? records[index] : null;
+        // فقط رکوردهای ثبت‌نشده یا هنوز همگام‌نشده به «غایب» تبدیل می‌شوند؛
+        // حضور/تأخیر ثبت‌شده دست‌نخورده می‌ماند.
+        const needsAbsent =
+          !existing ||
+          !existing.databaseId ||
+          existing.status === "ثبت‌نشده";
+        if (!needsAbsent) return;
+        pendingIds.push(studentId);
+        // پیش‌فرض همه «غایب» است؛ فقط تشخیص چهره یا ثبت دستی آن را تغییر می‌دهد.
+        const record = {
+          ...(existing || {}),
+          id: student.id,
+          name: student.name,
+          course: event.course,
+          sessionId: event.id,
+          sessionDate: event.date,
+          time: existing?.time || "—",
+          status: ABSENT_STATUS,
+          method: "system",
+          teacher: session.teacher,
+          history: [
+            ...(existing?.history || []),
+            {
+              from: existing?.status || "—",
+              to: ABSENT_STATUS,
+              changedAt: now,
+              changedBy: loginName,
+              reason: "پیش‌فرض ابتدای جلسه",
+              method: "system",
+            },
+          ],
+        };
+        if (index >= 0) records[index] = record;
+        else records.unshift(record);
       });
       return records;
     });
@@ -1434,8 +1312,76 @@ export default function App() {
       );
       return;
     }
+    if (session.databaseId && event.studentIds?.length) {
+      absentsSeededRef.current.add(event.id);
+      seedSessionAbsents(session.databaseId, pendingIds);
+    }
     go("face");
   }
+
+  /**
+   * وضعیت پیش‌فرض «غایب» را برای اعضای جلسه در دیتابیس می‌نشاند تا بعد از هر
+   * بارگذاری از سرور هم همین وضعیت پایدار بماند (رکورد فقط با تشخیص چهره یا
+   * ثبت دستی تغییر می‌کند).
+   */
+  function seedSessionAbsents(dbSessionId, frontendIds) {
+    const dbIds = [
+      ...new Set(
+        [...new Set(frontendIds)]
+          .map((frontendId) => studentDatabaseId(frontendId))
+          .filter(Boolean),
+      ),
+    ];
+    if (!dbIds.length) return;
+    // اجرای پلکانی (۸ درخواست هم‌زمان) تا سرور و شبکه تحت فشار قرار نگیرد.
+    const CHUNK = 8;
+    const run = async () => {
+      for (let index = 0; index < dbIds.length; index += CHUNK) {
+        await Promise.all(
+          dbIds.slice(index, index + CHUNK).map((dbStudentId) =>
+            upsertAttendance({
+              sessionId: dbSessionId,
+              studentId: dbStudentId,
+              status: "absent",
+              method: "system",
+              reason: "پیش‌فرض ابتدای جلسه",
+            }).catch((error) => {
+              console.warn("Could not seed absent record", error);
+              return null;
+            }),
+          ),
+        );
+      }
+      await loadFromServer({ silent: true });
+    };
+    run().catch((error) => console.warn("Seed absent failed", error));
+  }
+
+  /** هر جلسه فقط یک‌بار وضعیت پیش‌فرض «غایب» را برای اعضایش در دیتابیس می‌نشاند. */
+  function ensureSessionAbsents(sessionKey) {
+    if (absentsSeededRef.current.has(sessionKey)) return;
+    const session = sessionHistory[sessionKey];
+    if (!session?.databaseId || !session.studentIds?.length) return;
+    absentsSeededRef.current.add(sessionKey);
+    const pending = session.studentIds.filter((frontendId) => {
+      const record = attendanceRef.current.find(
+        (item) =>
+          item.sessionId === sessionKey &&
+          String(item.id) === String(frontendId),
+      );
+      return !record || !record.databaseId || record.status === "ثبت‌نشده";
+    });
+    if (pending.length)
+      seedSessionAbsents(session.databaseId, pending);
+  }
+
+  // با ورود به بخش تشخیص چهره/دوربین کلاس، همهٔ اعضا ابتدا غایب‌اند و فقط
+  // تشخیص چهره (با پلک) یا ثبت دستی می‌تواند وضعیت را تغییر دهد.
+  useEffect(() => {
+    if (active === "face" || active === "class-camera")
+      ensureSessionAbsents(sessionId);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [active, sessionId]);
   async function finalizeSession(id) {
     const session = sessionHistory[id];
     if (!session) return;
@@ -1919,6 +1865,7 @@ export default function App() {
                   notify(error.message || "غیرفعال‌سازی دانشجو انجام نشد.");
                 }
               }}
+              onSavePhoto={saveStudentPhoto}
             />
           )}
           {active === "courses" && (
@@ -1980,6 +1927,7 @@ export default function App() {
           {active === "manual" && (
             <ManualAttendance
               attendance={filteredAttendance}
+              students={students}
               query={query}
               setQuery={setQuery}
               courses={courses}

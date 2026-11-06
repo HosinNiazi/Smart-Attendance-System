@@ -1,5 +1,5 @@
 import React, { useEffect, useRef, useState } from "react";
-import { Icon, PanelTitle, Badge, EmptyState } from "../components/shared.jsx";
+import { Icon, PanelTitle, Badge, EmptyState, StudentAvatar } from "../components/shared.jsx";
 import { saveClip } from "./audioStore.js";
 
 const PHRASE = "امروز برای حضور در کلاس جمله ثابت را واضح می‌خوانم";
@@ -325,7 +325,7 @@ export function VoiceAttendance({ courses, students, attendance, sessionCourse, 
         </div>
       </section>
       <section className="content-card face-roster-card voice-roster-card"><div className="card-heading"><div><h3>نمونه‌های مرجع دانشجویان</h3><p>برای هر دانشجو تا سه نمونه در شرایط متفاوت نگه‌داری می‌شود.</p></div><Badge tone="neutral">{registered.size} از {students.length}</Badge></div>
-        <div className="voice-student-list">{students.length ? students.map((student) => <article className="face-student" key={student.id}><div className="face-student-profile"><span className="face-student-placeholder"><Icon name="bi-person" /></span><div><strong>{student.name}</strong><small>{student.id}</small><small>{registered.has(student.id) ? "نمونهٔ معتبر ثبت شده" : hasStoredProfile.has(student.id) ? "نمونهٔ قدیمی؛ نیازمند ضبط مجدد" : "نمونه ثبت نشده"}</small></div></div><button className="btn btn-light-outline" disabled={Boolean(recording) || busy} onClick={() => setModalTarget(student.id)}><Icon name="bi-upload" /> {registered.has(student.id) ? "افزودن نمونه" : "ثبت نمونه"}</button></article>) : <EmptyState icon="bi-people" title="دانشجویی برای ثبت نمونه نیست" text="ابتدا فهرست دانشجویان را تکمیل کنید." />}</div>
+        <div className="voice-student-list">{students.length ? students.map((student, index) => <article className="face-student voice-student" key={student.id}><div className="face-student-profile"><span className={`voice-avatar-halo ${registered.has(student.id) ? "is-ready" : hasStoredProfile.has(student.id) ? "is-stale" : "is-empty"}`}><StudentAvatar name={student.name} photo={student.faceImage} index={index} /></span><div><strong>{student.name}</strong><small>{student.id}</small><small>{registered.has(student.id) ? "نمونهٔ معتبر ثبت شده" : hasStoredProfile.has(student.id) ? "نمونهٔ قدیمی؛ نیازمند ضبط مجدد" : "نمونه ثبت نشده"}</small></div></div><button className="btn btn-light-outline" disabled={Boolean(recording) || busy} onClick={() => setModalTarget(student.id)}><Icon name="bi-upload" /> {registered.has(student.id) ? "افزودن نمونه" : "ثبت نمونه"}</button></article>) : <EmptyState icon="bi-people" title="دانشجویی برای ثبت نمونه نیست" text="ابتدا فهرست دانشجویان را تکمیل کنید." />}</div>
       </section>
     </div>
     <section className="content-card face-roster-card voice-session-record-card"><div className="card-heading"><div><h3>وضعیت جلسه</h3><p>حضورهای ثبت‌شده در {sessionCourse}</p></div><Badge tone="neutral">{records.length} رکورد</Badge></div>{records.length ? <div className="voice-session-records">{records.map((record) => <div key={record.id}><strong>{record.name}</strong><span>{record.status}</span><small>{record.time}</small></div>)}</div> : <p>هنوز رکوردی برای این جلسه ثبت نشده است.</p>}</section>
