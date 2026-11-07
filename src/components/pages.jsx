@@ -1,5 +1,6 @@
-import React, { useEffect, useState } from "react";
+import React, { useEffect, useRef, useState } from "react";
 import { Badge, EmptyState, Icon, PanelTitle, StatCard, StudentAvatar } from "./shared.jsx";
+import { HelpChat } from "../help/HelpChat.jsx";
 import {
   CLASSROOM_SCAN_INTERVAL_MS,
   FACE_SCAN_INTERVAL_MS,
@@ -2695,8 +2696,21 @@ export function StudentPortal({
   records,
   courses = [],
   photo,
+  theme = "light",
+  onUploadPhoto,
+  onToggleTheme,
   onLogout,
 }) {
+  const [tab, setTab] = useState("overview");
+  const [helpOpen, setHelpOpen] = useState(false);
+  const [uploading, setUploading] = useState(false);
+  const [photoMessage, setPhotoMessage] = useState({ tone: "", text: "" });
+  const fileInputRef = useRef(null);
+
+  useEffect(() => {
+    setPhotoMessage({ tone: "", text: "" });
+  }, [student?.id]);
+
   if (!student) {
     return (
       <div className="student-portal student-portal-empty" dir="rtl">
@@ -2777,6 +2791,89 @@ export function StudentPortal({
         }).format(date);
   };
 
+  const photoSrc = student.faceImage || photo || "";
+  const allowedPhotoTypes = ["image/jpeg", "image/png", "image/webp"];
+
+  async function handlePhotoChange(event) {
+    const file = event.target.files?.[0];
+    event.target.value = "";
+    if (!file) return;
+
+    if (!allowedPhotoTypes.includes(file.type)) {
+      setPhotoMessage({
+        tone: "error",
+        text: "فقط تصویر با فرمت JPG، PNG یا WebP انتخاب کنید.",
+      });
+      return;
+    }
+    if (file.size > 5 * 1024 * 1024) {
+      setPhotoMessage({
+        tone: "error",
+        text: "حجم تصویر باید کمتر از ۵ مگابایت باشد.",
+      });
+      return;
+    }
+
+    setUploading(true);
+    setPhotoMessage({ tone: "", text: "" });
+    try {
+      await onUploadPhoto?.(file);
+      setPhotoMessage({
+        tone: "success",
+        text: "عکس پروفایل به‌روزرسانی شد؛ همین عکس مرجع تشخیص چهره هم هست.",
+      });
+    } catch (error) {
+      setPhotoMessage({
+        tone: "error",
+        text:
+          error?.message ||
+          "بارگذاری عکس انجام نشد. دوباره تلاش کنید یا با مدیر تماس بگیرید.",
+      });
+    } finally {
+      setUploading(false);
+    }
+  }
+
+  const tabs = [
+    { id: "overview", label: "نمای کلی", icon: "bi-grid-1x2" },
+    { id: "profile", label: "پروفایل من", icon: "bi-person-circle" },
+    { id: "help", label: "کمک و ارتباط با ما", icon: "bi-headset" },
+  ];
+
+  const faqs = [
+    {
+      question: "چطور عکس پروفایلم را تغییر دهم؟",
+      answer:
+        "به بخش «پروفایل من» بروید، دکمهٔ «تغییر عکس پروفایل» را بزنید و یک تصویر روشن با فرمت JPG، PNG یا WebP (حداکثر ۵ مگابایت) انتخاب کنید. همین عکس هم آواتار شماست و هم عکس مرجع تشخیص چهره.",
+    },
+    {
+      question: "وضعیت حضورم چطور محاسبه می‌شود؟",
+      answer:
+        "هر جلسه ابتدا برای همهٔ دانشجویان «غایب» ثبت می‌شود. سپس اگر با تشخیص چهره، صدا یا ثبت دستی حاضر شوید، وضعیت شما به «حاضر» یا «تأخیر» تغییر می‌کند. درصد حضور از نسبت حضورها به کل جلسات ثبت‌شده محاسبه می‌شود.",
+    },
+    {
+      question: "اگر عکسم برای تشخیص چهره پذیرفته نشود چه کنم؟",
+      answer:
+        "از عکس روبه‌رو با نور یکنواخت، بدون عینک تیره یا ماسک و با پس‌زمینهٔ ساده استفاده کنید. فقط یک چهره در تصویر باشد و کیفیت آن واضح باشد. سپس از بخش پروفایل عکس را دوباره بارگذاری کنید.",
+    },
+    {
+      question: "چرا بعضی جلسات برای من «غایب» ثبت شده است؟",
+      answer:
+        "اگر در جلسه‌ای حضور شما با هیچ روشی (چهره، صدا یا ثبت دستی) تأیید نشود، وضعیت پیش‌فرض «غایب» باقی می‌ماند. اگر حضورتان اشتباه ثبت شده، با مدیر یا استاد درس هماهنگ کنید.",
+    },
+    {
+      question: "چه کسی اطلاعات من را می‌بیند؟",
+      answer:
+        "این پنل فقط اطلاعات مرتبط با شمارهٔ دانشجویی شما را نشان می‌دهد. مدیر سامانه و استاد درس برای ثبت و بررسی حضور به اطلاعات کلاس دسترسی دارند.",
+    },
+  ];
+
+  const supportMailto = `mailto:admin@hozorban.local?subject=${encodeURIComponent(
+    `درخواست پشتیبانی - ${student.name} - ${student.id}`,
+  )}&body=${encodeURIComponent(
+    `نام: ${student.name}\nشماره دانشجویی: ${student.id}\n\nمتن درخواست:\n`,
+  )}`;
+
   return (
     <div className="student-portal" dir="rtl">
       <header className="student-portal-topbar">
@@ -2790,23 +2887,58 @@ export function StudentPortal({
           </div>
         </div>
         <div className="student-portal-user">
-          {photo || student.faceImage ? (
-            <img src={photo || student.faceImage} alt="" />
-          ) : (
-            <span className="student-portal-avatar">
-              {student.name.charAt(0)}
-            </span>
-          )}
+          <button
+            type="button"
+            className="student-avatar-button"
+            title="مشاهدهٔ پروفایل"
+            aria-label="مشاهدهٔ پروفایل"
+            onClick={() => setTab("profile")}
+          >
+            {photoSrc ? (
+              <img src={photoSrc} alt="" />
+            ) : (
+              <span className="student-portal-avatar">
+                {student.name.charAt(0)}
+              </span>
+            )}
+          </button>
           <div>
             <strong>{student.name}</strong>
             <small>دانشجو · {student.id}</small>
           </div>
+          <button
+            className="icon-button student-theme-toggle"
+            type="button"
+            aria-label={
+              theme === "dark" ? "فعال‌کردن تم روشن" : "فعال‌کردن تم تیره"
+            }
+            title={theme === "dark" ? "تم روشن" : "تم تیره"}
+            onClick={onToggleTheme}
+          >
+            <Icon name={theme === "dark" ? "bi-sun" : "bi-moon-stars"} />
+          </button>
           <button className="btn btn-light-outline" onClick={onLogout}>
             <Icon name="bi-box-arrow-left" /> خروج
           </button>
         </div>
       </header>
+      <nav className="student-portal-tabs" aria-label="بخش‌های پنل دانشجویی">
+        {tabs.map((item) => (
+          <button
+            key={item.id}
+            type="button"
+            className={tab === item.id ? "active" : ""}
+            aria-current={tab === item.id ? "page" : undefined}
+            onClick={() => setTab(item.id)}
+          >
+            <Icon name={item.icon} />
+            <span>{item.label}</span>
+          </button>
+        ))}
+      </nav>
       <main className="student-portal-content">
+        {tab === "overview" && (
+          <>
         <section className="student-welcome-card">
           <div className="student-welcome-copy">
             <span className="student-welcome-eyebrow">
@@ -2960,7 +3092,279 @@ export function StudentPortal({
             </div>
           </aside>
         </div>
+          </>
+        )}
+
+        {tab === "profile" && (
+          <section className="student-profile-section">
+            <div className="student-profile-hero content-card">
+              <div>
+                <span className="eyebrow">حساب دانشجویی</span>
+                <h1>پروفایل من</h1>
+                <p>عکس پروفایل و اطلاعات دانشجویی خود را مدیریت کنید.</p>
+              </div>
+              <span className="student-section-badge">
+                <Icon name="bi-shield-check" /> یک عکس، دو کاربرد
+              </span>
+            </div>
+            <div className="student-profile-grid">
+              <article className="content-card student-photo-card">
+                <div className="student-photo-preview">
+                  {photoSrc ? (
+                    <img src={photoSrc} alt="عکس پروفایل" />
+                  ) : (
+                    <span className="student-photo-placeholder">
+                      <Icon name="bi-person-bounding-box" />
+                    </span>
+                  )}
+                  {uploading && (
+                    <div className="student-photo-overlay">
+                      <span
+                        className="spinner-border spinner-border-sm"
+                        role="status"
+                        aria-hidden="true"
+                      />
+                      <span>در حال بارگذاری…</span>
+                    </div>
+                  )}
+                </div>
+                <div className="student-photo-status-row">
+                  <span
+                    className={`student-photo-status ${photoSrc ? "ok" : "missing"}`}
+                  >
+                    <Icon
+                      name={
+                        photoSrc
+                          ? "bi-check-circle-fill"
+                          : "bi-exclamation-circle"
+                      }
+                    />
+                    {photoSrc ? "عکس مرجع ثبت شده" : "عکس مرجع ثبت نشده"}
+                  </span>
+                </div>
+                <input
+                  ref={fileInputRef}
+                  className="visually-hidden"
+                  type="file"
+                  accept="image/jpeg,image/png,image/webp"
+                  onChange={handlePhotoChange}
+                />
+                <button
+                  type="button"
+                  className="btn btn-primary w-100"
+                  disabled={uploading}
+                  onClick={() => fileInputRef.current?.click()}
+                >
+                  <Icon name="bi-camera" />{" "}
+                  {uploading
+                    ? "در حال بارگذاری…"
+                    : photoSrc
+                      ? "تغییر عکس پروفایل"
+                      : "افزودن عکس پروفایل"}
+                </button>
+                {photoMessage.text && (
+                  <p
+                    className={`student-photo-message ${photoMessage.tone}`}
+                    role="status"
+                  >
+                    {photoMessage.text}
+                  </p>
+                )}
+                <p className="student-photo-note">
+                  <Icon name="bi-info-circle" /> همین عکس هم آواتار پروفایل
+                  شماست و هم عکس مرجع تشخیص چهره. با بارگذاری عکس جدید، عکس
+                  قبلی جایگزین می‌شود.
+                </p>
+              </article>
+              <article className="content-card student-info-card">
+                <div className="student-section-heading">
+                  <div>
+                    <span>مشخصات ثبت‌شده</span>
+                    <h2>اطلاعات دانشجویی</h2>
+                  </div>
+                </div>
+                <dl className="student-info-list">
+                  <div>
+                    <dt>نام و نام خانوادگی</dt>
+                    <dd>{student.name}</dd>
+                  </div>
+                  <div>
+                    <dt>شماره دانشجویی</dt>
+                    <dd>{student.id}</dd>
+                  </div>
+                  <div>
+                    <dt>رشته تحصیلی</dt>
+                    <dd>{student.major || "—"}</dd>
+                  </div>
+                  <div>
+                    <dt>ترم</dt>
+                    <dd>{student.term || "—"}</dd>
+                  </div>
+                  <div>
+                    <dt>شماره تماس</dt>
+                    <dd>{student.phone || "—"}</dd>
+                  </div>
+                  <div>
+                    <dt>وضعیت عکس</dt>
+                    <dd>{photoSrc ? "ثبت شده" : "ثبت نشده"}</dd>
+                  </div>
+                </dl>
+                <p className="student-info-note">
+                  <Icon name="bi-lock" /> برای ویرایش اطلاعات هویتی با مدیر
+                  سامانه تماس بگیرید.
+                </p>
+              </article>
+            </div>
+            <article className="content-card student-photo-tips">
+              <div className="student-section-heading">
+                <div>
+                  <span>دقت بیشتر</span>
+                  <h2>راهنمای عکس مناسب برای تشخیص چهره</h2>
+                </div>
+              </div>
+              <ul>
+                <li>
+                  <Icon name="bi-sun" /> نور یکنواخت و کافی؛ از نور پشت سر
+                  خودداری کنید.
+                </li>
+                <li>
+                  <Icon name="bi-person-bounding-box" /> چهرهٔ روبه‌رو، کامل و
+                  بدون کلاه یا ماسک.
+                </li>
+                <li>
+                  <Icon name="bi-eyeglasses" /> از عینک تیره یا بازتاب‌دار
+                  استفاده نکنید.
+                </li>
+                <li>
+                  <Icon name="bi-image" /> فرمت JPG، PNG یا WebP با حجم حداکثر
+                  ۵ مگابایت.
+                </li>
+              </ul>
+            </article>
+          </section>
+        )}
+
+        {tab === "help" && (
+          <section className="student-help-section">
+            <div className="student-help-hero">
+              <div className="student-help-copy">
+                <span className="student-welcome-eyebrow">
+                  <i /> پشتیبانی و راهنما
+                </span>
+                <h1>چطور می‌توانیم کمک کنیم؟</h1>
+                <p>
+                  دستیار هوشمند حضوربان دربارهٔ امکانات سامانه، حضور و غیاب،
+                  عکس پروفایل و مشکلات رایج پاسخ می‌دهد.
+                </p>
+                <div className="student-help-actions">
+                  <button
+                    className="btn btn-primary"
+                    type="button"
+                    onClick={() => setHelpOpen(true)}
+                  >
+                    <Icon name="bi-stars" /> گفت‌وگو با دستیار
+                  </button>
+                  <a className="btn btn-light-outline" href={supportMailto}>
+                    <Icon name="bi-envelope" /> ارسال ایمیل به مدیر
+                  </a>
+                </div>
+              </div>
+              <span className="student-help-mark">
+                <Icon name="bi-headset" />
+              </span>
+            </div>
+            <div className="student-help-grid">
+              <section className="content-card student-faq-card">
+                <div className="student-section-heading">
+                  <div>
+                    <span>پاسخ سریع</span>
+                    <h2>سؤال‌های پرتکرار</h2>
+                  </div>
+                </div>
+                <div className="student-faq-list">
+                  {faqs.map((item, index) => (
+                    <details
+                      className="student-faq-item"
+                      key={item.question}
+                      open={index === 0}
+                    >
+                      <summary>
+                        <span>{item.question}</span>
+                        <Icon name="bi-chevron-down" />
+                      </summary>
+                      <p>{item.answer}</p>
+                    </details>
+                  ))}
+                </div>
+              </section>
+              <aside className="content-card student-contact-card">
+                <div className="student-section-heading">
+                  <div>
+                    <span>ارتباط با ما</span>
+                    <h2>راه‌های تماس</h2>
+                  </div>
+                </div>
+                <div className="student-contact-row">
+                  <span>
+                    <Icon name="bi-envelope-at" />
+                  </span>
+                  <div>
+                    <strong>رایانامهٔ مدیر سامانه</strong>
+                    <a href={supportMailto}>admin@hozorban.local</a>
+                  </div>
+                </div>
+                <div className="student-contact-row">
+                  <span>
+                    <Icon name="bi-chat-dots" />
+                  </span>
+                  <div>
+                    <strong>دستیار هوشمند</strong>
+                    <small>
+                      پاسخ فوری دربارهٔ امکانات سامانه، بدون محدودیت ساعت.
+                    </small>
+                  </div>
+                </div>
+                <div className="student-contact-row">
+                  <span>
+                    <Icon name="bi-clock-history" />
+                  </span>
+                  <div>
+                    <strong>زمان پاسخ‌گویی</strong>
+                    <small>در اولین فرصت کاری</small>
+                  </div>
+                </div>
+                <div className="student-contact-row">
+                  <span>
+                    <Icon name="bi-shield-lock" />
+                  </span>
+                  <div>
+                    <strong>حریم خصوصی</strong>
+                    <small>
+                      اطلاعات شما فقط برای خودتان و مدیر سامانه قابل مشاهده
+                      است.
+                    </small>
+                  </div>
+                </div>
+                <p className="student-contact-note">
+                  <Icon name="bi-info-circle" /> برای پیگیری سریع‌تر، شمارهٔ
+                  دانشجویی و نام صفحه‌ای که مشکل دارد را ذکر کنید.
+                </p>
+              </aside>
+            </div>
+          </section>
+        )}
       </main>
+      <button
+        className="student-help-fab"
+        type="button"
+        onClick={() => setHelpOpen(true)}
+        title="دستیار راهنما"
+        aria-label="باز کردن دستیار راهنما"
+      >
+        <Icon name="bi-stars" />
+        <span>کمک</span>
+      </button>
+      <HelpChat open={helpOpen} onClose={() => setHelpOpen(false)} />
     </div>
   );
 }

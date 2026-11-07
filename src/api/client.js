@@ -71,6 +71,11 @@ export function uploadStudentPhoto(studentId, file) {
   form.append('photo', file);
   return api(`/students/${studentId}/photos`, { method: 'POST', body: form });
 }
+export function uploadMyPhoto(file) {
+  const form = new FormData();
+  form.append('photo', file);
+  return api('/me/photo', { method: 'POST', body: form });
+}
 export function saveVoiceSample(studentId, features, featureVersion = 2) {
   return api(`/students/${studentId}/voice-samples`, { method: 'POST', body: JSON.stringify({ features, featureVersion }) });
 }

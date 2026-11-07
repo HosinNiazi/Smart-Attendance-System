@@ -59,7 +59,7 @@ src/
 ### 3.2 API Layer (`src/api/`)
 | File | Responsibility |
 |------|----------------|
-| `client.js` | `api()`, `signIn()`, `fetchBootstrap()`, domain helpers (`createStudent`, `uploadStudentPhoto`, `saveVoiceSample`, `createCourse`, `createSession`, `finalizeSession`, `upsertAttendance`, `saveSettingsPayload`, `migrateBrowserSnapshot`) |
+| `client.js` | `api()`, `signIn()`, `fetchBootstrap()`, domain helpers (`createStudent`, `uploadStudentPhoto`, `uploadMyPhoto`, `saveVoiceSample`, `createCourse`, `createSession`, `finalizeSession`, `upsertAttendance`, `saveSettingsPayload`, `migrateBrowserSnapshot`) |
 | `adapter.js` | `adaptBootstrap(raw)` → `{students, courses, attendance, sessionHistory, settings, voiceProfiles}` — maps DB UUIDs to frontend string IDs (studentNumber), builds `faceImage`/`faceImages` arrays from `/uploads` URLs, converts voice samples to profile objects |
 
 ### 3.3 Data Shapes (Frontend)
@@ -143,7 +143,7 @@ src/
 | `reports` | `Reports` | Filters (course, date range, status), summary cards, audit log table, CSV export |
 | `profile` | `Profile` | Name, avatar upload, role display |
 | `settings` | `Settings` | System name, late threshold, notifications toggle, face-recognition toggle — persisted to DB via `saveSettingsPayload` |
-| `student-portal` | `StudentPortal` | Student self-service: personal attendance history, enrolled courses, stats (read-only) |
+| `student-portal` | `StudentPortal` | Student self-service with three tabs: overview (attendance history, courses, stats), profile (avatar + face-reference photo upload, student info), and help (offline assistant chat, FAQ, contact). Includes theme toggle and floating help button. |
 
 ---
 

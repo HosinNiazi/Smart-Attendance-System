@@ -502,6 +502,60 @@ app.patch(
     res.json(rows[0]);
   }),
 );
+async function replaceStudentFacePhoto(studentId, organizationId, file) {
+  const { rows } = await pool.query(
+    `SELECT id FROM students WHERE id = $1 AND organization_id = $2`,
+    [studentId, organizationId],
+  );
+  if (!rows[0]) {
+    await fs.promises.unlink(file.path).catch(() => {});
+    return null;
+  }
+
+  const checksum = crypto
+    .createHash("sha256")
+    .update(await fs.promises.readFile(file.path))
+    .digest("hex");
+
+  const oldRefs = await pool.query(
+    `SELECT object_key FROM biometric_references
+      WHERE student_id = $1 AND kind = 'face_image'`,
+    [studentId],
+  );
+
+  try {
+    const result = await withTransaction(async (client) => {
+      // Single reference photo per student: remove the previous one atomically.
+      await client.query(
+        `DELETE FROM biometric_references
+          WHERE student_id = $1 AND kind = 'face_image'`,
+        [studentId],
+      );
+      return client.query(
+        `INSERT INTO biometric_references
+         (student_id, kind, object_key, mime_type, checksum)
+         VALUES ($1, 'face_image', $2, $3, $4)
+         RETURNING id, student_id AS "studentId",
+                   object_key AS "objectKey",
+                   mime_type AS "mimeType",
+                   created_at AS "createdAt"`,
+        [studentId, file.filename, file.mimetype, checksum],
+      );
+    });
+
+    for (const ref of oldRefs.rows) {
+      await fs.promises
+        .unlink(path.join(uploadsRoot, "students", ref.object_key))
+        .catch(() => {});
+    }
+
+    return result.rows[0];
+  } catch (error) {
+    await fs.promises.unlink(file.path).catch(() => {});
+    throw error;
+  }
+}
+
 app.post(
   "/api/students/:studentId/photos",
   authorize("admin", "teacher"),
@@ -513,58 +567,63 @@ app.post(
       });
     }
 
-    const { rows } = await pool.query(
-      `SELECT id FROM students
-       WHERE id = $1 AND organization_id = $2`,
-      [req.params.studentId, req.user.org],
+    const record = await replaceStudentFacePhoto(
+      req.params.studentId,
+      req.user.org,
+      req.file,
     );
 
-    if (!rows[0]) {
-      await fs.promises.unlink(req.file.path).catch(() => {});
+    if (!record) {
       return res.status(404).json({
         message: "دانشجو پیدا نشد.",
       });
     }
 
-    const checksum = crypto
-      .createHash("sha256")
-      .update(await fs.promises.readFile(req.file.path))
-      .digest("hex");
+    return res.status(201).json(record);
+  }),
+);
 
-    try {
-      // Delete existing face images for this student (single reference photo per student)
-      const oldRefs = await pool.query(
-        `SELECT object_key FROM biometric_references
-         WHERE student_id = $1 AND kind = 'face_image'`,
-        [req.params.studentId],
-      );
-      for (const ref of oldRefs.rows) {
-        await fs.promises
-          .unlink(path.join(uploadsRoot, "students", ref.object_key))
-          .catch(() => {});
-      }
-      await pool.query(
-        `DELETE FROM biometric_references
-         WHERE student_id = $1 AND kind = 'face_image'`,
-        [req.params.studentId],
-      );
-
-      const result = await pool.query(
-        `INSERT INTO biometric_references
-         (student_id, kind, object_key, mime_type, checksum)
-         VALUES ($1, 'face_image', $2, $3, $4)
-         RETURNING id, student_id AS "studentId",
-                   object_key AS "objectKey",
-                   mime_type AS "mimeType",
-                   created_at AS "createdAt"`,
-        [req.params.studentId, req.file.filename, req.file.mimetype, checksum],
-      );
-
-      return res.status(201).json(result.rows[0]);
-    } catch (error) {
-      await fs.promises.unlink(req.file.path).catch(() => {});
-      throw error;
+// دانشجو (یا هر کاربر متصل به یک دانشجو) می‌تواند عکس پروفایل خودش را
+// بارگذاری کند. همین عکس، هم آواتار و هم مرجع تشخیص چهره است.
+app.post(
+  "/api/me/photo",
+  uploadStudentPhoto.single("photo"),
+  asyncRoute(async (req, res) => {
+    if (!req.file) {
+      return res.status(400).json({ message: "لطفاً یک تصویر انتخاب کنید." });
     }
+
+    const { rows } = await pool.query(
+      `SELECT student_id AS "studentId" FROM users
+        WHERE id = $1 AND organization_id = $2 AND is_active = true`,
+      [req.user.sub, req.user.org],
+    );
+    const studentId = rows[0]?.studentId;
+
+    if (!studentId) {
+      await fs.promises.unlink(req.file.path).catch(() => {});
+      return res.status(404).json({
+        message: "حساب شما به دانشجویی متصل نیست؛ با مدیر سامانه تماس بگیرید.",
+      });
+    }
+
+    const record = await replaceStudentFacePhoto(
+      studentId,
+      req.user.org,
+      req.file,
+    );
+
+    if (!record) {
+      return res.status(404).json({ message: "دانشجو پیدا نشد." });
+    }
+
+    const url = `/uploads/students/${record.objectKey}`;
+    await pool.query(
+      `UPDATE users SET avatar_url = $1, updated_at = now() WHERE id = $2`,
+      [url, req.user.sub],
+    );
+
+    return res.status(201).json({ ...record, url });
   }),
 );
 app.post(

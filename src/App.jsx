@@ -36,6 +36,7 @@ import {
   signIn,
   updateStudent,
   uploadStudentPhoto,
+  uploadMyPhoto,
   upsertAttendance,
 } from "./api/client.js";
 import { adaptBootstrap, toEnStatus } from "./api/adapter.js";
@@ -728,6 +729,12 @@ export default function App() {
     } catch (error) {
       notify(error?.message || "فایل انتخاب‌شده قابل بازیابی نیست.");
     }
+  }
+  async function saveMyPhoto(file) {
+    const result = await uploadMyPhoto(file);
+    await loadFromServer({ silent: true });
+    if (result?.url) setProfilePhoto(result.url);
+    return result;
   }
   function saveProfile(nextProfile) {
     const name = nextProfile.name.trim();
@@ -1801,6 +1808,11 @@ export default function App() {
         records={studentRecords}
         courses={courses}
         photo={profilePhoto}
+        theme={theme}
+        onUploadPhoto={saveMyPhoto}
+        onToggleTheme={() =>
+          setTheme((current) => (current === "dark" ? "light" : "dark"))
+        }
         onLogout={() => {
           setLogin(true);
           setLoginName("student@hozorban.local");

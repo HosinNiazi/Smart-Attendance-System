@@ -432,3 +432,96 @@ html[lang="en"] body,html[lang="en"] button,html[lang="en"] input,html[lang="en"
 :root[data-theme="dark"] .help-chat-composer .form-control{background:#0f1826;color:#dbe4f5;border-color:#2a3a52}
 :root[data-theme="dark"] .help-typing span{background:#7e8db1}
 @media(max-width:600px){.help-chat{left:8px;right:8px;bottom:8px;width:auto;height:min(620px,calc(100vh - 16px));border-radius:16px}.help-msg{max-width:88%}}
+
+/* ---- ??? ????????: ?????? ??????? ? ???????? ---- */
+.student-avatar-button{border:0;background:transparent;padding:0;border-radius:12px;overflow:hidden;display:inline-flex;flex:none;line-height:0}
+.student-avatar-button:hover{box-shadow:0 0 0 3px #4361ee22}
+.student-theme-toggle{flex:none;width:36px;height:36px;display:inline-flex;align-items:center;justify-content:center;border-radius:10px;background:#f5f7fc;border:1px solid #e9edf4;color:#5164dd;font-size:15px}
+.student-theme-toggle:hover{background:#eef1ff;color:#4054d6}
+:root[data-theme="dark"] .student-theme-toggle{background:#202c40;border-color:#3a4960;color:#dce4f1}
+:root[data-theme="dark"] .student-theme-toggle:hover{background:#2a3950}
+.student-portal-tabs{display:flex;gap:6px;padding:10px clamp(16px,4vw,42px);background:#fff;border-bottom:1px solid #e9edf4;position:sticky;top:0;z-index:20;overflow-x:auto}
+.student-portal-tabs::-webkit-scrollbar{height:0}
+.student-portal-tabs button{border:1px solid transparent;background:transparent;color:#6b778c;border-radius:10px;padding:9px 13px;display:inline-flex;align-items:center;gap:7px;font-size:11px;font-weight:600;white-space:nowrap;transition:.18s;flex:none}
+.student-portal-tabs button:hover{background:#f5f7fc;color:#4054d6}
+.student-portal-tabs button.active{background:#eef1ff;color:#4054d6;border-color:#e0e6ff}
+.student-portal-tabs button i{font-size:14px}
+.student-profile-section,.student-help-section{display:grid;gap:16px}
+.student-profile-hero{display:flex;align-items:center;justify-content:space-between;gap:18px;padding:22px 26px;border-radius:16px;background:linear-gradient(120deg,#fff,#f7f8ff)}
+.student-profile-hero h1{margin:4px 0 6px;font-size:22px;letter-spacing:-.5px}
+.student-profile-hero p{margin:0;color:#8490a4;font-size:11px;line-height:1.9}
+.student-profile-grid{display:grid;grid-template-columns:minmax(250px,.85fr) minmax(0,1.15fr);gap:16px;align-items:start}
+.student-photo-card{padding:20px;border-radius:16px;text-align:center}
+.student-photo-preview{position:relative;width:100%;aspect-ratio:1/1;max-height:290px;border-radius:16px;overflow:hidden;background:linear-gradient(145deg,#eef1ff,#f7f9ff);display:grid;place-items:center;border:1px solid #e7ecf8}
+.student-photo-preview img{width:100%;height:100%;object-fit:cover;display:block}
+.student-photo-placeholder{font-size:68px;color:#a9b4d8;line-height:1}
+.student-photo-overlay{position:absolute;inset:0;background:#172238a8;color:#fff;display:flex;flex-direction:column;gap:10px;align-items:center;justify-content:center;font-size:11px;backdrop-filter:blur(2px)}
+.student-photo-status-row{display:flex;justify-content:center;margin:12px 0}
+.student-photo-status{display:inline-flex;align-items:center;gap:6px;border-radius:20px;padding:6px 10px;font-size:9.5px;font-weight:600}
+.student-photo-status.ok{background:#e8f8f1;color:#16865b}
+.student-photo-status.missing{background:#fff4e3;color:#b87a13}
+.student-photo-message{margin:10px 0 0;padding:9px 11px;border-radius:9px;font-size:10px;line-height:1.8;text-align:right}
+.student-photo-message.success{background:#e9f8f1;color:#117a53}
+.student-photo-message.error{background:#fff0f1;color:#b83c4b}
+.student-photo-note{display:flex;gap:7px;margin:13px 0 0;padding:10px 11px;border-radius:10px;background:#f5f7fc;color:#7f8a9e;font-size:9px;line-height:1.9;text-align:right}
+.student-photo-note i{flex:none;color:#5164dd;margin-top:2px}
+.student-info-card{padding:20px;border-radius:16px}
+.student-info-list{display:grid;margin:0}
+.student-info-list>div{display:flex;justify-content:space-between;gap:14px;padding:11px 0;border-top:1px solid #eff1f6;font-size:10.5px}
+.student-info-list dt{color:#8490a4;font-weight:500}
+.student-info-list dd{margin:0;font-weight:600;color:#344054;text-align:left;word-break:break-word}
+.student-info-note{display:flex;gap:7px;margin:14px 0 0;padding:10px 11px;border-radius:10px;background:#f5f7fc;color:#7f8a9e;font-size:9px;line-height:1.9}
+.student-info-note i{flex:none;color:#5164dd;margin-top:2px}
+.student-photo-tips{padding:20px;border-radius:16px}
+.student-photo-tips ul{list-style:none;margin:0;padding:0;display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px}
+.student-photo-tips li{display:flex;gap:9px;align-items:flex-start;padding:11px 12px;border:1px solid #edf0f6;border-radius:11px;background:#fafbff;font-size:10px;line-height:1.8;color:#667085}
+.student-photo-tips li i{color:#5164dd;font-size:14px;flex:none;margin-top:2px}
+.student-help-hero{position:relative;overflow:hidden;display:flex;align-items:center;justify-content:space-between;gap:20px;padding:28px 30px;border-radius:18px;background:linear-gradient(115deg,#1f3aa8,#4a5fe0 60%,#6f7df0);color:#fff;box-shadow:0 13px 35px #3f55d51c}
+.student-help-copy{position:relative;z-index:1;max-width:620px}
+.student-help-copy h1{margin:12px 0 8px;font-size:24px;font-weight:700}
+.student-help-copy p{margin:0;color:#e0e5ff;font-size:11px;line-height:2}
+.student-help-actions{display:flex;gap:9px;flex-wrap:wrap;margin-top:18px}
+.student-help-actions .btn-light-outline{background:#ffffff1f;border-color:#ffffff3d;color:#fff}
+.student-help-actions .btn-light-outline:hover{background:#ffffff2e;border-color:#ffffff5c;color:#fff}
+.student-help-mark{position:absolute;left:26px;top:50%;transform:translateY(-50%);font-size:130px;color:#ffffff10;line-height:1;pointer-events:none}
+.student-help-grid{display:grid;grid-template-columns:minmax(0,1.35fr) minmax(255px,.65fr);gap:16px;align-items:start}
+.student-faq-card,.student-contact-card{padding:20px;border-radius:16px}
+.student-faq-list{display:grid;gap:8px}
+.student-faq-item{border:1px solid #e9edf4;border-radius:11px;background:#fff;overflow:hidden}
+.student-faq-item summary{display:flex;align-items:center;justify-content:space-between;gap:10px;padding:12px 13px;cursor:pointer;font-size:10.5px;font-weight:600;color:#344054;list-style:none}
+.student-faq-item summary::-webkit-details-marker{display:none}
+.student-faq-item summary i{font-size:10px;color:#98a2b3;transition:.2s;flex:none}
+.student-faq-item[open] summary{background:#f7f8ff;color:#4054d6}
+.student-faq-item[open] summary i{transform:rotate(180deg)}
+.student-faq-item p{margin:0;padding:0 13px 13px;color:#7f8a9e;font-size:10px;line-height:2}
+.student-contact-row{display:flex;gap:10px;align-items:flex-start;padding:12px 0;border-top:1px solid #eff1f6}
+.student-contact-row>span{width:34px;height:34px;flex:none;border-radius:10px;background:#eef1ff;color:#5164dd;display:grid;place-items:center;font-size:14px}
+.student-contact-row>div{display:grid;gap:4px;min-width:0}
+.student-contact-row strong{font-size:10.5px}
+.student-contact-row a{font-size:10px;color:var(--primary);word-break:break-all;text-decoration:none}
+.student-contact-row a:hover{text-decoration:underline}
+.student-contact-row small{font-size:9px;color:#8490a4;line-height:1.8}
+.student-contact-note{display:flex;gap:7px;margin:14px 0 0;padding:10px 11px;border-radius:10px;background:#f5f7fc;color:#7f8a9e;font-size:9px;line-height:1.9}
+.student-contact-note i{flex:none;color:#5164dd;margin-top:2px}
+.student-help-fab{position:fixed;left:22px;bottom:22px;z-index:80;border:0;border-radius:16px;background:linear-gradient(135deg,#4361ee,#6a5cf0);color:#fff;padding:11px 14px;display:inline-flex;align-items:center;gap:7px;font-size:11px;font-weight:600;box-shadow:0 14px 30px #4361ee42;transition:.2s}
+.student-help-fab:hover{transform:translateY(-2px);filter:brightness(1.05)}
+.student-help-fab i{font-size:15px}
+:root[data-theme="dark"] .student-portal-tabs{background:#131f30;border-color:#2b394d}
+:root[data-theme="dark"] .student-portal-tabs button{color:#a8b3c6}
+:root[data-theme="dark"] .student-portal-tabs button:hover{background:#1b293d;color:#c7d0ff}
+:root[data-theme="dark"] .student-portal-tabs button.active{background:#253251;color:#dbe2ff;border-color:#33456a}
+:root[data-theme="dark"] .student-profile-hero{background:linear-gradient(120deg,#152235,#1a2a44);border:1px solid #2b394d}
+:root[data-theme="dark"] .student-photo-card,:root[data-theme="dark"] .student-info-card,:root[data-theme="dark"] .student-photo-tips,:root[data-theme="dark"] .student-faq-card,:root[data-theme="dark"] .student-contact-card{background:#152235;border-color:#2b394d;color:#e6ebf4}
+:root[data-theme="dark"] .student-photo-preview{background:linear-gradient(145deg,#1b2a44,#16243a);border-color:#2b394d}
+:root[data-theme="dark"] .student-photo-placeholder{color:#5f6f95}
+:root[data-theme="dark"] .student-info-list>div,:root[data-theme="dark"] .student-contact-row{border-color:#29384d}
+:root[data-theme="dark"] .student-info-list dd{color:#dbe4f5}
+:root[data-theme="dark"] .student-photo-note,:root[data-theme="dark"] .student-info-note,:root[data-theme="dark"] .student-contact-note{background:#1b293d;color:#a8b3c6}
+:root[data-theme="dark"] .student-photo-tips li{background:#16243a;border-color:#2b394d;color:#a8b3c6}
+:root[data-theme="dark"] .student-faq-item{background:#152235;border-color:#2b394d}
+:root[data-theme="dark"] .student-faq-item summary{color:#dbe4f5}
+:root[data-theme="dark"] .student-faq-item[open] summary{background:#1e2d44;color:#bac5ff}
+:root[data-theme="dark"] .student-faq-item p{color:#a8b3c6}
+:root[data-theme="dark"] .student-contact-row>span{background:#1e2d44;color:#9fb0ff}
+@media(max-width:900px){.student-profile-grid,.student-help-grid{grid-template-columns:minmax(0,1fr)}.student-photo-tips ul{grid-template-columns:minmax(0,1fr)}}
+@media(max-width:600px){.student-help-hero,.student-profile-hero{padding:20px}.student-help-mark{font-size:90px;left:8px}.student-help-copy h1{font-size:20px}.student-profile-hero{flex-direction:column;align-items:flex-start}.student-help-fab{left:14px;bottom:14px;width:48px;height:48px;padding:0;border-radius:50%;justify-content:center}.student-help-fab span{display:none}.student-help-fab i{font-size:19px}}
