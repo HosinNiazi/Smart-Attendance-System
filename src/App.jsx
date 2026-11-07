@@ -38,6 +38,8 @@ import {
   uploadStudentPhoto,
   upsertAttendance,
 } from "./api/client.js";
+import { adaptBootstrap, toEnStatus } from "./api/adapter.js";
+import { HelpChat } from "./help/HelpChat.jsx";
 
 const navGroups = [
   {
@@ -332,7 +334,7 @@ export default function App() {
     notifications: true,
     faceRecognition: true,
   });
-  const [login, setLogin] = useState(() => !sessionStorage.getItem("smart-attendance:api-token"));
+  const [login, setLogin] = useState(true);
   const [loginRole, setLoginRole] = useState(() => {
     const savedRole = readSessionProfile().role;
     return ACCESS_ROLE_LABELS[savedRole] ? savedRole : "admin";
@@ -361,6 +363,7 @@ export default function App() {
     phone: "",
   });
   const [regPending, setRegPending] = useState(false);
+  const [helpOpen, setHelpOpen] = useState(false);
 
   useEffect(() => {
     if (!toast) return;
@@ -1868,13 +1871,9 @@ export default function App() {
               <Icon name="bi-headset" />
             </div>
             <strong>به راهنمایی نیاز دارید؟</strong>
-            <p>راهنمای استفاده از سامانه را ببینید.</p>
-            <button
-              onClick={() =>
-                notify("راهنمای سامانه در نسخه بعدی اضافه می‌شود.")
-              }
-            >
-              مشاهده راهنما <Icon name="bi-arrow-left" />
+            <p>دستیار هوشمند، پاسخ سؤال‌های شما را می‌دهد.</p>
+            <button onClick={() => setHelpOpen(true)}>
+              گفت‌وگو با دستیار <Icon name="bi-arrow-left" />
             </button>
           </div>
           <div className="sidebar-version">
@@ -2297,6 +2296,7 @@ export default function App() {
           </button>
         </div>
       )}
+      <HelpChat open={helpOpen} onClose={() => setHelpOpen(false)} />
     </div>
   );
 }

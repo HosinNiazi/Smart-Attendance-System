@@ -38,6 +38,9 @@ src/
 ├── voice/
 │   ├── VoiceAttendance.jsx     # Voice enrollment + recognition (fixed phrase, FFT features, IndexedDB cache)
 │   └── audioStore.js           # IndexedDB wrapper for audio clips / profiles
+├── help/
+│   ├── HelpChat.jsx            # In-app assistant chat panel (typing, suggestions, reset/close)
+│   └── helpAssistant.js        # Local knowledge base + keyword scoring engine (offline answers)
 └── public/
     └── models/                 # face-api model files (tinyFaceDetector, faceLandmark68TinyNet, faceRecognitionNet)
 ```
@@ -238,6 +241,8 @@ src/
 | `src/face/liveness.js` | ~22 | EAR calculation |
 | `src/voice/VoiceAttendance.jsx` | ~334 | Voice enroll/recognize UI |
 | `src/voice/audioStore.js` | ~81 | IndexedDB audio cache |
+| `src/help/HelpChat.jsx` | ~200 | Help assistant chat UI (sidebar entry → panel) |
+| `src/help/helpAssistant.js` | ~600 | Offline knowledge base + keyword matching engine |
 | `src/styles.css` | ~2900 | Complete design system |
 | `public/models/*` | 6 files | face-api model weights |
 
