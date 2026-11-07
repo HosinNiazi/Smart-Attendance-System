@@ -2705,10 +2705,17 @@ export function StudentPortal({
   const [helpOpen, setHelpOpen] = useState(false);
   const [uploading, setUploading] = useState(false);
   const [photoMessage, setPhotoMessage] = useState({ tone: "", text: "" });
+  const [localPreview, setLocalPreview] = useState("");
+  const previewUrlRef = useRef("");
   const fileInputRef = useRef(null);
 
   useEffect(() => {
     setPhotoMessage({ tone: "", text: "" });
+    setLocalPreview("");
+    if (previewUrlRef.current) {
+      URL.revokeObjectURL(previewUrlRef.current);
+      previewUrlRef.current = "";
+    }
   }, [student?.id]);
 
   if (!student) {
@@ -2791,7 +2798,7 @@ export function StudentPortal({
         }).format(date);
   };
 
-  const photoSrc = student.faceImage || photo || "";
+  const photoSrc = localPreview || student.faceImage || photo || "";
   const allowedPhotoTypes = ["image/jpeg", "image/png", "image/webp"];
 
   async function handlePhotoChange(event) {
@@ -2814,15 +2821,32 @@ export function StudentPortal({
       return;
     }
 
-    setUploading(true);
+    // پیش‌نمایش فوری قبل از آپلود
+    if (previewUrlRef.current) {
+      URL.revokeObjectURL(previewUrlRef.current);
+    }
+    previewUrlRef.current = URL.createObjectURL(file);
+    setLocalPreview(previewUrlRef.current);
     setPhotoMessage({ tone: "", text: "" });
+
+    setUploading(true);
     try {
       await onUploadPhoto?.(file);
+      if (previewUrlRef.current) {
+        URL.revokeObjectURL(previewUrlRef.current);
+        previewUrlRef.current = "";
+      }
+      setLocalPreview("");
       setPhotoMessage({
         tone: "success",
         text: "عکس پروفایل به‌روزرسانی شد؛ همین عکس مرجع تشخیص چهره هم هست.",
       });
     } catch (error) {
+      if (previewUrlRef.current) {
+        URL.revokeObjectURL(previewUrlRef.current);
+        previewUrlRef.current = "";
+      }
+      setLocalPreview("");
       setPhotoMessage({
         tone: "error",
         text:
@@ -3142,26 +3166,37 @@ export function StudentPortal({
                     {photoSrc ? "عکس مرجع ثبت شده" : "عکس مرجع ثبت نشده"}
                   </span>
                 </div>
-                <input
-                  ref={fileInputRef}
-                  className="visually-hidden"
-                  type="file"
-                  accept="image/jpeg,image/png,image/webp"
-                  onChange={handlePhotoChange}
-                />
-                <button
-                  type="button"
-                  className="btn btn-primary w-100"
-                  disabled={uploading}
-                  onClick={() => fileInputRef.current?.click()}
-                >
-                  <Icon name="bi-camera" />{" "}
-                  {uploading
-                    ? "در حال بارگذاری…"
-                    : photoSrc
-                      ? "تغییر عکس پروفایل"
-                      : "افزودن عکس پروفایل"}
-                </button>
+                <div className="student-photo-controls">
+                  <label
+                    className="student-file-label"
+                    title="انتخاب تصویر"
+                    aria-label="انتخاب تصویر پروفایل"
+                    style={{ direction: "ltr" }}
+                  >
+                    <input
+                      ref={fileInputRef}
+                      type="file"
+                      accept="image/jpeg,image/png,image/webp"
+                      onChange={handlePhotoChange}
+                      aria-hidden="true"
+                    />
+                    <Icon name="bi-cloud-arrow-up" />
+                    <span>انتخاب فایل تصویر</span>
+                  </label>
+                  <button
+                    type="button"
+                    className="btn btn-primary w-100"
+                    disabled={uploading}
+                    onClick={() => fileInputRef.current?.click()}
+                  >
+                    <Icon name="bi-camera" />{" "}
+                    {uploading
+                      ? "در حال بارگذاری…"
+                      : photoSrc
+                        ? "تغییر عکس پروفایل"
+                        : "ذخیره عکس پروفایل"}
+                  </button>
+                </div>
                 {photoMessage.text && (
                   <p
                     className={`student-photo-message ${photoMessage.tone}`}

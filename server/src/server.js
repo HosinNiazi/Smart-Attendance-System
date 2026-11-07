@@ -502,7 +502,14 @@ app.patch(
     res.json(rows[0]);
   }),
 );
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
 async function replaceStudentFacePhoto(studentId, organizationId, file) {
+  if (!studentId || !UUID_RE.test(String(studentId))) {
+    await fs.promises.unlink(file.path).catch(() => {});
+    return null;
+  }
+
   const { rows } = await pool.query(
     `SELECT id FROM students WHERE id = $1 AND organization_id = $2`,
     [studentId, organizationId],
@@ -600,10 +607,10 @@ app.post(
     );
     const studentId = rows[0]?.studentId;
 
-    if (!studentId) {
+    if (!studentId || !UUID_RE.test(String(studentId))) {
       await fs.promises.unlink(req.file.path).catch(() => {});
       return res.status(404).json({
-        message: "حساب شما به دانشجویی متصل نیست؛ با مدیر سامانه تماس بگیرید.",
+        message: "حساب شما به دانشجویی معتبر در سامانه متصل نیست؛ با مدیر سامانه تماس بگیرید.",
       });
     }
 
