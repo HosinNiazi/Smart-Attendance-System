@@ -10,6 +10,7 @@ import {
   tickLivenessLost,
   updateLiveness,
 } from "../face/liveness.js";
+import { playBeep as playUnknown, playSuccess } from "../audio/sfx.js";
 
 const PRESENT_STATUS = "\u062d\u0627\u0636\u0631";
 const ABSENT_STATUS = "\u063a\u0627\u06cc\u0628";
@@ -1336,6 +1337,7 @@ export function FaceAttendance({
                 if (saved) {
                   tone = "recognized";
                   label = `${student.name} · ثبت شد`;
+                  playSuccess();
                   setLastRecognized({
                     studentId: student.id,
                     name: student.name,
@@ -1408,6 +1410,7 @@ export function FaceAttendance({
           setRecognitionMessage("چهره شناسایی و حضور در جلسه ثبت شده است");
         }
         if (nextBoxes.some((item) => item.tone === "unknown")) {
+          playUnknown();
           const unknownMessage =
             "چهره با عکس مرجع تطبیق نشد؛ روبه‌روی دوربین بمانید و یک‌بار پلک بزنید. اگر باز هم شناسایی نشدید، عکس مرجع را بررسی کنید.";
           setRecognitionMessage((current) =>

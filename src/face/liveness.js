@@ -15,6 +15,8 @@ export const CLASSROOM_SCAN_INTERVAL_MS = 120;
 const CALIBRATION_SAMPLES = 6;
 const CLOSED_FRAMES_NEEDED = 1;
 const OPEN_FRAMES_NEEDED = 1;
+const OPEN_AUTO_THRESHOLD = 0.80; // above this, eyes are clearly open — auto-verify
+const OPEN_SWITCH_MARGIN = 0.05;
 const MIN_BASELINE = 0.18;
 const MAX_BASELINE = 0.42;
 const CLOSE_RATIO = 0.68;
@@ -133,9 +135,18 @@ export function updateLiveness(state, earSample) {
   const deepClosed = mean < deepCloseThreshold && min < closeThreshold + 0.01;
 
   if (state.phase === "ready") {
+    // EYES CLEARLY OPEN → student is alive, verify immediately.
+    // This fixes the stuck state where calibration succeeds but user keeps
+    // standing with eyes open and we keep telling them to blink forever.
+    if (clearlyOpen) {
+      state.verified = true;
+      state.phase = "verified";
+      state.hint = "زنده‌بودن تأیید شد";
+      return state;
+    }
+    // Both eyes closed → initiate a proper blink sequence.
     if (bothClosed) {
       state.closedFrames = 1;
-      // A deep single-frame blink is enough — short blinks often last <200ms.
       if (deepClosed) {
         state.phase = "closed";
         state.openFrames = 0;
@@ -144,9 +155,10 @@ export function updateLiveness(state, earSample) {
         state.phase = "closing";
         state.hint = "چشم‌ها بسته شد…";
       }
-    } else {
-      state.hint = "یک‌بار به‌آرامی پلک بزنید";
+      return state;
     }
+    // Partial state — eyes almost closed but not fully. Require a gentle blink.
+    state.hint = "یک‌بار به‌آرامی پلک بزنید";
     return state;
   }
 
