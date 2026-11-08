@@ -1324,7 +1324,7 @@ export function FaceAttendance({
                   `${student.name} شناسایی شد؛ برای ثبت حضور یک‌بار پلک بزنید.`,
                 );
               }
-            } else if (streak >= (classroomMode ? 1 : 2)) {
+            } else if (streak >= (classroomMode ? 1 : 2) || liveness.verified) {
               const noticeKey = `${sessionId}:${student.id}`;
               if (!notifiedSessionRef.current.has(noticeKey)) {
                 notifiedSessionRef.current.add(noticeKey);

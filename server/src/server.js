@@ -342,7 +342,7 @@ app.patch(
          ON CONFLICT (organization_id, email) DO UPDATE
            SET password_hash=EXCLUDED.password_hash, display_name=EXCLUDED.display_name, student_id=EXCLUDED.student_id, is_active=true, updated_at=now()
          RETURNING id`,
-        [req.user.org, r.username, r.password_hash, r.full_name, studentNumber],
+        [req.user.org, r.username, r.password_hash, r.full_name, studentId],
       );
       const userId = userRows.rows[0].id;
       await client.query(

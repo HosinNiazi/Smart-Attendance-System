@@ -527,7 +527,18 @@ export default function App() {
       method,
       reason,
     })
-      .then(() => loadFromServer({ silent: true }))
+      .then(() => {
+        // For face recognition, sync without full reload to avoid blocking the scan loop
+        if (method === "face") {
+          const updated = attendanceRef.current.map((record) =>
+            record.id === studentId
+              ? { ...record, status: toEnStatus(status), method }
+              : record,
+          );
+          attendanceRef.current = updated;
+          setAttendance(updated);
+        }
+      })
       .catch((error) => {
         notify(error.message || "ذخیرهٔ حضور در دیتابیس انجام نشد.");
         return false;

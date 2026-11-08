@@ -9,12 +9,12 @@
 export const FACE_DESCRIPTOR_VERSION = 1;
 export const FACE_MATCH_DISTANCE = 0.52;
 export const FACE_MATCH_MARGIN = 0.04;
-export const FACE_SCAN_INTERVAL_MS = 160;
-export const CLASSROOM_SCAN_INTERVAL_MS = 200;
+export const FACE_SCAN_INTERVAL_MS = 70;
+export const CLASSROOM_SCAN_INTERVAL_MS = 120;
 
-const CALIBRATION_SAMPLES = 8;
-const CLOSED_FRAMES_NEEDED = 2;
-const OPEN_FRAMES_NEEDED = 2;
+const CALIBRATION_SAMPLES = 6;
+const CLOSED_FRAMES_NEEDED = 1;
+const OPEN_FRAMES_NEEDED = 1;
 const MIN_BASELINE = 0.18;
 const MAX_BASELINE = 0.42;
 const CLOSE_RATIO = 0.68;
@@ -172,31 +172,14 @@ export function updateLiveness(state, earSample) {
   if (state.phase === "closed") {
     if (clearlyOpen) {
       state.openFrames = 1;
-      state.phase = "opening";
-      state.hint = "در حال تأیید پلک…";
+      // Single open frame is enough for verification after a deep close.
+      state.verified = true;
+      state.phase = "verified";
+      state.hint = "زنده‌بودن تأیید شد";
     } else if (bothClosed) {
       state.hint = "حالا چشم‌ها را باز کنید";
     }
     return state;
-  }
-
-  if (state.phase === "opening") {
-    if (clearlyOpen) {
-      state.openFrames += 1;
-      if (state.openFrames >= OPEN_FRAMES_NEEDED) {
-        state.verified = true;
-        state.phase = "verified";
-        state.hint = "زنده‌بودن تأیید شد";
-      } else {
-        state.hint = "در حال تأیید پلک…";
-      }
-    } else if (bothClosed) {
-      // Another close before reopen completed — stay in closed cycle.
-      state.phase = "closed";
-      state.openFrames = 0;
-      state.closedFrames = Math.max(state.closedFrames, CLOSED_FRAMES_NEEDED);
-      state.hint = "حالا چشم‌ها را باز کنید";
-    }
   }
 
   return state;
