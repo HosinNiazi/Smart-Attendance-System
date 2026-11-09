@@ -12,10 +12,34 @@ import {
 } from "../face/liveness.js";
 import { playBeep as playUnknown, playSuccess } from "../audio/sfx.js";
 import { startAuthentication, startRegistration } from "@simplewebauthn/browser";
+import { exportAttendanceExcel } from "../reports/exportAttendanceExcel.js";
 
 const PRESENT_STATUS = "\u062d\u0627\u0636\u0631";
 const ABSENT_STATUS = "\u063a\u0627\u06cc\u0628";
 const LATE_STATUS = "\u062a\u0623\u062e\u06cc\u0631";
+
+const METHOD_LABELS = {
+  manual: "ثبت دستی",
+  face: "تشخیص چهره",
+  voice: "تشخیص صدا",
+  class_camera: "دوربین کلاس",
+  fingerprint: "اثر انگشت",
+  system: "خودکار",
+  auto: "خودکار",
+};
+
+function methodLabel(method) {
+  return METHOD_LABELS[method] || "ثبت دستی";
+}
+
+function statusToneClass(status) {
+  if ([PRESENT_STATUS, "حاضر"].includes(status)) return "is-present";
+  if ([LATE_STATUS, "تأخیر"].includes(status)) return "is-late";
+  if (status === "غیبت موجه") return "is-excused";
+  if ([ABSENT_STATUS, "غایب"].includes(status)) return "is-absent";
+  if (status === "خروج زودهنگام") return "is-left";
+  return "is-muted";
+}
 
 function formatSessionDate(value) {
   if (!value) return "—";
@@ -109,11 +133,16 @@ export function Dashboard({
         </div>
 
         <div className="welcome-actions">
-          <button className="btn btn-light-outline" onClick={onExport}>
+          <button
+            type="button"
+            className="btn btn-light-outline"
+            onClick={() => onNavigate("reports")}
+          >
             <Icon name="bi-download" /> خروجی گزارش
           </button>
 
           <button
+            type="button"
             className="btn btn-primary"
             onClick={() => onNavigate("manual")}
           >
@@ -2094,6 +2123,8 @@ export function Reports({
   const [studentId, setStudentId] = useState("all");
   const [fromDate, setFromDate] = useState("");
   const [toDate, setToDate] = useState("");
+  const [exporting, setExporting] = useState(false);
+  const [exportMessage, setExportMessage] = useState("");
   const courseTitles = [
     ...new Set(
       [
@@ -2124,6 +2155,48 @@ export function Reports({
   ).length;
   const excused = filtered.filter((a) => a.status === "غیبت موجه").length;
   const pct = total ? Math.round((present / total) * 100) : 0;
+  const selectedStudent = students.find(
+    (student) => String(student.id) === studentId,
+  );
+  const selectedCourse =
+    courseId === "all" ? "همهٔ درس‌ها" : courseId;
+  const selectedStudentLabel =
+    studentId === "all"
+      ? "همهٔ دانشجویان"
+      : `${selectedStudent?.name || "دانشجو"} · ${studentId}`;
+  const issueDate = new Intl.DateTimeFormat("fa-IR", {
+    dateStyle: "long",
+    timeStyle: "short",
+  }).format(new Date());
+  const courseTeacher = new Map(
+    courses.map((course) => [course.title, course.teacher || ""]),
+  );
+
+  async function handleExcelExport() {
+    if (exporting) return;
+    setExporting(true);
+    setExportMessage("");
+    try {
+      await exportAttendanceExcel({
+        records: filtered,
+        courses,
+        filters: {
+          course: selectedCourse,
+          student: selectedStudentLabel,
+          fromDate,
+          toDate,
+        },
+      });
+      setExportMessage("فایل Excel با موفقیت ساخته شد.");
+    } catch (error) {
+      setExportMessage(
+        error?.message || "ساخت فایل Excel انجام نشد؛ دوباره تلاش کنید.",
+      );
+    } finally {
+      setExporting(false);
+    }
+  }
+
   return (
     <div className="reports-page">
       <PanelTitle
@@ -2133,14 +2206,33 @@ export function Reports({
         action={
           <div className="report-export-actions">
             <button
+              type="button"
               className="btn btn-light-outline"
-              onClick={() => onExport?.(filtered)}
+              onClick={handleExcelExport}
+              disabled={exporting}
+              onKeyDown={(event) => {
+                if (event.key !== "Enter") return;
+                event.preventDefault();
+                if (exporting) return;
+                handleExcelExport();
+              }}
             >
-              <Icon name="bi-file-earmark-spreadsheet" /> خروجی Excel (CSV)
+              <Icon name="bi-file-earmark-spreadsheet" />{" "}
+              {exporting ? "در حال ساخت Excel…" : "خروجی Excel"}
             </button>
-            <button className="btn btn-primary" onClick={onPrint}>
+            <button
+              type="button"
+              className="btn btn-primary"
+              onClick={onPrint}
+              onKeyDown={(event) => {
+                if (event.key !== "Enter") return;
+                event.preventDefault();
+                onPrint();
+              }}
+            >
               <Icon name="bi-file-earmark-pdf" /> چاپ / ذخیره PDF
             </button>
+            <span className="report-export-status">{exportMessage}</span>
           </div>
         }
       />
@@ -2351,6 +2443,113 @@ export function Reports({
             برای فیلتر فعلی، تغییری ثبت نشده است.
           </p>
         )}
+      </section>
+      <section className="report-print-root" dir="rtl" aria-hidden="true">
+        <header className="rp-header">
+          <div className="rp-brand">
+            <span className="rp-logo">
+              <Icon name="bi-fingerprint" />
+            </span>
+            <div>
+              <strong>حضوربان</strong>
+              <small>سامانه حضور و غیاب هوشمند</small>
+            </div>
+          </div>
+          <div className="rp-heading">
+            <span>گزارش رسمی</span>
+            <h1>گزارش حضور و غیاب</h1>
+            <p>خروجی تحلیلی وضعیت حضور دانشجویان بر اساس فیلترهای انتخابی</p>
+          </div>
+          <div className="rp-stamp">
+            <span>تاریخ صدور</span>
+            <strong>{issueDate}</strong>
+            <small>{filtered.length.toLocaleString("fa-IR")} رکورد</small>
+          </div>
+        </header>
+        <div className="rp-chips">
+          <span>
+            <Icon name="bi-journal-bookmark" /> {selectedCourse}
+          </span>
+          <span>
+            <Icon name="bi-person" /> {selectedStudentLabel}
+          </span>
+          <span>
+            <Icon name="bi-calendar3" />{" "}
+            {fromDate ? formatSessionDate(fromDate) : "از ابتدا"} تا{" "}
+            {toDate ? formatSessionDate(toDate) : "اکنون"}
+          </span>
+        </div>
+        <div className="rp-summary">
+          {[
+            { label: "کل رکوردها", value: total, tone: "blue" },
+            { label: "حاضر", value: present, tone: "green" },
+            { label: "تأخیر", value: late, tone: "orange" },
+            { label: "غایب", value: absent, tone: "red" },
+            { label: "غیبت موجه", value: excused, tone: "purple" },
+            { label: "نرخ حضور", value: `${pct}٪`, tone: "teal" },
+          ].map((item) => (
+            <div className={`rp-summary-item ${item.tone}`} key={item.label}>
+              <span>{item.label}</span>
+              <strong>
+                {typeof item.value === "number"
+                  ? item.value.toLocaleString("fa-IR")
+                  : item.value}
+              </strong>
+            </div>
+          ))}
+        </div>
+        <table className="rp-table">
+          <thead>
+            <tr>
+              <th>#</th>
+              <th>شماره دانشجویی</th>
+              <th>نام دانشجو</th>
+              <th>درس</th>
+              <th>استاد</th>
+              <th>تاریخ جلسه</th>
+              <th>ساعت</th>
+              <th>وضعیت</th>
+              <th>روش ثبت</th>
+            </tr>
+          </thead>
+          <tbody>
+            {filtered.map((record, index) => (
+              <tr
+                key={
+                  record.databaseId ||
+                  `${record.sessionId}-${record.id}-${index}`
+                }
+              >
+                <td>{(index + 1).toLocaleString("fa-IR")}</td>
+                <td>{record.id}</td>
+                <td>{record.name}</td>
+                <td>{record.course}</td>
+                <td>{courseTeacher.get(record.course) || "—"}</td>
+                <td>{formatSessionDate(record.sessionDate)}</td>
+                <td>{record.time || "—"}</td>
+                <td>
+                  <span className={`rp-status ${statusToneClass(record.status)}`}>
+                    {record.status}
+                  </span>
+                </td>
+                <td>{methodLabel(record.method)}</td>
+              </tr>
+            ))}
+            {!filtered.length && (
+              <tr>
+                <td colSpan={9} className="rp-empty">
+                  رکوردی برای این فیلترها وجود ندارد.
+                </td>
+              </tr>
+            )}
+          </tbody>
+        </table>
+        <footer className="rp-footer">
+          <span>
+            این گزارش به‌صورت خودکار توسط سامانه حضوربان تولید شده است.
+          </span>
+          <span>حضوربان · حضور امن و دقیق</span>
+        </footer>
       </section>
     </div>
   );
