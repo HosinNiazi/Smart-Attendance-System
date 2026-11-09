@@ -14,6 +14,7 @@ import {
   Settings,
   StudentPortal,
   Students,
+  Tickets,
 } from "./components/pages.jsx";
 import { VoiceAttendance } from "./voice/VoiceAttendance.jsx";
 import {
@@ -49,6 +50,12 @@ import {
   startMyFingerprintRegistration as startMyFingerprintRegistrationApi,
   finishMyFingerprintRegistration as finishMyFingerprintRegistrationApi,
 } from "./api/client.js";
+import {
+  createTicket as createTicketApi,
+  fetchTickets as fetchTicketsApi,
+  respondTicket as respondTicketApi,
+  closeTicket as closeTicketApi,
+} from "./api/client.js";
 import { adaptBootstrap, toEnStatus } from "./api/adapter.js";
 import { HelpChat } from "./help/HelpChat.jsx";
 
@@ -81,6 +88,7 @@ const navGroups = [
     items: [
       { id: "profile", label: "پروفایل من", icon: "bi-person-circle" },
       { id: "registrations", label: "پذیرش درخواست‌ها", icon: "bi-person-check" },
+      { id: "tickets", label: "تیکت‌ها", icon: "bi-ticket" },
       { id: "settings", label: "تنظیمات", icon: "bi-gear" },
     ],
   },
@@ -379,6 +387,7 @@ export default function App() {
   });
   const [regPending, setRegPending] = useState(false);
   const [helpOpen, setHelpOpen] = useState(false);
+  const [tickets, setTickets] = useState([]);
 
   useEffect(() => {
     if (!toast) return;
@@ -513,6 +522,36 @@ export default function App() {
       );
     }
     return adapted;
+  }
+
+  async function refreshTickets() {
+    try {
+      const data = await fetchTicketsApi();
+      setTickets(Array.isArray(data) ? data : []);
+    } catch (error) {
+      notify(error.message || "دریافت درخواست‌ها انجام نشد.");
+    }
+  }
+
+  async function createTicket(payload) {
+    const created = await createTicketApi(payload);
+    await refreshTickets();
+    notify("درخواست پشتیبانی شما ثبت شد؛ مدیر سامانه به‌زودی پاسخ می‌دهد.");
+    return created;
+  }
+
+  async function respondTicket(id, payload) {
+    const updated = await respondTicketApi(id, payload);
+    await refreshTickets();
+    notify("پاسخ به درخواست شما ثبت شد.");
+    return updated;
+  }
+
+  async function closeTicket(id) {
+    const updated = await closeTicketApi(id);
+    await refreshTickets();
+    notify("این درخواست بسته شد.");
+    return updated;
   }
 
   function studentDatabaseId(frontendId) {
@@ -1948,6 +1987,9 @@ export default function App() {
           setLoginName("student@hozorban.local");
           setLoginPassword("");
         }}
+        tickets={tickets}
+        onCreateTicket={createTicket}
+        onRefreshTickets={refreshTickets}
       />
     );
   }
@@ -2340,6 +2382,15 @@ export default function App() {
                 }
               }}
               onRefresh={() => loadFromServer({ silent: true })}
+            />
+          )}
+          {active === "tickets" && (
+            <Tickets
+              tickets={tickets}
+              students={students}
+              onRespond={respondTicket}
+              onClose={closeTicket}
+              onRefresh={refreshTickets}
             />
           )}
         </div>

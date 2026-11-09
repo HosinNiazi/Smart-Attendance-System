@@ -322,6 +322,14 @@ const voiceSampleSchema = z.object({
   features: z.array(z.number().finite()).length(24),
   featureVersion: z.number().int().min(0).max(20).default(2),
 });
+const ticketSchema = z.object({
+  subject: z.string().trim().min(3).max(200),
+  message: z.string().trim().min(10).max(4000),
+});
+const ticketRespondSchema = z.object({
+  response: z.string().trim().min(2).max(4000),
+  outcome: z.enum(["accept", "reject"]).default("accept"),
+});
 
 app.get(
   "/health",
@@ -476,6 +484,81 @@ app.patch(
     );
     if (!rowCount) return res.status(404).json({ message: "درخواست یافت نشد یا قبلاً بررسی شده." });
     res.json({ ok: true });
+  }),
+);
+
+app.post(
+  "/api/tickets",
+  validate(ticketSchema),
+  asyncRoute(async (req, res) => {
+    const student = await findStudentByUserId(req.user.sub, req.user.org);
+    if (!student)
+      return res.status(404).json({ message: "حساب دانشجویی پیدا نشد." });
+    const { rows } = await pool.query(
+      `INSERT INTO support_tickets
+         (organization_id, student_number, student_name, subject, message, status)
+       VALUES ($1, $2, $3, $4, $5, 'open')
+       RETURNING id, student_number AS "studentNumber", student_name AS "studentName", subject, message, status, response, outcome, created_at AS "createdAt", updated_at AS "updatedAt"`,
+      [req.user.org, student.studentNumber, student.fullName, req.body.subject, req.body.message],
+    );
+    res.status(201).json(rows[0]);
+  }),
+);
+app.get(
+  "/api/tickets",
+  asyncRoute(async (req, res) => {
+    const isAdmin = req.user.role === "admin";
+    const student = isAdmin
+      ? null
+      : await findStudentByUserId(req.user.sub, req.user.org);
+    const params = [req.user.org];
+    let sql = `SELECT id, student_number AS "studentNumber", student_name AS "studentName", subject, message, status, response, outcome, responded_at AS "respondedAt", created_at AS "createdAt", updated_at AS "updatedAt"
+                FROM support_tickets
+               WHERE organization_id = $1`;
+    if (!isAdmin) {
+      if (!student) return res.json([]);
+      params.push(student.studentNumber);
+      sql += ` AND student_number = $2`;
+    }
+    sql += ` ORDER BY created_at DESC`;
+    const { rows } = await pool.query(sql, params);
+    res.json(rows);
+  }),
+);
+app.post(
+  "/api/tickets/:id/respond",
+  authorize("admin"),
+  validate(ticketRespondSchema),
+  asyncRoute(async (req, res) => {
+    const { response, outcome } = req.body;
+    const { rows } = await pool.query(
+      `UPDATE support_tickets
+          SET status = 'answered', response = $3, outcome = $4, responded_at = now(), updated_at = now()
+        WHERE id = $1 AND organization_id = $2 AND status = 'open'
+        RETURNING id, student_number AS "studentNumber", student_name AS "studentName", subject, message, status, response, outcome, responded_at AS "respondedAt", created_at AS "createdAt", updated_at AS "updatedAt"`,
+      [req.params.id, req.user.org, response, outcome],
+    );
+    if (!rows[0])
+      return res
+        .status(404)
+        .json({ message: "درخواست یافت نشد یا قبلاً پاسخ داده شده است." });
+    res.json(rows[0]);
+  }),
+);
+app.post(
+  "/api/tickets/:id/close",
+  authorize("admin"),
+  asyncRoute(async (req, res) => {
+    const { rows } = await pool.query(
+      `UPDATE support_tickets
+          SET status = 'closed', updated_at = now()
+        WHERE id = $1 AND organization_id = $2 AND status <> 'closed'
+        RETURNING id, student_number AS "studentNumber", student_name AS "studentName", subject, message, status, response, outcome, responded_at AS "respondedAt", created_at AS "createdAt", updated_at AS "updatedAt"`,
+      [req.params.id, req.user.org],
+    );
+    if (!rows[0])
+      return res.status(404).json({ message: "درخواست یافت نشد." });
+    res.json(rows[0]);
   }),
 );
 

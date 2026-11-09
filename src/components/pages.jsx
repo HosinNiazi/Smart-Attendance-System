@@ -53,6 +53,20 @@ function formatSessionDate(value) {
   });
 }
 
+const FA_DIGITS = "۰۱۲۳۴۵۶۷۸۹";
+const AR_DIGITS = "٠١٢٣٤٥٦٧٨٩";
+
+function normalizeSearch(value) {
+  return String(value ?? "")
+    .replace(/[۰-۹]/g, (digit) => String(FA_DIGITS.indexOf(digit)))
+    .replace(/[٠-٩]/g, (digit) => String(AR_DIGITS.indexOf(digit)))
+    .replace(/[يى]/g, "ی")
+    .replace(/ك/g, "ک")
+    .replace(/\s+/g, " ")
+    .trim()
+    .toLowerCase();
+}
+
 function attendanceStatusKind(status) {
   if ([PRESENT_STATUS, "حاضر", "خروج زودهنگام"].includes(status))
     return "present";
@@ -3213,6 +3227,9 @@ export function StudentPortal({
   onFinishMyFingerprintRegistration,
   onToggleTheme,
   onLogout,
+  tickets = [],
+  onCreateTicket,
+  onRefreshTickets,
 }) {
   const [tab, setTab] = useState("overview");
   const [helpOpen, setHelpOpen] = useState(false);
@@ -3230,6 +3247,43 @@ export function StudentPortal({
     tone: "",
     text: "",
   });
+  const [ticketSubject, setTicketSubject] = useState("");
+  const [ticketMessage, setTicketMessage] = useState("");
+  const [ticketBusy, setTicketBusy] = useState(false);
+  const [ticketNotice, setTicketNotice] = useState({ tone: "", text: "" });
+
+  useEffect(() => {
+    if (tab !== "tickets") return undefined;
+    onRefreshTickets?.().catch(() => {});
+    return undefined;
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [tab]);
+
+  async function handleCreateTicket() {
+    if (ticketSubject.trim().length < 3) {
+      setTicketNotice({ tone: "error", text: "موضوع باید حداقل ۳ کاراکتر باشد." });
+      return;
+    }
+    if (ticketMessage.trim().length < 10) {
+      setTicketNotice({ tone: "error", text: "متن درخواست باید حداقل ۱۰ کاراکتر باشد." });
+      return;
+    }
+    setTicketBusy(true);
+    setTicketNotice({ tone: "", text: "" });
+    try {
+      await onCreateTicket({
+        subject: ticketSubject.trim(),
+        message: ticketMessage.trim(),
+      });
+      setTicketSubject("");
+      setTicketMessage("");
+      setTicketNotice({ tone: "success", text: "درخواست پشتیبانی شما ثبت شد." });
+    } catch (error) {
+      setTicketNotice({ tone: "error", text: error?.message || "ثبت تیکت انجام نشد." });
+    } finally {
+      setTicketBusy(false);
+    }
+  }
 
   useEffect(() => {
     setPhotoMessage({ tone: "", text: "" });
@@ -3437,6 +3491,7 @@ export function StudentPortal({
     { id: "overview", label: "نمای کلی", icon: "bi-grid-1x2" },
     { id: "fingerprint", label: "اثر انگشت", icon: "bi-fingerprint" },
     { id: "profile", label: "پروفایل من", icon: "bi-person-circle" },
+    { id: "tickets", label: "تیکت‌ها", icon: "bi-ticket" },
     { id: "help", label: "کمک و ارتباط با ما", icon: "bi-headset" },
   ];
 
@@ -4009,6 +4064,143 @@ export function StudentPortal({
             </div>
           </section>
         )}
+        {tab === "tickets" && (
+          <section className="student-help-section">
+            <div className="student-help-hero">
+              <div className="student-help-copy">
+                <span className="student-welcome-eyebrow">
+                  <i /> پشتیبانی و درخواست‌ها
+                </span>
+                <h1>ثبت تیکت پشتیبانی</h1>
+                <p>
+                  اگر سؤالی دارید یا مشکلی در ثبت یا پیگیری حضور دارید، درخواست
+                  خود را ثبت کنید؛ مدیر سامانه آن را بررسی و برایتان پاسخ می‌دهد.
+                </p>
+                <div className="student-help-actions">
+                  <button
+                    className="btn btn-primary"
+                    type="button"
+                    onClick={() => setTab("help")}
+                  >
+                    <Icon name="bi-headset" /> بخش کمک و راهنما
+                  </button>
+                </div>
+              </div>
+              <span className="student-help-mark">
+                <Icon name="bi-ticket" />
+              </span>
+            </div>
+
+            <div className="student-help-grid">
+              <section className="content-card student-faq-card">
+                <div className="student-section-heading">
+                  <div>
+                    <span>ثبت درخواست</span>
+                    <h2>سوال یا درخواست جدید</h2>
+                  </div>
+                </div>
+                <label className="form-label">
+                  موضوع *
+                  <input
+                    className="form-control"
+                    value={ticketSubject}
+                    onChange={(event) => setTicketSubject(event.target.value)}
+                    placeholder="مثلاً مشکل در ثبت حضور از طریق اثر انگشت"
+                    maxLength={200}
+                  />
+                </label>
+                <label className="form-label" style={{ marginTop: 12 }}>
+                  متن درخواست *
+                  <textarea
+                    className="form-control"
+                    rows={5}
+                    value={ticketMessage}
+                    onChange={(event) => setTicketMessage(event.target.value)}
+                    placeholder="شرح دقیق مسئله یا سؤال خود را بنویسید…"
+                  />
+                </label>
+                <div className="student-actions-cell" style={{ marginTop: 12 }}>
+                  <button
+                    className="btn btn-primary"
+                    type="button"
+                    disabled={
+                      ticketBusy ||
+                      ticketSubject.trim().length < 3 ||
+                      ticketMessage.trim().length < 10
+                    }
+                    onClick={handleCreateTicket}
+                  >
+                    <Icon name="bi-send" /> {ticketBusy ? "در حال ثبت…" : "ثبت تیکت"}
+                  </button>
+                </div>
+                {ticketNotice.text ? (
+                  <p
+                    className={`student-photo-message ${ticketNotice.tone}`}
+                    role="status"
+                  >
+                    {ticketNotice.text}
+                  </p>
+                ) : null}
+              </section>
+
+              <aside className="content-card student-contact-card">
+                <div className="student-section-heading">
+                  <div>
+                    <span>وضعیت درخواست‌ها</span>
+                    <h2>پیگیری پاسخ‌ها</h2>
+                  </div>
+                </div>
+                {tickets.length ? (
+                  <div className="student-contact-list">
+                    {tickets.map((ticket) => (
+                      <div className="student-contact-row" key={ticket.id}>
+                        <span>
+                          <Icon name="bi-ticket" />
+                        </span>
+                        <div>
+                          <strong>{ticket.subject}</strong>
+                          <small>
+                            {ticket.studentNumber} ·{" "}
+                            {new Date(ticket.createdAt).toLocaleDateString("fa-IR")}
+                          </small>
+                          <p>{ticket.message}</p>
+                          {ticket.response ? (
+                            <small>{ticket.response}</small>
+                          ) : null}
+                        </div>
+                        <Badge
+                          tone={
+                            ticket.status === "open"
+                              ? "warning"
+                              : ticket.status === "answered"
+                                ? ticket.outcome === "reject"
+                                  ? "danger"
+                                  : "success"
+                                : "neutral"
+                          }
+                        >
+                          {ticket.status === "open"
+                            ? "باز"
+                            : ticket.status === "answered"
+                              ? "پاسخ داده شد"
+                              : "بسته شد"}
+                        </Badge>
+                      </div>
+                    ))}
+                  </div>
+                ) : (
+                  <div className="student-portal-empty-state compact">
+                    <Icon name="bi-ticket" />
+                    <strong>تیکتی ثبت نشده</strong>
+                    <span>
+                      اولین درخواست پشتیبانی خود را از بخش بالا ثبت کنید.
+                    </span>
+                  </div>
+                )}
+              </aside>
+            </div>
+          </section>
+        )}
       </main>
       <button
         className="student-help-fab"
@@ -4109,6 +4301,420 @@ export function Registrations({ registrations = [], onApprove, onReject, onRefre
           />
         )}
       </div>
+    </>
+  );
+}
+
+export function Tickets({
+  tickets = [],
+  students = [],
+  onRespond,
+  onClose,
+  onRefresh,
+}) {
+  const [statusFilter, setStatusFilter] = useState("all");
+  const [search, setSearch] = useState("");
+  const [respondingId, setRespondingId] = useState("");
+  const [responseText, setResponseText] = useState("");
+  const [outcome, setOutcome] = useState("accept");
+
+  const counts = {
+    all: tickets.length,
+    open: tickets.filter((t) => t.status === "open").length,
+    answered: tickets.filter((t) => t.status === "answered").length,
+    closed: tickets.filter((t) => t.status === "closed").length,
+  };
+
+  const filteredTickets = tickets.filter((ticket) => {
+    if (statusFilter !== "all" && ticket.status !== statusFilter) return false;
+    const query = normalizeSearch(search);
+    if (query) {
+      const haystack = normalizeSearch(
+        [
+          ticket.subject,
+          ticket.message,
+          ticket.studentName,
+          String(ticket.studentNumber || ""),
+          ticket.response || "",
+        ].join(" "),
+      );
+      if (!haystack.includes(query)) return false;
+    }
+    return true;
+  });
+
+  const selectedTicket =
+    tickets.find((ticket) => ticket.id === respondingId) || null;
+
+  const photoByStudentNumber = new Map(
+    students
+      .filter((student) => student && student.id != null)
+      .map((student) => [String(student.id).trim(), student.faceImage || ""]),
+  );
+
+  function photoForTicket(ticket) {
+    if (!ticket) return "";
+    const number = String(ticket.studentNumber || "").trim();
+    const byNumber = number ? photoByStudentNumber.get(number) : "";
+    if (byNumber) return byNumber;
+    const byName = students.find(
+      (student) => student.name === ticket.studentName,
+    );
+    return byName?.faceImage || "";
+  }
+
+  useEffect(() => {
+    onRefresh?.();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  function statusBadge(ticket) {
+    if (ticket.status === "closed") {
+      return <Badge tone="neutral">بسته شد</Badge>;
+    }
+    if (ticket.status === "answered") {
+      return (
+        <Badge tone={ticket.outcome === "reject" ? "danger" : "success"}>
+          {ticket.outcome === "reject" ? "رد شده" : "پاسخ داده شد"}
+        </Badge>
+      );
+    }
+    return <Badge tone="warning">باز</Badge>;
+  }
+
+  function formatDate(value) {
+    if (!value) return "—";
+    const date = new Date(value);
+    if (Number.isNaN(date.getTime())) return "—";
+    return date.toLocaleDateString("fa-IR", {
+      year: "numeric",
+      month: "2-digit",
+      day: "2-digit",
+    });
+  }
+
+  function truncate(text, max = 90) {
+    const value = String(text || "");
+    return value.length > max ? `${value.slice(0, max).trimEnd()}…` : value;
+  }
+
+  async function handleRespond() {
+    if (!selectedTicket) return;
+    if (responseText.trim().length < 2) return;
+    await onRespond(selectedTicket.id, {
+      response: responseText.trim(),
+      outcome,
+    });
+    setRespondingId("");
+    setResponseText("");
+    setOutcome("accept");
+  }
+
+  const statCards = [
+    { key: "all", icon: "bi-ticket-perforated", color: "blue", label: "کل تیکت‌ها", detail: "همهٔ درخواست‌های دریافتی" },
+    { key: "open", icon: "bi-envelope-open", color: "orange", label: "باز", detail: "نیازمند بررسی و پاسخ" },
+    { key: "answered", icon: "bi-patch-check", color: "green", label: "پاسخ داده", detail: "بررسی‌شده به‌صورت تایید/رد" },
+    { key: "closed", icon: "bi-check2-circle", color: "purple", label: "بسته‌شده", detail: "کیس خاتمه‌یافته" },
+  ];
+
+  const filterChips = [
+    { key: "all", label: "همه" },
+    { key: "open", label: "باز" },
+    { key: "answered", label: "پاسخ داده" },
+    { key: "closed", label: "بسته‌شده" },
+  ];
+
+  return (
+    <>
+      <PanelTitle
+        eyebrow="پشتیبانی دانشجویی"
+        title="تیکت‌های پشتیبانی"
+        description="درخواست‌های ثبت‌شده توسط دانشجویان، پاسخ و رهگیری وضعیت آن‌ها."
+        action={
+          <button className="btn btn-light-outline" onClick={onRefresh}>
+            <Icon name="bi-arrow-clockwise" /> بروزرسانی
+          </button>
+        }
+      />
+
+      <div className="ticket-stat-grid">
+        {statCards.map((card) => (
+          <button
+            key={card.key}
+            type="button"
+            className={`ticket-stat-btn ${statusFilter === card.key ? "active" : ""}`}
+            onClick={() => setStatusFilter(card.key)}
+            title={`فیلتر بر اساس «${card.label}»`}
+          >
+            <StatCard
+              icon={card.icon}
+              color={card.color}
+              label={card.label}
+              value={counts[card.key].toLocaleString("fa-IR")}
+              detail={card.detail}
+            />
+          </button>
+        ))}
+      </div>
+
+      <div className="content-card data-card">
+        <div className="table-toolbar ticket-toolbar">
+          <div className="ticket-filter-chips" role="group" aria-label="فیلتر وضعیت">
+            {filterChips.map((chip) => (
+              <button
+                key={chip.key}
+                type="button"
+                className={`ticket-chip ${statusFilter === chip.key ? "active" : ""}`}
+                onClick={() => setStatusFilter(chip.key)}
+              >
+                {chip.label}
+                <span>{counts[chip.key].toLocaleString("fa-IR")}</span>
+              </button>
+            ))}
+          </div>
+          <div className="search-wrap ticket-search">
+            <Icon name="bi-search" />
+            <input
+              type="text"
+              className="form-control"
+              value={search}
+              onChange={(event) => setSearch(event.target.value)}
+              onKeyDown={(event) => {
+                if (event.key === "Escape") setSearch("");
+              }}
+              placeholder="جستجو در موضوع، متن یا دانشجو…"
+              aria-label="جستجو در تیکت‌ها"
+            />
+            {search ? (
+              <button
+                type="button"
+                className="ticket-search-clear"
+                aria-label="پاک کردن جستجو"
+                onClick={() => setSearch("")}
+              >
+                <Icon name="bi-x-lg" />
+              </button>
+            ) : null}
+          </div>
+        </div>
+
+        {filteredTickets.length ? (
+          <div className="table-responsive">
+            <table className="table custom-table align-middle">
+              <thead>
+                <tr>
+                  <th>دانشجو</th>
+                  <th>موضوع</th>
+                  <th>متن درخواست</th>
+                  <th>وضعیت</th>
+                  <th>پاسخ</th>
+                  <th>عملیات</th>
+                </tr>
+              </thead>
+              <tbody>
+                {filteredTickets.map((ticket, index) => (
+                  <tr key={ticket.id}>
+                    <td>
+                      <div className="student-cell">
+                        <StudentAvatar
+                          name={ticket.studentName}
+                          photo={photoForTicket(ticket)}
+                          index={index}
+                        />
+                        <div>
+                          <strong>{ticket.studentName}</strong>
+                          <span className="student-id-small">
+                            {ticket.studentNumber}
+                          </span>
+                        </div>
+                      </div>
+                    </td>
+                    <td>
+                      <div className="ticket-subject-cell">
+                        <strong
+                          className={ticket.status === "open" ? "is-open" : ""}
+                          title={
+                            ticket.status === "open"
+                              ? `${ticket.subject} — برای پاسخ کلیک کنید`
+                              : ticket.subject
+                          }
+                          onClick={() => {
+                            if (ticket.status === "open") {
+                              setRespondingId(ticket.id);
+                              setResponseText("");
+                              setOutcome("accept");
+                            }
+                          }}
+                        >
+                          {ticket.subject}
+                        </strong>
+                        <span>{formatDate(ticket.createdAt)}</span>
+                      </div>
+                    </td>
+                    <td>
+                      <span
+                        className="ticket-text-cell"
+                        title={ticket.message}
+                      >
+                        {truncate(ticket.message, 80)}
+                      </span>
+                    </td>
+                    <td>{statusBadge(ticket)}</td>
+                    <td>
+                      {ticket.response ? (
+                        <span
+                          className="ticket-text-cell"
+                          title={ticket.response}
+                        >
+                          {truncate(ticket.response, 70)}
+                        </span>
+                      ) : (
+                        <span className="text-muted">—</span>
+                      )}
+                    </td>
+                    <td>
+                      {ticket.status === "open" ? (
+                        <div className="ticket-actions-cell">
+                          <button
+                            className="btn btn-success-soft btn-sm"
+                            onClick={() => {
+                              setRespondingId(ticket.id);
+                              setResponseText("");
+                              setOutcome("accept");
+                            }}
+                          >
+                            <Icon name="bi-chat-left-text" /> پاسخ
+                          </button>
+                          <button
+                            className="btn btn-light-outline btn-sm"
+                            onClick={() => onClose(ticket.id)}
+                          >
+                            <Icon name="bi-x-lg" /> بستن
+                          </button>
+                        </div>
+                      ) : (
+                        <span className="text-muted">—</span>
+                      )}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        ) : (
+          <EmptyState
+            icon="bi-ticket"
+            title={search ? "نتیجه‌ای یافت نشد" : "تیکتی موجود نیست"}
+            text={
+              search
+                ? "موردی مطابق جستجو یا فیلتر انتخابی پیدا نشد."
+                : "هنوز درخواست پشتیبانی ثبت نشده است."
+            }
+          />
+        )}
+      </div>
+
+      {selectedTicket ? (
+        <div
+          className="modal-backdrop-custom"
+          onClick={(event) => {
+            if (event.target === event.currentTarget) {
+              setRespondingId("");
+              setResponseText("");
+              setOutcome("accept");
+            }
+          }}
+        >
+          <div className="custom-modal" role="dialog" aria-modal="true">
+            <div className="ticket-modal-head">
+              <div>
+                <span>پاسخ به درخواست</span>
+                <h3>{selectedTicket.subject}</h3>
+                <div className="ticket-modal-student">
+                  <StudentAvatar
+                    name={selectedTicket.studentName}
+                    photo={photoForTicket(selectedTicket)}
+                    index={0}
+                  />
+                  <div>
+                    <strong>
+                      {selectedTicket.studentName} · {selectedTicket.studentNumber}
+                    </strong>
+                    <time>{formatDate(selectedTicket.createdAt)}</time>
+                  </div>
+                </div>
+              </div>
+              <button
+                type="button"
+                className="ticket-modal-close"
+                aria-label="بستن"
+                onClick={() => {
+                  setRespondingId("");
+                  setResponseText("");
+                  setOutcome("accept");
+                }}
+              >
+                <Icon name="bi-x-lg" />
+              </button>
+            </div>
+            <div className="ticket-modal-message">
+              <Icon name="bi-chat-left-quote" />
+              <p>{selectedTicket.message}</p>
+            </div>
+            <label className="form-label ticket-modal-label">
+              متن پاسخ
+              <textarea
+                className="form-control"
+                rows={4}
+                value={responseText}
+                onChange={(event) => setResponseText(event.target.value)}
+                placeholder="متن پاسخ یا نتیجهٔ بررسی را اینجا بنویسید…"
+                autoFocus
+              />
+            </label>
+            <div className="ticket-modal-label">
+              نتیجهٔ بررسی
+              <div className="ticket-outcome-toggle" role="group">
+                <button
+                  type="button"
+                  className={outcome === "accept" ? "active" : ""}
+                  onClick={() => setOutcome("accept")}
+                >
+                  <Icon name="bi-check2" /> تایید
+                </button>
+                <button
+                  type="button"
+                  className={outcome === "reject" ? "active" : ""}
+                  onClick={() => setOutcome("reject")}
+                >
+                  <Icon name="bi-x-lg" /> رد
+                </button>
+              </div>
+            </div>
+            <div className="ticket-modal-actions">
+              <button
+                className="btn btn-primary"
+                type="button"
+                onClick={handleRespond}
+                disabled={responseText.trim().length < 2}
+              >
+                <Icon name="bi-send" /> ثبت پاسخ
+              </button>
+              <button
+                className="btn btn-light-outline"
+                type="button"
+                onClick={() => {
+                  setRespondingId("");
+                  setResponseText("");
+                  setOutcome("accept");
+                }}
+              >
+                انصراف
+              </button>
+            </div>
+          </div>
+        </div>
+      ) : null}
     </>
   );
 }

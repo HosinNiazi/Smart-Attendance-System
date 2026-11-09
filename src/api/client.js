@@ -137,3 +137,15 @@ export function approveRegistration(id) {
 export function rejectRegistration(id) {
   return api(`/registrations/${id}/reject`, { method: 'PATCH' });
 }
+export function createTicket(payload) {
+  return api('/tickets', { method: 'POST', body: JSON.stringify(payload) });
+}
+export function fetchTickets() {
+  return api('/tickets');
+}
+export function respondTicket(id, payload) {
+  return api(`/tickets/${id}/respond`, { method: 'POST', body: JSON.stringify(payload) });
+}
+export function closeTicket(id) {
+  return api(`/tickets/${id}/close`, { method: 'POST' });
+}
