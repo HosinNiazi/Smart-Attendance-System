@@ -97,6 +97,34 @@ export function upsertAttendance(payload) {
 export function saveSettingsPayload(payload) {
   return api('/settings', { method: 'PUT', body: JSON.stringify(payload) });
 }
+export function fetchFingerprintCredentials(studentId) {
+  const query = studentId ? `?studentId=${encodeURIComponent(studentId)}` : '';
+  return api(`/fingerprint/credentials${query}`);
+}
+export function fetchMyFingerprintCredentials() {
+  return api('/fingerprint/self');
+}
+export function startFingerprintRegistration(studentId) {
+  return api('/fingerprint/credentials', { method: 'POST', body: JSON.stringify({ studentId }) });
+}
+export function finishFingerprintRegistration(studentId, response) {
+  return api('/fingerprint/credentials/verify', { method: 'POST', body: JSON.stringify({ studentId, response }) });
+}
+export function startFingerprintAuthentication(sessionId) {
+  return api('/fingerprint/authenticate/options', { method: 'POST', body: JSON.stringify({ sessionId }) });
+}
+export function finishFingerprintAuthentication(sessionId, response) {
+  return api('/fingerprint/authenticate/verify', { method: 'POST', body: JSON.stringify({ sessionId, response }) });
+}
+export function startMyFingerprintRegistration() {
+  return api('/fingerprint/self/options', { method: 'POST', body: JSON.stringify({}) });
+}
+export function finishMyFingerprintRegistration(response) {
+  return api('/fingerprint/self/verify', { method: 'POST', body: JSON.stringify({ response }) });
+}
+export function revokeFingerprintCredential(credentialId) {
+  return api(`/fingerprint/credentials/${encodeURIComponent(credentialId)}`, { method: 'DELETE' });
+}
 export function createRegistration(payload) {
   return api('/registrations', { method: 'POST', body: JSON.stringify(payload) });
 }

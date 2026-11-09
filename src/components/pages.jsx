@@ -11,6 +11,7 @@ import {
   updateLiveness,
 } from "../face/liveness.js";
 import { playBeep as playUnknown, playSuccess } from "../audio/sfx.js";
+import { startAuthentication, startRegistration } from "@simplewebauthn/browser";
 
 const PRESENT_STATUS = "\u062d\u0627\u0636\u0631";
 const ABSENT_STATUS = "\u063a\u0627\u06cc\u0628";
@@ -282,6 +283,19 @@ export function Dashboard({
               <span>
                 <strong>تشخیص چهره</strong>
                 <small>شروع دوربین برای ثبت آزمایشی</small>
+              </span>
+
+              <Icon name="bi-chevron-left" className="quick-arrow" />
+            </button>
+
+            <button onClick={() => onNavigate("fingerprint")}>
+              <span className="quick-icon rose">
+                <Icon name="bi-fingerprint" />
+              </span>
+
+              <span>
+                <strong>ثبت حضور با اثر انگشت</strong>
+                <small>احراز هویت فیزیکی با حسگر اثر انگشت</small>
               </span>
 
               <Icon name="bi-chevron-left" className="quick-arrow" />
@@ -2538,6 +2552,300 @@ export function Settings({
   );
 }
 
+export function FingerprintAttendance({
+  courses,
+  students,
+  attendance,
+  sessionCourse,
+  setSessionCourse,
+  sessionDate,
+  setSessionDate,
+  sessionId,
+  onMarkAttendance,
+  onRecognitionNotice,
+  fingerprintCredentials = [],
+  checkFingerprintEnrollment,
+  startFingerprintRegistration,
+  finishFingerprintRegistration,
+  startFingerprintAuthentication,
+  finishFingerprintAuthentication,
+  revokeFingerprintCredential,
+  onCheckMyFingerprint,
+}) {
+  const [fpBusy, setFpBusy] = React.useState(false);
+  const [fpBusyStudentId, setFpBusyStudentId] = React.useState("");
+  const [fpMessage, setFpMessage] = React.useState({ tone: "info", text: "" });
+
+  const enrolledByStudent = React.useMemo(() => {
+    const map = new Map();
+    for (const credential of fingerprintCredentials || []) {
+      if (!credential?.studentId || credential.revokedAt) continue;
+      map.set(String(credential.studentId), credential);
+    }
+    return map;
+  }, [fingerprintCredentials]);
+
+  const roster = React.useMemo(
+    () =>
+      (students || []).map((student) => ({
+        ...student,
+        credential:
+          enrolledByStudent.get(
+            String(student.databaseId || student.id),
+          ) || null,
+      })),
+    [students, enrolledByStudent],
+  );
+  const enrolledCount = roster.filter((row) => row.credential).length;
+
+  async function handleFingerprintScan() {
+    setFpBusy(true);
+    setFpMessage({ tone: "info", text: "در حال پیکربندی درخواست احراز اثر انگشت…" });
+    try {
+      const { options } = await startFingerprintAuthentication(sessionId);
+      const { platformAuthenticatorIsAvailable, startAuthentication } =
+        await import("@simplewebauthn/browser");
+      const available = await platformAuthenticatorIsAvailable();
+      if (!available) {
+        throw new Error("این مرورگر یا سیستم عامل از حسگر اثر انگشت پشتیبانی نمی‌کند.");
+      }
+      const response = await startAuthentication({ optionsJSON: options });
+      const result = await finishFingerprintAuthentication(sessionId, response);
+      if (!result?.verified) {
+        throw new Error("اثر انگشت با امنیت تأیید نشد.");
+      }
+      const studentId = result?.frontendStudentId || result?.student?.id;
+      if (!studentId) {
+        throw new Error("دانشجوی مربوط به این اثر انگشت در فهرست کلاس یافت نشد.");
+      }
+      const saved = await onMarkAttendance(studentId, "\u062d\u0627\u0636\u0631", {
+        silent: false,
+        method: "fingerprint",
+      });
+      if (saved) {
+        playSuccess();
+        setFpMessage({
+          tone: "success",
+          text: `اثر انگشت ${result.student.fullName || "دانشجو"} موفقیت‌آمیز احراز شد؛ وضعیت حاضر در این جلسه ثبت شد.`,
+        });
+      } else {
+        setFpMessage({
+          tone: "error",
+          text: "اثر انگشت تأیید شد، اما ثبت خودکار وضعیت در جلسه انجام نشد.",
+        });
+      }
+    } catch (error) {
+      setFpMessage({
+        tone: "error",
+        text: error?.message || "اثر انگشت یافت نشد؛ دوباره تلاش کنید.",
+      });
+      playUnknown();
+    } finally {
+      setFpBusy(false);
+    }
+  }
+
+  async function handleEnroll(student) {
+    setFpBusyStudentId(student.id);
+    setFpBusy(true);
+    setFpMessage({
+      tone: "info",
+      text: `در حال ثبت اثر انگشت ${student.name}…`,
+    });
+    try {
+      const payload = await startFingerprintRegistration(String(student.id));
+      const { startRegistration } = await import("@simplewebauthn/browser");
+      const response = await startRegistration({ optionsJSON: payload.options });
+      const result = await finishFingerprintRegistration(String(student.id), response);
+      setFpMessage({
+        tone: "success",
+        text: `اثر انگشت ${student.name} با موفقیت ثبت شد.`,
+      });
+    } catch (error) {
+      setFpMessage({
+        tone: "error",
+        text: error?.message || `ثبت اثر انگشت ${student.name} انجام نشد.`,
+      });
+    } finally {
+      setFpBusy(false);
+      setFpBusyStudentId("");
+    }
+  }
+
+  async function handleRevoke(student) {
+    const credentialId = student?.credential?.credentialId;
+    if (!credentialId) return;
+    try {
+      await revokeFingerprintCredential(credentialId);
+      setFpMessage({ tone: "info", text: "اثر انگشت با موفقیت غیرفعال شد." });
+    } catch (error) {
+      setFpMessage({
+        tone: "error",
+        text: error?.message || "غیرفعال‌سازی اثر انگشت انجام نشد.",
+      });
+    }
+  }
+
+  return (
+    <>
+      <PanelTitle
+        eyebrow="حضور و غیاب هوشمند"
+        title="ثبت حضور با اثر انگشت"
+        description="با حسگر فیزیکی اثر انگشت (WebAuthn/پلتفرم) هویت را احراز کنید؛ در صورت تأیید امن، وضعیت حضور در جلسه ثبت می‌شود."
+        action={
+          <Badge tone="danger">
+            <Icon name="bi-fingerprint" /> احراز هویت فیزیکی
+          </Badge>
+        }
+      />
+      <div className="face-layout">
+        <section className="content-card camera-card">
+          <div className="card-heading">
+            <div>
+              <h3>ثبت حضور با اثر انگشت</h3>
+              <p>کلاس انتخاب‌شده را مشخص کنید و سپس دانشجو اثر انگشتش را بزند.</p>
+            </div>
+            <span className={`camera-status ${fpBusy ? "is-live" : ""}`}>
+              <span /> {fpBusy ? "در حال احراز…" : "آمادهٔ ثبت"}
+            </span>
+          </div>
+          <div className="camera-placeholder">
+            <span className="camera-placeholder-icon">
+              <Icon name="bi-fingerprint" />
+            </span>
+            <strong>حسگر اثر انگشت آماده است</strong>
+            <p>
+              برای هر بار ثبت حضور، دانشجو باید اثر انگشت خود را روی حسگر بزند و
+              سپس دکمهٔ «ثبت حضور با اثر انگشت» را فشار دهد.
+            </p>
+          </div>
+          <div className="camera-controls">
+            <button
+              className="btn btn-primary"
+              onClick={handleFingerprintScan}
+              disabled={fpBusy}
+            >
+              <Icon name="bi-fingerprint" />{" "}
+              {fpBusy ? "در حال احراز اثر انگشت…" : "ثبت حضور با اثر انگشت"}
+            </button>
+            <span className="camera-hint">{fpMessage.text}</span>
+          </div>
+          <div className="camera-disclaimer">
+            <Icon name="bi-shield-lock" />
+            <span>
+              احراز اثر انگشت با امضای WebAuthn و بررسی امن انجام می‌شود و بدون
+              تأیید، وضعیت حضور ثبت نمی‌شود. اثر انگشت هر دانشجو به همان دستگاه و
+              مرورگری که ثبت شده گره می‌خورد؛ برای ایستگاه کلاس، ثبت را روی همان
+              ایستگاه انجام دهید.
+            </span>
+          </div>
+        </section>
+        <aside className="face-side">
+          <section className="content-card face-settings">
+            <div className="card-heading">
+              <div>
+                <h3>تنظیمات جلسه</h3>
+                <p>کلاس و تاریخ جلسه را انتخاب کنید.</p>
+              </div>
+              <span className="heading-icon">
+                <Icon name="bi-sliders" />
+              </span>
+            </div>
+            <label className="form-label" htmlFor="fingerprint-session-course">
+              درس / کلاس
+            </label>
+            <select
+              id="fingerprint-session-course"
+              className="form-select"
+              value={sessionCourse}
+              onChange={(event) => setSessionCourse(event.target.value)}
+            >
+              <option value="">همهٔ کلاس‌ها</option>
+              {courses.map((course) => (
+                <option key={course.id} value={course.title}>
+                  {course.title}
+                </option>
+              ))}
+            </select>
+            <label className="form-label" htmlFor="fingerprint-session-date">
+              تاریخ جلسه
+            </label>
+            <input
+              id="fingerprint-session-date"
+              className="form-control"
+              type="date"
+              value={sessionDate}
+              onChange={(event) => setSessionDate(event.target.value)}
+            />
+            <div className="face-info-row">
+              <span>
+                <Icon name="bi-calendar3" /> جلسهٔ فعال
+              </span>
+              <strong>{sessionId || "—"}</strong>
+            </div>
+          </section>
+          <section className="content-card face-settings">
+            <div className="card-heading">
+              <div>
+                <h3>دانشجویان کلاس</h3>
+                <p>
+                  {enrolledCount.toLocaleString("fa-IR")} از{" "}
+                  {students.length.toLocaleString("fa-IR")} عضو اثر انگشت دارند.
+                </p>
+              </div>
+              <span className="heading-icon">
+                <Icon name="bi-fingerprint" />
+              </span>
+            </div>
+            <div className="fingerprint-list">
+              {roster.length ? (
+                roster.map((student) => (
+                  <div className="fingerprint-row" key={student.id}>
+                    <span className="fingerprint-avatar">
+                      {student.name?.charAt(0) || "د"}
+                    </span>
+                    <div className="fingerprint-row-main">
+                      <strong>{student.name}</strong>
+                      <small>{student.id}</small>
+                    </div>
+                    {student.credential ? (
+                      <>
+                        <Badge tone="success">ثبت‌شده</Badge>
+                        <button
+                          className="text-action"
+                          type="button"
+                          onClick={() => handleRevoke(student)}
+                        >
+                          غیرفعال
+                        </button>
+                      </>
+                    ) : (
+                      <button
+                        className="btn btn-light-outline btn-sm"
+                        type="button"
+                        onClick={() => handleEnroll(student)}
+                        disabled={fpBusyStudentId === student.id}
+                      >
+                        <Icon name="bi-fingerprint" />{" "}
+                        {fpBusyStudentId === student.id ? "در حال ثبت…" : "ثبت اثر انگشت"}
+                      </button>
+                    )}
+                  </div>
+                ))
+              ) : (
+                <div className="student-portal-empty-state compact">
+                  <Icon name="bi-people" />
+                  <span>دانشجویی در این جلسه ثبت نشده است.</span>
+                </div>
+              )}
+            </div>
+          </section>
+        </aside>
+      </div>
+    </>
+  );
+}
+
 export function Profile({ name, role, photo, onSave }) {
   const [draftName, setDraftName] = useState(name);
   const [draftPhoto, setDraftPhoto] = useState(photo || "");
@@ -2701,6 +3009,9 @@ export function StudentPortal({
   photo,
   theme = "light",
   onUploadPhoto,
+  onCheckMyFingerprint,
+  onStartMyFingerprintRegistration,
+  onFinishMyFingerprintRegistration,
   onToggleTheme,
   onLogout,
 }) {
@@ -2711,6 +3022,15 @@ export function StudentPortal({
   const [localPreview, setLocalPreview] = useState("");
   const previewUrlRef = useRef("");
   const fileInputRef = useRef(null);
+  const [myFingerprintBusy, setMyFingerprintBusy] = useState(false);
+  const [myFingerprintState, setMyFingerprintState] = useState({
+    enrolled: false,
+    credential: null,
+  });
+  const [myFingerprintMessage, setMyFingerprintMessage] = useState({
+    tone: "",
+    text: "",
+  });
 
   useEffect(() => {
     setPhotoMessage({ tone: "", text: "" });
@@ -2720,6 +3040,59 @@ export function StudentPortal({
       previewUrlRef.current = "";
     }
   }, [student?.id]);
+
+  useEffect(() => {
+    let cancelled = false;
+    async function load() {
+      try {
+        const state =
+          (await onCheckMyFingerprint?.()) || { enrolled: false, credential: null };
+        if (!cancelled) setMyFingerprintState(state);
+      } catch {
+        if (!cancelled) setMyFingerprintState({ enrolled: false, credential: null });
+      }
+    }
+    load();
+    return () => {
+      cancelled = true;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [student?.id]);
+
+  async function handleMyFingerprintEnroll() {
+    setMyFingerprintBusy(true);
+    setMyFingerprintMessage({ tone: "", text: "" });
+    try {
+      const check = await onCheckMyFingerprint?.();
+      const state = check || { enrolled: false, credential: null };
+      setMyFingerprintState(state);
+      if (state.enrolled) {
+        setMyFingerprintMessage({
+          tone: "info",
+          text: "این حساب از قبل اثر انگشت دارد؛ برای ثبت حضور، آن را روی حسگر همان دستگاهی که ثبت شده بزنید.",
+        });
+        return;
+      }
+      const payload = await onStartMyFingerprintRegistration?.();
+      const { startRegistration } = await import("@simplewebauthn/browser");
+      const response = await startRegistration({ optionsJSON: payload.options });
+      const result = await onFinishMyFingerprintRegistration?.(response);
+      const checkAgain = await onCheckMyFingerprint?.();
+      setMyFingerprintState(checkAgain || { enrolled: false, credential: null });
+      setMyFingerprintMessage({
+        tone: "success",
+        text: "اثر انگشت شما با موفقیت ثبت شد؛ این اثر انگشت به همین دستگاه و مرورگر گره می‌خورد. برای حضور در ایستگاه کلاس، ثبت را روی همان ایستگاه انجام دهید.",
+      });
+    } catch (error) {
+      setMyFingerprintMessage({
+        tone: "error",
+        text: error?.message || "ثبت اثر انگشت انجام نشد.",
+      });
+      playUnknown();
+    } finally {
+      setMyFingerprintBusy(false);
+    }
+  }
 
   if (!student) {
     return (
@@ -2863,6 +3236,7 @@ export function StudentPortal({
 
   const tabs = [
     { id: "overview", label: "نمای کلی", icon: "bi-grid-1x2" },
+    { id: "fingerprint", label: "اثر انگشت", icon: "bi-fingerprint" },
     { id: "profile", label: "پروفایل من", icon: "bi-person-circle" },
     { id: "help", label: "کمک و ارتباط با ما", icon: "bi-headset" },
   ];
@@ -3120,6 +3494,51 @@ export function StudentPortal({
           </aside>
         </div>
           </>
+          )}
+
+        {tab === "fingerprint" && (
+          <section className="content-card student-fingerprint-card">
+            <div className="student-section-heading">
+              <div>
+                <span>حسگر فیزیکی</span>
+                <h2>اثر انگشت من</h2>
+              </div>
+              <span className="student-section-badge">
+                <Icon name="bi-fingerprint" /> احراز هویت فیزیکی
+              </span>
+            </div>
+            <div className={`student-fingerprint-status ${myFingerprintState?.enrolled ? "ok" : "missing"}`}>
+              <Icon name={myFingerprintState?.enrolled ? "bi-check2" : "bi-fingerprint"} />
+              <div>
+                <strong>
+                  {myFingerprintState?.enrolled
+                    ? "اثر انگشت شما ثبت و آمادهٔ استفاده است."
+                    : "اثر انگشتی برای حساب شما ثبت نشده است."}
+                </strong>
+                <small>
+                  {myFingerprintState?.enrolled
+                    ? "برای ثبت حضور، اثر انگشت خود را روی حسگر همان دستگاهی که ثبت شده بزنید؛ credential به همین دستگاه و مرورگر گره می‌خورد."
+                    : "با زدن دکمهٔ «ثبت اثر انگشت من»، روی حسگر همین دستگاه اثر انگشت بزنید. اگر می‌خواهید حضور را در ایستگاه کلاس ثبت کنید، ثبت را روی همان ایستگاه (توسط مدیر یا استاد) انجام دهید."}
+                </small>
+              </div>
+            </div>
+            <div className="student-fingerprint-actions">
+              <button
+                className="btn btn-primary"
+                type="button"
+                onClick={handleMyFingerprintEnroll}
+                disabled={myFingerprintBusy}
+              >
+                <Icon name="bi-fingerprint" />{" "}
+                {myFingerprintBusy ? "در حال اتصال به حسگر…" : "ثبت اثر انگشت من"}
+              </button>
+            </div>
+            {myFingerprintMessage.text ? (
+              <p className={`student-photo-message ${myFingerprintMessage.tone}`}>
+                {myFingerprintMessage.text}
+              </p>
+            ) : null}
+          </section>
         )}
 
         {tab === "profile" && (

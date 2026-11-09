@@ -11,6 +11,12 @@ import { pool, withTransaction, audit } from "./db.js";
 import multer from "multer";
 import path from "node:path";
 import fs from "node:fs";
+import {
+  generateAuthenticationOptions,
+  generateRegistrationOptions,
+  verifyAuthenticationResponse,
+  verifyRegistrationResponse,
+} from "@simplewebauthn/server";
 
 const app = express();
 
@@ -18,6 +24,15 @@ const port = Number(process.env.PORT || 8080);
 const jwtSecret = process.env.JWT_SECRET;
 if (!jwtSecret || jwtSecret.length < 32)
   throw new Error("JWT_SECRET must contain at least 32 characters.");
+
+const webauthnRelyingParty = {
+  id: process.env.WEBAUTHN_RP_ID || "localhost",
+  name: process.env.WEBAUTHN_RP_NAME || "حضوربان",
+};
+const webauthnOrigins = (process.env.WEBAUTHN_ORIGIN || "http://localhost:5173")
+  .split(",")
+  .map((item) => item.trim())
+  .filter(Boolean);
 
 const roles = ["admin", "teacher", "student"];
 const statusMap = {
@@ -143,6 +158,94 @@ function validate(schema) {
     return next();
   };
 }
+
+const fingerprintResponseSchemas = {
+  registration: z.object({ response: z.any() }).passthrough(),
+  authentication: z.object({ response: z.any() }).passthrough(),
+};
+
+async function createWebAuthnChallenge({ organizationId, userId, kind, sessionId }) {
+  const challenge = crypto.randomBytes(32).toString("base64url");
+  const expiresAt = new Date(Date.now() + Number(process.env.WEBAUTHN_CHALLENGE_TTL_MINUTES || 5) * 60_000);
+  const { rows } = await pool.query(
+    `INSERT INTO webauthn_challenges (organization_id, user_id, student_id, kind, challenge, session_id, expires_at)
+     VALUES ($1, $2, $3, $4, $5, $6, $7)
+     RETURNING id, kind, challenge, expires_at`,
+    [organizationId, userId, null, kind, challenge, sessionId, expiresAt],
+  );
+  return rows[0];
+}
+
+async function takeWebAuthnChallenge({ organizationId, userId, kind, sessionId }) {
+  const { rows } = await pool.query(
+    `SELECT id, challenge FROM webauthn_challenges
+      WHERE organization_id = $1 AND user_id = $2 AND kind = $3 AND session_id IS NOT DISTINCT FROM $4 AND expires_at > now()
+      ORDER BY created_at DESC
+      LIMIT 1`,
+    [organizationId, userId, kind, sessionId],
+  );
+  const found = rows[0];
+  if (!found) return null;
+  await pool.query(`DELETE FROM webauthn_challenges WHERE id = $1`, [found.id]);
+  return found.challenge;
+}
+
+async function safeVerifyRegistration(options) {
+  try {
+    return await verifyRegistrationResponse(options);
+  } catch {
+    return { verified: false };
+  }
+}
+
+async function safeVerifyAuthentication(options) {
+  try {
+    return await verifyAuthenticationResponse(options);
+  } catch {
+    return { verified: false };
+  }
+}
+
+async function listFingerprintCredentials(organizationId, studentId = null) {
+  const conditions = [
+    "fc.organization_id = $1",
+    "fc.revoked_at IS NULL",
+  ];
+  const params = [organizationId];
+  if (studentId) {
+    params.push(studentId);
+    conditions.push(`fc.student_id = $${params.length}`);
+  }
+  const { rows } = await pool.query(
+    `SELECT fc.id, fc.student_id AS "studentId", fc.user_id AS "userId",
+            fc.credential_id AS "credentialId", encode(fc.public_key::bytea, 'hex') AS "publicKeyHex",
+            fc.counter, fc.transports, fc.device_type AS "deviceType", fc.backed_up AS "backedUp",
+            fc.aaguid AS "aaguid", fc.device_label AS "deviceLabel",
+            fc.created_at AS "createdAt", fc.last_used_at AS "lastUsedAt", fc.revoked_at AS "revokedAt",
+            st.student_number AS "studentNumber", st.full_name AS "fullName"
+       FROM fingerprint_credentials fc
+       JOIN students st ON st.id = fc.student_id
+      WHERE ${conditions.join(" AND ")}
+      ORDER BY fc.created_at`,
+    params,
+  );
+  return rows.map((row) => ({
+    ...row,
+    publicKey: row.publicKeyHex ? Buffer.from(row.publicKeyHex, "hex") : null,
+    transports: row.transports || [],
+  }));
+}
+
+async function findStudentByUserId(userId, organizationId) {
+  const { rows } = await pool.query(
+    `SELECT st.id, st.student_number AS "studentNumber", st.full_name AS "fullName"
+       FROM users u
+       JOIN students st ON st.id = u.student_id::uuid
+      WHERE u.id = $1 AND u.organization_id = $2 AND u.is_active = true`,
+    [userId, organizationId],
+  );
+  return rows[0] || null;
+}
 function publicUser(row) {
   return {
     id: row.id,
@@ -200,7 +303,7 @@ const attendanceStatusSchema = z.enum([
   "left_early",
 ]);
 const attendanceMethodSchema = z
-  .enum(["manual", "face", "voice", "class_camera", "system"])
+  .enum(["manual", "face", "voice", "class_camera", "system", "fingerprint"])
   .default("manual");
 const attendanceUpsertSchema = z.object({
   sessionId: id,
@@ -1045,6 +1148,406 @@ app.put(
   }),
 );
 
+/* ------------------------- اثر انگشت (WebAuthn platform) ------------------------- */
+
+app.post(
+  "/api/fingerprint/credentials",
+  authorize("admin", "teacher"),
+  validate(z.object({ studentId: id.optional() })),
+  asyncRoute(async (req, res) => {
+    const organizationId = req.user.org;
+    let studentId = req.body?.studentId;
+    if (!studentId) {
+      const { rows } = await pool.query(
+        `SELECT student_id AS "studentId" FROM users WHERE id = $1 AND organization_id = $2 AND is_active = true`,
+        [req.user.sub, organizationId],
+      );
+      studentId = rows[0]?.studentId;
+    }
+    const resolvedStudentId = String(studentId || "");
+    const studentCheck = await pool.query(
+      `SELECT id, student_number AS "studentNumber", full_name AS "fullName"
+         FROM students WHERE id = $1 AND organization_id = $2`,
+      [resolvedStudentId, organizationId],
+    );
+    if (!studentCheck.rows[0]) {
+      return res.status(404).json({ message: "دانشجویی برای ثبت اثر انگشت یافت نشد." });
+    }
+    const resolvedStudent = studentCheck.rows[0];
+    const { rows: existing } = await pool.query(
+      `SELECT credential_id AS "credentialId", transports FROM fingerprint_credentials
+        WHERE student_id = $1 AND organization_id = $2 AND revoked_at IS NULL`,
+      [resolvedStudentId, organizationId],
+    );
+    const options = await generateRegistrationOptions({
+      rpID: webauthnRelyingParty.id,
+      rpName: webauthnRelyingParty.name,
+      userID: Buffer.from(resolvedStudentId, "utf8"),
+      userName: resolvedStudent.studentNumber || resolvedStudentId,
+      userDisplayName: resolvedStudent.fullName || resolvedStudentId,
+      authenticatorSelection: {
+        authenticatorAttachment: "platform",
+        residentKey: "required",
+        userVerification: "required",
+      },
+      attestation: "none",
+      excludeCredentials: existing.map((row) => ({
+        id: row.credentialId,
+        transports: row.transports || [],
+      })),
+    });
+    await createWebAuthnChallenge({
+      organizationId,
+      userId: req.user.sub,
+      studentId: resolvedStudentId,
+      kind: "registration",
+      sessionId: null,
+    });
+    res.json({ options, studentId: resolvedStudentId });
+  }),
+);
+
+app.post(
+  "/api/fingerprint/credentials/verify",
+  authorize("admin", "teacher"),
+  validate(fingerprintResponseSchemas.registration),
+  asyncRoute(async (req, res) => {
+    const organizationId = req.user.org;
+    const challenge = await takeWebAuthnChallenge({
+      organizationId,
+      userId: req.user.sub,
+      kind: "registration",
+      sessionId: null,
+    });
+    if (!challenge) {
+      return res
+        .status(404)
+        .json({ message: "درخواست ثبت اثر انگشت منقضی یا نامعتبر شد." });
+    }
+    const verification = await safeVerifyRegistration({
+      response: req.body.response,
+      expectedChallenge: challenge,
+      expectedOrigin: webauthnOrigins,
+      expectedRPID: webauthnRelyingParty.id,
+      requireUserVerification: true,
+    });
+    if (!verification.verified) {
+      return res.status(400).json({ message: "اثر انگشت با امنیت تأیید نشد." });
+    }
+    const credential = verification.registrationInfo?.credential;
+    if (!credential) {
+      return res.status(400).json({ message: "دادهٔ احراز اثر انگشت کامل نبود." });
+    }
+    const credentialId = String(credential.id || "");
+    const publicKey = Buffer.isBuffer(credential.publicKey)
+      ? credential.publicKey
+      : Buffer.from(credential.publicKey || []);
+    const requestedStudentId = String(req.body?.studentId || "");
+    let ownerStudentId = requestedStudentId;
+    if (!ownerStudentId) {
+      const { rows: linked } = await pool.query(
+        `SELECT student_id AS "studentId" FROM users WHERE id = $1 AND organization_id = $2 AND is_active = true`,
+        [req.user.sub, organizationId],
+      );
+      ownerStudentId = String(linked[0]?.studentId || "");
+    }
+    const ownerCheck = await pool.query(
+      `SELECT id FROM students WHERE organization_id = $1 AND id = $2`,
+      [organizationId, ownerStudentId],
+    );
+    const studentRef = ownerCheck.rows[0]?.id;
+    await pool.query(
+      `INSERT INTO fingerprint_credentials
+         (organization_id, student_id, user_id, credential_id, public_key, counter, transports, device_type, backed_up, aaguid)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+       ON CONFLICT (organization_id, student_id, credential_id) DO NOTHING`,
+      [
+        organizationId,
+        studentRef,
+        req.user.sub,
+        credentialId,
+        publicKey,
+        Number(credential.counter || 0),
+        credential.transports || [],
+        verification.registrationInfo?.credentialDeviceType || null,
+        Boolean(verification.registrationInfo?.credentialBackedUp || false),
+        verification.registrationInfo?.aaguid || null,
+      ],
+    );
+    return res.json({ verified: true, credentialId, studentId: studentRef || null });
+  }),
+);
+
+app.get(
+  "/api/fingerprint/credentials",
+  authorize("admin", "teacher"),
+  asyncRoute(async (req, res) => {
+    const credentials = await listFingerprintCredentials(req.user.org, req.query.studentId);
+    res.json({ credentials });
+  }),
+);
+
+app.post(
+  "/api/fingerprint/self/options",
+  asyncRoute(async (req, res) => {
+    const organizationId = req.user.org;
+    const { rows } = await pool.query(
+      `SELECT st.id, st.student_number AS "studentNumber", st.full_name AS "fullName"
+         FROM users u
+         JOIN students st ON st.id = u.student_id::uuid
+        WHERE u.id = $1 AND u.organization_id = $2 AND u.is_active = true`,
+      [req.user.sub, organizationId],
+    );
+    const student = rows[0];
+    if (!student) {
+      return res.status(404).json({ message: "حساب شما به دانشجویی معتبر در سامانه متصل نیست." });
+    }
+    const { rows: existing } = await pool.query(
+      `SELECT credential_id AS "credentialId", transports FROM fingerprint_credentials
+        WHERE student_id = $1 AND organization_id = $2 AND revoked_at IS NULL`,
+      [student.id, organizationId],
+    );
+    const options = await generateRegistrationOptions({
+      rpID: webauthnRelyingParty.id,
+      rpName: webauthnRelyingParty.name,
+      userID: Buffer.from(String(student.id), "utf8"),
+      userName: student.studentNumber || String(student.id),
+      userDisplayName: student.fullName || String(student.id),
+      authenticatorSelection: {
+        authenticatorAttachment: "platform",
+        residentKey: "required",
+        userVerification: "required",
+      },
+      attestation: "none",
+      excludeCredentials: existing.map((row) => ({
+        id: row.credentialId,
+        transports: row.transports || [],
+      })),
+    });
+    await createWebAuthnChallenge({
+      organizationId,
+      userId: req.user.sub,
+      studentId: String(student.id),
+      kind: "registration",
+      sessionId: null,
+    });
+    res.json({ options, studentId: String(student.id) });
+  }),
+);
+
+app.post(
+  "/api/fingerprint/self/verify",
+  asyncRoute(async (req, res) => {
+    const organizationId = req.user.org;
+    const challenge = await takeWebAuthnChallenge({
+      organizationId,
+      userId: req.user.sub,
+      kind: "registration",
+      sessionId: null,
+    });
+    if (!challenge) {
+      return res.status(404).json({ message: "درخواست ثبت اثر انگشت منقضی یا نامعتبر شد." });
+    }
+    const verification = await safeVerifyRegistration({
+      response: req.body?.response,
+      expectedChallenge: challenge,
+      expectedOrigin: webauthnOrigins,
+      expectedRPID: webauthnRelyingParty.id,
+      requireUserVerification: true,
+    });
+    if (!verification.verified) {
+      return res.status(400).json({ message: "اثر انگشت با امنیت تأیید نشد." });
+    }
+    const credential = verification.registrationInfo?.credential;
+    if (!credential) {
+      return res.status(400).json({ message: "دادهٔ احراز اثر انگشت کامل نبود." });
+    }
+    const { rows: linked } = await pool.query(
+      `SELECT student_id AS "studentId" FROM users WHERE id = $1 AND organization_id = $2 AND is_active = true`,
+      [req.user.sub, organizationId],
+    );
+    const ownerStudentId = String(linked[0]?.studentId || "");
+    const ownerCheck = await pool.query(
+      `SELECT id FROM students WHERE organization_id = $1 AND id = $2`,
+      [organizationId, ownerStudentId],
+    );
+    const studentRef = ownerCheck.rows[0]?.id;
+    if (!studentRef) {
+      return res.status(404).json({ message: "حساب شما به دانشجویی معتبر در سامانه متصل نیست." });
+    }
+    const credentialId = String(credential.id || "");
+    const publicKey = Buffer.isBuffer(credential.publicKey)
+      ? credential.publicKey
+      : Buffer.from(credential.publicKey || "");
+    await pool.query(
+      `INSERT INTO fingerprint_credentials
+         (organization_id, student_id, user_id, credential_id, public_key, counter, transports, device_type, backed_up, aaguid)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+       ON CONFLICT (organization_id, student_id, credential_id) DO NOTHING`,
+      [
+        organizationId,
+        studentRef,
+        req.user.sub,
+        credentialId,
+        publicKey,
+        Number(credential.counter || 0),
+        credential.transports || [],
+        verification.registrationInfo?.credentialDeviceType || null,
+        Boolean(verification.registrationInfo?.credentialBackedUp || false),
+        verification.registrationInfo?.aaguid || null,
+      ],
+    );
+    return res.json({ verified: true, credentialId, studentId: studentRef || null });
+  }),
+);
+
+app.get(
+  "/api/fingerprint/self",
+  asyncRoute(async (req, res) => {
+    const { rows } = await pool.query(
+      `SELECT fc.id, fc.student_id AS "studentId", fc.user_id AS "userId",
+              fc.credential_id AS "credentialId", fc.counter, fc.transports,
+              fc.device_label AS "deviceLabel", fc.created_at AS "createdAt", fc.last_used_at AS "lastUsedAt",
+              fc.revoked_at AS "revokedAt"
+         FROM fingerprint_credentials fc
+        WHERE fc.organization_id = $2 AND fc.revoked_at IS NULL
+          AND (
+            fc.user_id = $1
+            OR fc.student_id = (
+              SELECT u.student_id::uuid FROM users u
+               WHERE u.id = $1 AND u.organization_id = $2
+            )
+          )
+        ORDER BY fc.created_at`,
+      [req.user.sub, req.user.org],
+    );
+    const studentIds = [...new Set(rows.map((row) => String(row.studentId)).filter(Boolean))];
+    let students = [];
+    if (studentIds.length) {
+      const { rows: found } = await pool.query(
+        `SELECT id, student_number AS "studentNumber", full_name AS "fullName" FROM students WHERE organization_id = $1 AND id = ANY($2::uuid[])`,
+        [req.user.org, studentIds],
+      );
+      const byId = new Map(found.map((row) => [String(row.id), row]));
+      students = studentIds.map((id) => byId.get(id)).filter(Boolean);
+    }
+    res.json({
+      credentials: rows.map((row) => ({
+        ...row,
+        student: students.find((item) => String(item.id) === String(row.studentId)) || null,
+      })),
+    });
+  }),
+);
+
+app.post(
+  "/api/fingerprint/authenticate/options",
+  authorize("admin", "teacher"),
+  asyncRoute(async (req, res) => {
+    const organizationId = req.user.org;
+    const { rows } = await pool.query(
+      `SELECT fc.credential_id AS "credentialId", fc.student_id AS "studentId", fc.transports
+         FROM fingerprint_credentials fc
+        WHERE fc.organization_id = $1 AND fc.revoked_at IS NULL
+        ORDER BY fc.created_at`,
+      [organizationId],
+    );
+    const options = await generateAuthenticationOptions({
+      rpID: webauthnRelyingParty.id,
+      allowCredentials: rows.map((row) => ({
+        id: row.credentialId,
+        transports: row.transports || [],
+      })),
+      userVerification: "required",
+      timeout: 60_000,
+    });
+    await createWebAuthnChallenge({
+      organizationId,
+      userId: req.user.sub,
+      studentId: null,
+      kind: "authentication",
+      sessionId: null,
+    });
+    res.json({ options, credentials: rows });
+  }),
+);
+
+app.post(
+  "/api/fingerprint/authenticate/verify",
+  authorize("admin", "teacher"),
+  validate(fingerprintResponseSchemas.authentication),
+  asyncRoute(async (req, res) => {
+    const organizationId = req.user.org;
+    const { response } = req.body || {};
+    const challenge = await takeWebAuthnChallenge({
+      organizationId,
+      userId: req.user.sub,
+      kind: "authentication",
+      sessionId: null,
+    });
+    if (!challenge) {
+      return res
+        .status(404)
+        .json({ message: "درخواست تأیید اثر انگشت منقضی یا نامعتبر شد." });
+    }
+    const credentialId = String(response?.id || response?.rawId || "");
+    const { rows } = await pool.query(
+      `SELECT id, student_id AS "studentId", credential_id AS "credentialId",
+              public_key AS "publicKey", counter, transports
+         FROM fingerprint_credentials
+        WHERE credential_id = $1 AND organization_id = $2 AND revoked_at IS NULL
+        ORDER BY created_at DESC
+        LIMIT 1`,
+      [credentialId, organizationId],
+    );
+    const credentialRow = rows[0];
+    if (!credentialRow) {
+      return res
+        .status(401)
+        .json({ message: "اثر انگشت ثبت‌شدهٔ این سامانه برای تأیید حضور یافت نشد." });
+    }
+    const verification = await safeVerifyAuthentication({
+      response,
+      expectedChallenge: challenge,
+      expectedOrigin: webauthnOrigins,
+      expectedRPID: webauthnRelyingParty.id,
+      credential: {
+        id: credentialRow.credentialId,
+        publicKey: credentialRow.publicKey,
+        counter: credentialRow.counter,
+        transports: credentialRow.transports || [],
+      },
+      requireUserVerification: true,
+    });
+    if (!verification.verified) {
+      return res.status(401).json({ message: "اثر انگشت با امنیت تأیید نشد." });
+    }
+    await pool.query(
+      `UPDATE fingerprint_credentials SET counter = $1, last_used_at = now() WHERE id = $2`,
+      [Number(verification.authenticationInfo?.newCounter || 0), credentialRow.id],
+    );
+    const { rows: studentRows } = await pool.query(
+      `SELECT id, student_number AS "studentNumber", full_name AS "fullName"
+         FROM students WHERE organization_id = $1 AND id = $2`,
+      [organizationId, credentialRow.studentId],
+    );
+    return res.json({ verified: true, credentialId, student: studentRows[0] || null });
+  }),
+);
+
+app.delete(
+  "/api/fingerprint/credentials/:credentialId",
+  authorize("admin", "teacher"),
+  asyncRoute(async (req, res) => {
+    const { rows } = await pool.query(
+      `UPDATE fingerprint_credentials SET revoked_at = now() WHERE credential_id = $1 AND organization_id = $2 AND revoked_at IS NULL RETURNING id`,
+      [req.params.credentialId, req.user.org],
+    );
+    if (!rows[0]) return res.sendStatus(404);
+    return res.json({ revoked: true });
+  }),
+);
+
 app.patch(
   "/api/attendance/:attendanceId",
   authorize("admin", "teacher"),
@@ -1059,7 +1562,14 @@ app.patch(
         "left_early",
       ]),
       method: z
-        .enum(["manual", "face", "voice", "class_camera", "system"])
+        .enum([
+          "manual",
+          "face",
+          "voice",
+          "class_camera",
+          "system",
+          "fingerprint",
+        ])
         .default("manual"),
       reason: z.string().trim().max(500).optional().default(""),
     }),
@@ -1173,7 +1683,7 @@ app.post(
     };
 
     const validMethod = (value) =>
-      ["face", "voice", "class_camera", "manual", "system"].includes(value)
+      ["face", "voice", "class_camera", "manual", "system", "fingerprint"].includes(value)
         ? value
         : "manual";
 

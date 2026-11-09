@@ -5,6 +5,7 @@ import {
   Courses,
   Dashboard,
   FaceAttendance,
+  FingerprintAttendance,
   ManualAttendance,
   Profile,
   Registrations,
@@ -38,6 +39,15 @@ import {
   uploadStudentPhoto,
   uploadMyPhoto,
   upsertAttendance,
+  fetchFingerprintCredentials,
+  fetchMyFingerprintCredentials,
+  startFingerprintRegistration as startFingerprintRegistrationApi,
+  finishFingerprintRegistration as finishFingerprintRegistrationApi,
+  startFingerprintAuthentication as startFingerprintAuthenticationApi,
+  finishFingerprintAuthentication as finishFingerprintAuthenticationApi,
+  revokeFingerprintCredential as revokeFingerprintCredentialApi,
+  startMyFingerprintRegistration as startMyFingerprintRegistrationApi,
+  finishMyFingerprintRegistration as finishMyFingerprintRegistrationApi,
 } from "./api/client.js";
 import { adaptBootstrap, toEnStatus } from "./api/adapter.js";
 import { HelpChat } from "./help/HelpChat.jsx";
@@ -62,6 +72,7 @@ const navGroups = [
       { id: "voice", label: "تشخیص صدا", icon: "bi-mic" },
       { id: "face", label: "تشخیص چهره", icon: "bi-camera-video" },
       { id: "class-camera", label: "دوربین کلاس", icon: "bi-camera-reels" },
+      { id: "fingerprint", label: "اثر انگشت", icon: "bi-fingerprint" },
       { id: "reports", label: "گزارش‌ها", icon: "bi-bar-chart-line" },
     ],
   },
@@ -86,6 +97,7 @@ const ROLE_PERMISSIONS = {
     "voice",
     "face",
     "class-camera",
+    "fingerprint",
     "reports",
     "profile",
   ]),
@@ -329,6 +341,8 @@ export default function App() {
   );
   const videoRef = useRef(null);
   const streamRef = useRef(null);
+  const [fingerprintCredentials, setFingerprintCredentials] = useState([]);
+  const [fingerprintBusy, setFingerprintBusy] = useState(false);
   const [settings, setSettings] = useState({
     name: "سامانه حضوربان",
     lateAfter: "10",
@@ -1260,9 +1274,11 @@ export default function App() {
             reason:
               method === "voice"
                 ? "ثبت با تشخیص صدا"
-                : method === "face"
-                  ? "ثبت با تشخیص چهره"
-                  : "ثبت خودکار حضور",
+                : method === "fingerprint"
+                  ? "ثبت با اثر انگشت"
+                  : method === "face"
+                    ? "ثبت با تشخیص چهره"
+                    : "ثبت خودکار حضور",
             method,
           },
         ],
@@ -1277,11 +1293,102 @@ export default function App() {
       reason:
         method === "voice"
           ? "ثبت با تشخیص صدا"
-          : method === "face" || method === "class_camera"
-            ? "ثبت با تشخیص چهره"
-            : "ثبت دستی",
+          : method === "fingerprint"
+            ? "ثبت با اثر انگشت"
+            : method === "face" || method === "class_camera"
+              ? "ثبت با تشخیص چهره"
+              : "ثبت دستی",
     });
     return true;
+  }
+  function studentsForActiveSession() {
+    const course = courses.find((item) => item.title === sessionCourse);
+    const sessionRoster = sessionHistory[sessionId]?.studentIds;
+    const roster =
+      Array.isArray(sessionRoster) && sessionRoster.length
+        ? sessionRoster
+        : course?.studentIds;
+    return students.filter(
+      (student) =>
+        !Array.isArray(roster) ||
+        roster.length === 0 ||
+        roster.includes(student.id),
+    );
+  }
+  async function checkFingerprintEnrollment(studentId) {
+    const databaseId = studentDatabaseId(studentId) || String(studentId);
+    const payload = await fetchFingerprintCredentials(databaseId);
+    const credentials = payload?.credentials || [];
+    const credential =
+      credentials.find(
+        (item) => String(item.studentId) === String(databaseId),
+      ) || null;
+    return { enrolled: Boolean(credential), credential };
+  }
+  async function startFingerprintRegistration(studentId) {
+    const databaseId = studentDatabaseId(studentId);
+    if (!databaseId) {
+      throw new Error("شناسهٔ دیتابیس این دانشجو یافت نشد؛ صفحه را دوباره بارگذاری کنید.");
+    }
+    return startFingerprintRegistrationApi(String(databaseId));
+  }
+  async function finishFingerprintRegistration(studentId, response) {
+    const databaseId = studentDatabaseId(studentId);
+    if (!databaseId) {
+      throw new Error("شناسهٔ دیتابیس این دانشجو یافت نشد؛ صفحه را دوباره بارگذاری کنید.");
+    }
+    const payload = await finishFingerprintRegistrationApi(
+      String(databaseId),
+      response,
+    );
+    await refreshFingerprintEnrollments();
+    return payload;
+  }
+  async function startFingerprintAuthentication(sessionId) {
+    const payload = await startFingerprintAuthenticationApi(sessionId);
+    return payload;
+  }
+  async function finishFingerprintAuthentication(sessionId, response) {
+    const payload = await finishFingerprintAuthenticationApi(sessionId, response);
+    const databaseId = payload?.student?.id;
+    const linkedStudent = databaseId
+      ? students.find(
+          (item) => String(item.databaseId) === String(databaseId),
+        )
+      : null;
+    return { ...payload, frontendStudentId: linkedStudent?.id || null };
+  }
+  async function revokeFingerprintCredential(credentialId) {
+    const payload = await revokeFingerprintCredentialApi(String(credentialId));
+    await refreshFingerprintEnrollments();
+    return payload;
+  }
+  async function checkMyFingerprint() {
+    const payload = await fetchMyFingerprintCredentials();
+    const credentials = payload?.credentials || [];
+    const currentUserId = getApiUser()?.id || "";
+    const credential =
+      credentials.find(
+        (item) => item.userId && String(item.userId) === String(currentUserId),
+      ) || credentials[0] || null;
+    return { enrolled: Boolean(credential), credential };
+  }
+  async function startMyFingerprintRegistration() {
+    const payload = await startMyFingerprintRegistrationApi();
+    return payload;
+  }
+  async function finishMyFingerprintRegistration(response) {
+    const payload = await finishMyFingerprintRegistrationApi(response);
+    await refreshFingerprintEnrollments();
+    return payload;
+  }
+  async function refreshFingerprintEnrollments() {
+    try {
+      const payload = await fetchFingerprintCredentials();
+      setFingerprintCredentials(payload?.credentials || []);
+    } catch {
+      /* خطا در لیست اثر انگشت نباید پنل را بکشد */
+    }
   }
   function openSession(event) {
     if (!event?.id) return;
@@ -1428,6 +1535,15 @@ export default function App() {
       ensureSessionAbsents(sessionId);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [active, sessionId]);
+  useEffect(() => {
+    if (active !== "fingerprint") return undefined;
+    let cancelled = false;
+    refreshFingerprintEnrollments().catch(() => {});
+    return () => {
+      cancelled = true;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [active]);
   async function finalizeSession(id) {
     const session = sessionHistory[id];
     if (!session) return;
@@ -1821,6 +1937,9 @@ export default function App() {
         photo={profilePhoto}
         theme={theme}
         onUploadPhoto={saveMyPhoto}
+        onCheckMyFingerprint={checkMyFingerprint}
+        onStartMyFingerprintRegistration={startMyFingerprintRegistration}
+        onFinishMyFingerprintRegistration={finishMyFingerprintRegistration}
         onToggleTheme={() =>
           setTheme((current) => (current === "dark" ? "light" : "dark"))
         }
@@ -2116,6 +2235,28 @@ export default function App() {
                   : () => startCamera("", true)
               }
               stopCamera={stopCamera}
+            />
+          )}
+          {active === "fingerprint" && (
+            <FingerprintAttendance
+              courses={courses}
+              students={studentsForActiveSession()}
+              attendance={attendance}
+              sessionCourse={sessionCourse}
+              setSessionCourse={setSessionCourse}
+              sessionDate={sessionDate}
+              setSessionDate={setSessionDate}
+              sessionId={sessionId}
+              onMarkAttendance={markFaceAttendance}
+              onRecognitionNotice={notify}
+              fingerprintCredentials={fingerprintCredentials}
+              checkFingerprintEnrollment={checkFingerprintEnrollment}
+              startFingerprintRegistration={startFingerprintRegistration}
+              finishFingerprintRegistration={finishFingerprintRegistration}
+              startFingerprintAuthentication={startFingerprintAuthentication}
+              finishFingerprintAuthentication={finishFingerprintAuthentication}
+              revokeFingerprintCredential={revokeFingerprintCredential}
+              onCheckMyFingerprint={checkMyFingerprint}
             />
           )}
           {active === "voice" && (

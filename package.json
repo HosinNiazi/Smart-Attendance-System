@@ -11,6 +11,7 @@
     "api:migrate": "npm --prefix server run migrate"
   },
   "dependencies": {
+    "@simplewebauthn/browser": "^14.0.0",
     "@vladmandic/face-api": "^1.7.15",
     "bootstrap": "^5.3.8",
     "bootstrap-icons": "^1.13.1",
