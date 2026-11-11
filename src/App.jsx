@@ -2,10 +2,12 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Icon } from "./components/shared.jsx";
 import {
+  AttendanceObjections,
   Courses,
   Dashboard,
   FaceAttendance,
   FingerprintAttendance,
+  LeaveRequests,
   ManualAttendance,
   Profile,
   Registrations,
@@ -55,6 +57,18 @@ import {
   fetchTickets as fetchTicketsApi,
   respondTicket as respondTicketApi,
   closeTicket as closeTicketApi,
+  fetchLeaveRequests,
+  createLeaveRequest,
+  reviewLeaveRequest,
+  fetchAttendanceObjections,
+  createAttendanceObjection,
+  reviewAttendanceObjection,
+  fetchNotifications,
+  fetchUnreadNotificationCount,
+  markNotificationRead,
+  markAllNotificationsRead,
+  importStudents,
+  importCourses,
 } from "./api/client.js";
 import { adaptBootstrap, toEnStatus } from "./api/adapter.js";
 import { HelpChat } from "./help/HelpChat.jsx";
@@ -81,6 +95,13 @@ const navGroups = [
       { id: "class-camera", label: "دوربین کلاس", icon: "bi-camera-reels" },
       { id: "fingerprint", label: "اثر انگشت", icon: "bi-fingerprint" },
       { id: "reports", label: "گزارش‌ها", icon: "bi-bar-chart-line" },
+    ],
+  },
+  {
+    title: "درخواست‌ها",
+    items: [
+      { id: "leave-requests", label: "مرخصی و توجیه", icon: "bi-calendar2-check" },
+      { id: "objections", label: "اعتراض‌های حضور", icon: "bi-shield-exclamation" },
     ],
   },
   {
@@ -388,6 +409,14 @@ export default function App() {
   const [regPending, setRegPending] = useState(false);
   const [helpOpen, setHelpOpen] = useState(false);
   const [tickets, setTickets] = useState([]);
+  const [leaveRequests, setLeaveRequests] = useState([]);
+  const [objections, setObjections] = useState([]);
+  const [leaveLoading, setLeaveLoading] = useState(false);
+  const [objectionsLoading, setObjectionsLoading] = useState(false);
+  const [notifications, setNotifications] = useState([]);
+  const [unreadCount, setUnreadCount] = useState(0);
+  const [notificationsOpen, setNotificationsOpen] = useState(false);
+  const [ticketsLoading, setTicketsLoading] = useState(false);
 
   useEffect(() => {
     if (!toast) return;
@@ -440,6 +469,13 @@ export default function App() {
       }));
     }
   }, []);
+  useEffect(() => {
+    if (login) return undefined;
+    refreshNotifications();
+    const timer = setInterval(() => refreshNotifications(), 30000);
+    return () => clearInterval(timer);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [login]);
   const filteredStudents = useMemo(
     () =>
       students.filter(
@@ -525,12 +561,142 @@ export default function App() {
   }
 
   async function refreshTickets() {
+    setTicketsLoading(true);
     try {
       const data = await fetchTicketsApi();
       setTickets(Array.isArray(data) ? data : []);
     } catch (error) {
       notify(error.message || "دریافت درخواست‌ها انجام نشد.");
+    } finally {
+      setTicketsLoading(false);
     }
+  }
+
+  async function refreshLeaveRequests() {
+    setLeaveLoading(true);
+    try {
+      const data = await fetchLeaveRequests();
+      setLeaveRequests(Array.isArray(data) ? data : []);
+    } catch (error) {
+      notify(error.message || "دریافت درخواست‌های مرخصی انجام نشد.");
+    } finally {
+      setLeaveLoading(false);
+    }
+  }
+
+  async function reviewLeave(id, payload) {
+    const updated = await reviewLeaveRequest(id, payload);
+    await refreshLeaveRequests();
+    await loadFromServer({ silent: true });
+    notify(
+      payload.status === "approved"
+        ? "درخواست مرخصی تایید شد."
+        : "درخواست مرخصی رد شد.",
+    );
+    return updated;
+  }
+
+  async function submitLeaveRequest(payload, proofFile) {
+    const created = await createLeaveRequest(payload, proofFile);
+    await refreshLeaveRequests();
+    await refreshNotifications();
+    return created;
+  }
+
+  async function refreshObjections() {
+    setObjectionsLoading(true);
+    try {
+      const data = await fetchAttendanceObjections();
+      setObjections(Array.isArray(data) ? data : []);
+    } catch (error) {
+      notify(error.message || "دریافت اعتراض‌ها انجام نشد.");
+    } finally {
+      setObjectionsLoading(false);
+    }
+  }
+
+  async function reviewObjection(id, payload) {
+    const updated = await reviewAttendanceObjection(id, payload);
+    await refreshObjections();
+    await loadFromServer({ silent: true });
+    notify(
+      payload.status === "approved"
+        ? "اعتراض تایید و وضعیت حضور اصلاح شد."
+        : "اعتراض رد شد.",
+    );
+    return updated;
+  }
+
+  async function submitObjection(payload) {
+    const created = await createAttendanceObjection(payload);
+    await refreshObjections();
+    await refreshNotifications();
+    return created;
+  }
+
+  async function refreshNotifications() {
+    try {
+      const [list, unread] = await Promise.all([
+        fetchNotifications(),
+        fetchUnreadNotificationCount(),
+      ]);
+      setNotifications(Array.isArray(list) ? list : []);
+      setUnreadCount(Number(unread?.count) || 0);
+    } catch (error) {
+      console.warn("fetchNotifications failed", error);
+    }
+  }
+
+  async function readNotification(id) {
+    setNotifications((current) =>
+      current.map((item) =>
+        item.id === id ? { ...item, isRead: true } : item,
+      ),
+    );
+    try {
+      await markNotificationRead(id);
+      setUnreadCount((current) => Math.max(0, current - 1));
+    } catch (error) {
+      await refreshNotifications();
+    }
+  }
+
+  async function readAllNotifications() {
+    setNotifications((current) =>
+      current.map((item) => ({ ...item, isRead: true })),
+    );
+    setUnreadCount(0);
+    try {
+      await markAllNotificationsRead();
+    } catch (error) {
+      await refreshNotifications();
+    }
+  }
+
+  async function importStudentsHandler(rows) {
+    const result = await importStudents(rows);
+    await loadFromServer({ silent: true });
+    notify(
+      `${result.created.toLocaleString("fa-IR")} دانشجو ایمپورت شد${
+        result.errors?.length
+          ? ` و ${result.errors.length.toLocaleString("fa-IR")} سطر خطا داشت`
+          : ""
+      }.`,
+    );
+    return result;
+  }
+
+  async function importCoursesHandler(rows) {
+    const result = await importCourses(rows);
+    await loadFromServer({ silent: true });
+    notify(
+      `${result.created.toLocaleString("fa-IR")} درس ایمپورت شد${
+        result.errors?.length
+          ? ` و ${result.errors.length.toLocaleString("fa-IR")} سطر خطا داشت`
+          : ""
+      }.`,
+    );
+    return result;
   }
 
   async function createTicket(payload) {
@@ -1778,6 +1944,10 @@ export default function App() {
                 );
                 setLoginPassword("");
                 setLogin(false);
+                refreshTickets().catch(() => {});
+                refreshNotifications().catch(() => {});
+                refreshLeaveRequests().catch(() => {});
+                refreshObjections().catch(() => {});
               } catch (error) {
                 setLoginError(error.message || "ورود به سامانه انجام نشد.");
               } finally {
@@ -1990,6 +2160,13 @@ export default function App() {
         tickets={tickets}
         onCreateTicket={createTicket}
         onRefreshTickets={refreshTickets}
+        leaveRequests={leaveRequests}
+        onCreateLeave={submitLeaveRequest}
+        onRefreshLeaveRequests={refreshLeaveRequests}
+        onCreateObjection={submitObjection}
+        notifications={notifications}
+        onMarkNotificationRead={readNotification}
+        onMarkAllNotificationsRead={readAllNotifications}
       />
     );
   }
@@ -2085,14 +2262,75 @@ export default function App() {
             <div className="top-date">
               <Icon name="bi-calendar3" /> {faDate.format(new Date())}
             </div>
-            <button
-              className="icon-button notification-button"
-              title="اعلان‌ها"
-              onClick={() => notify("در حال حاضر اعلان جدیدی ندارید.")}
-            >
-              <Icon name="bi-bell" />
-              <span />
-            </button>
+            <div className="notification-wrap">
+              <button
+                className="icon-button notification-button"
+                type="button"
+                title="اعلان‌ها"
+                onClick={() => setNotificationsOpen((value) => !value)}
+              >
+                <Icon name="bi-bell" />
+                {unreadCount > 0 && (
+                  <span className="notification-count">
+                    {unreadCount.toLocaleString("fa-IR")}
+                  </span>
+                )}
+              </button>
+              {notificationsOpen && (
+                <div className="notification-panel">
+                  <div className="notification-panel-head">
+                    <strong>اعلان‌ها</strong>
+                    <button
+                      type="button"
+                      onClick={readAllNotifications}
+                      disabled={!unreadCount}
+                    >
+                      خواندن همه
+                    </button>
+                  </div>
+                  <div className="notification-list">
+                    {notifications.length ? (
+                      notifications.map((item) => (
+                        <button
+                          key={item.id}
+                          type="button"
+                          className={`notification-item ${item.isRead ? "" : "unread"}`}
+                          onClick={() => {
+                            readNotification(item.id);
+                            if (item.link && item.link !== "portal") go(item.link);
+                            setNotificationsOpen(false);
+                          }}
+                        >
+                          <span className="notification-item-icon">
+                            <Icon
+                              name={
+                                item.type === "leave"
+                                  ? "bi-calendar2-check"
+                                  : item.type === "objection"
+                                    ? "bi-shield-exclamation"
+                                    : "bi-bell"
+                              }
+                            />
+                          </span>
+                          <span className="notification-item-copy">
+                            <strong>{item.title}</strong>
+                            <p>{item.message}</p>
+                            <small>
+                              {new Date(item.createdAt).toLocaleString("fa-IR")}
+                            </small>
+                          </span>
+                        </button>
+                      ))
+                    ) : (
+                      <div className="notification-empty">
+                        <Icon name="bi-bell-slash" />
+                        <span>اعلان جدیدی ندارید</span>
+                      </div>
+                    )}
+                  </div>
+                </div>
+              )}
+            </div>
             <button
               className="icon-button theme-toggle"
               type="button"
@@ -2173,6 +2411,7 @@ export default function App() {
                 }
               }}
               onSavePhoto={saveStudentPhoto}
+              onImportStudents={importStudentsHandler}
             />
           )}
           {active === "courses" && (
@@ -2181,6 +2420,7 @@ export default function App() {
               students={students}
               onAddCourse={addCourse}
               onNavigate={go}
+              onImportCourses={importCoursesHandler}
             />
           )}
           {active === "sessions" && (
@@ -2388,9 +2628,27 @@ export default function App() {
             <Tickets
               tickets={tickets}
               students={students}
+              loading={ticketsLoading}
               onRespond={respondTicket}
               onClose={closeTicket}
               onRefresh={refreshTickets}
+            />
+          )}
+          {active === "leave-requests" && (
+            <LeaveRequests
+              requests={leaveRequests}
+              students={students}
+              loading={leaveLoading}
+              onReview={reviewLeave}
+              onRefresh={refreshLeaveRequests}
+            />
+          )}
+          {active === "objections" && (
+            <AttendanceObjections
+              objections={objections}
+              loading={objectionsLoading}
+              onReview={reviewObjection}
+              onRefresh={refreshObjections}
             />
           )}
         </div>

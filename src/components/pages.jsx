@@ -1,5 +1,5 @@
 import React, { useEffect, useRef, useState } from "react";
-import { Badge, EmptyState, Icon, PanelTitle, StatCard, StudentAvatar } from "./shared.jsx";
+import { Badge, EmptyState, Icon, PanelTitle, SkeletonCards, SkeletonTable, StatCard, StudentAvatar } from "./shared.jsx";
 import { HelpChat } from "../help/HelpChat.jsx";
 import {
   CLASSROOM_SCAN_INTERVAL_MS,
@@ -403,7 +403,8 @@ export function Dashboard({
   );
 }
 
-export function Students({ students, query, setQuery, onAdd, onDelete, onSavePhoto }) {
+export function Students({ students, query, setQuery, onAdd, onDelete, onSavePhoto, onImportStudents }) {
+  const [importOpen, setImportOpen] = useState(false);
   return (
     <>
       <PanelTitle
@@ -411,11 +412,26 @@ export function Students({ students, query, setQuery, onAdd, onDelete, onSavePho
         title="مدیریت دانشجویان"
         description="فهرست دانشجویان را مشاهده، جست‌وجو و مدیریت کنید."
         action={
-          <button className="btn btn-primary" onClick={onAdd}>
-            <Icon name="bi-plus-lg" /> افزودن دانشجو
-          </button>
+          <div className="page-action-row">
+            <button className="btn btn-primary" onClick={onAdd}>
+              <Icon name="bi-plus-lg" /> افزودن دانشجو
+            </button>
+            <button
+              className="btn btn-light-outline"
+              onClick={() => setImportOpen(true)}
+            >
+              <Icon name="bi-file-earmark-spreadsheet" /> ایمپورت اکسل
+            </button>
+          </div>
         }
       />
+      {importOpen ? (
+        <ImportPanel
+          kind="students"
+          onImport={onImportStudents}
+          onClose={() => setImportOpen(false)}
+        />
+      ) : null}
       <div className="content-card data-card">
         <div className="table-toolbar">
           <div className="search-wrap">
@@ -537,8 +553,10 @@ export function Courses({
   onNavigate,
   onAddCourse,
   onPlanCourse,
+  onImportCourses,
 }) {
   const [showCourseForm, setShowCourseForm] = useState(false);
+  const [importOpen, setImportOpen] = useState(false);
   const [courseForm, setCourseForm] = useState({
     id: "",
     title: "",
@@ -609,9 +627,22 @@ export function Courses({
             >
               <Icon name="bi-calendar-plus" /> مشاهده جلسات
             </button>
+            <button
+              className="btn btn-light-outline"
+              onClick={() => setImportOpen(true)}
+            >
+              <Icon name="bi-file-earmark-spreadsheet" /> ایمپورت اکسل
+            </button>
           </div>
         }
       />
+      {importOpen ? (
+        <ImportPanel
+          kind="courses"
+          onImport={onImportCourses}
+          onClose={() => setImportOpen(false)}
+        />
+      ) : null}
       {showCourseForm && (
         <form
           className="content-card course-create-card"
@@ -3230,8 +3261,17 @@ export function StudentPortal({
   tickets = [],
   onCreateTicket,
   onRefreshTickets,
+  leaveRequests = [],
+  onCreateLeave,
+  onRefreshLeaveRequests,
+  onCreateObjection,
+  notifications = [],
+  onMarkNotificationRead,
+  onMarkAllNotificationsRead,
 }) {
   const [tab, setTab] = useState("overview");
+  const [notificationsOpen, setNotificationsOpen] = useState(false);
+  const [portalToast, setPortalToast] = useState("");
   const [helpOpen, setHelpOpen] = useState(false);
   const [uploading, setUploading] = useState(false);
   const [photoMessage, setPhotoMessage] = useState({ tone: "", text: "" });
@@ -3251,6 +3291,111 @@ export function StudentPortal({
   const [ticketMessage, setTicketMessage] = useState("");
   const [ticketBusy, setTicketBusy] = useState(false);
   const [ticketNotice, setTicketNotice] = useState({ tone: "", text: "" });
+  const [leaveForm, setLeaveForm] = useState({
+    type: "leave",
+    startDate: new Date().toISOString().slice(0, 10),
+    endDate: "",
+    reason: "",
+  });
+  const [leaveProof, setLeaveProof] = useState(null);
+  const [leaveBusy, setLeaveBusy] = useState(false);
+  const [leaveNotice, setLeaveNotice] = useState({ tone: "", text: "" });
+  const [objectionTarget, setObjectionTarget] = useState(null);
+  const [objectionReason, setObjectionReason] = useState("");
+  const [objectionBusy, setObjectionBusy] = useState(false);
+  const [objectionNotice, setObjectionNotice] = useState({
+    tone: "",
+    text: "",
+  });
+
+  useEffect(() => {
+    if (tab !== "leave") return undefined;
+    onRefreshLeaveRequests?.().catch(() => {});
+    return undefined;
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [tab]);
+
+  useEffect(() => {
+    if (!portalToast) return undefined;
+    const timer = setTimeout(() => setPortalToast(""), 4000);
+    return () => clearTimeout(timer);
+  }, [portalToast]);
+
+  async function handleCreateLeave() {
+    if (leaveForm.reason.trim().length < 5) {
+      setLeaveNotice({ tone: "error", text: "دلیل را کامل‌تر بنویسید (حداقل ۵ کاراکتر)." });
+      return;
+    }
+    if (leaveForm.endDate && leaveForm.endDate < leaveForm.startDate) {
+      setLeaveNotice({ tone: "error", text: "تاریخ پایان نمی‌تواند قبل از شروع باشد." });
+      return;
+    }
+    setLeaveBusy(true);
+    setLeaveNotice({ tone: "", text: "" });
+    try {
+      await onCreateLeave(
+        {
+          type: leaveForm.type,
+          startDate: leaveForm.startDate,
+          endDate: leaveForm.endDate || leaveForm.startDate,
+          reason: leaveForm.reason.trim(),
+        },
+        leaveProof,
+      );
+      setLeaveForm({
+        type: "leave",
+        startDate: new Date().toISOString().slice(0, 10),
+        endDate: "",
+        reason: "",
+      });
+      setLeaveProof(null);
+      setLeaveNotice({
+        tone: "success",
+        text: "درخواست شما ثبت شد و در انتظار بررسی مدیر است.",
+      });
+      setPortalToast("درخواست مرخصی/توجیه شما با موفقیت ثبت شد.");
+    } catch (error) {
+      setLeaveNotice({
+        tone: "error",
+        text: error?.message || "ثبت درخواست انجام نشد.",
+      });
+    } finally {
+      setLeaveBusy(false);
+    }
+  }
+
+  async function handleCreateObjection() {
+    if (!objectionTarget) return;
+    if (objectionReason.trim().length < 5) {
+      setObjectionNotice({
+        tone: "error",
+        text: "دلیل اعتراض را کامل‌تر بنویسید.",
+      });
+      return;
+    }
+    setObjectionBusy(true);
+    setObjectionNotice({ tone: "", text: "" });
+    try {
+      await onCreateObjection({
+        attendanceId: objectionTarget.databaseId,
+        reason: objectionReason.trim(),
+      });
+      setObjectionTarget(null);
+      setObjectionReason("");
+      setObjectionNotice({
+        tone: "success",
+        text: "اعتراض شما ثبت شد و توسط مدیر بررسی می‌شود.",
+      });
+      setPortalToast("اعتراض شما ثبت شد و توسط مدیر بررسی می‌شود.");
+    } catch (error) {
+      setObjectionNotice({
+        tone: "error",
+        text: error?.message || "ثبت اعتراض انجام نشد.",
+      });
+    } finally {
+      setObjectionBusy(false);
+    }
+  }
 
   useEffect(() => {
     if (tab !== "tickets") return undefined;
@@ -3492,6 +3637,7 @@ export function StudentPortal({
     { id: "fingerprint", label: "اثر انگشت", icon: "bi-fingerprint" },
     { id: "profile", label: "پروفایل من", icon: "bi-person-circle" },
     { id: "tickets", label: "تیکت‌ها", icon: "bi-ticket" },
+    { id: "leave", label: "مرخصی و توجیه", icon: "bi-calendar2-check" },
     { id: "help", label: "کمک و ارتباط با ما", icon: "bi-headset" },
   ];
 
@@ -3531,6 +3677,19 @@ export function StudentPortal({
 
   return (
     <div className="student-portal" dir="rtl">
+      {portalToast ? (
+        <div className="student-portal-toast" role="status">
+          <Icon name="bi-check2-circle" />
+          <span>{portalToast}</span>
+          <button
+            type="button"
+            aria-label="بستن پیام"
+            onClick={() => setPortalToast("")}
+          >
+            ×
+          </button>
+        </div>
+      ) : null}
       <header className="student-portal-topbar">
         <div className="student-portal-brand">
           <span>
@@ -3560,6 +3719,79 @@ export function StudentPortal({
           <div>
             <strong>{student.name}</strong>
             <small>دانشجو · {student.id}</small>
+          </div>
+          <div className="notification-wrap">
+            <button
+              className="icon-button student-notification-button"
+              type="button"
+              title="اعلان‌ها"
+              aria-label="اعلان‌ها"
+              onClick={() => setNotificationsOpen((value) => !value)}
+            >
+              <Icon name="bi-bell" />
+              {notifications.filter((item) => !item.isRead).length > 0 && (
+                <span className="notification-count">
+                  {notifications
+                    .filter((item) => !item.isRead)
+                    .length.toLocaleString("fa-IR")}
+                </span>
+              )}
+            </button>
+            {notificationsOpen && (
+              <div className="notification-panel">
+                <div className="notification-panel-head">
+                  <strong>اعلان‌ها</strong>
+                  <button
+                    type="button"
+                    onClick={() => onMarkAllNotificationsRead?.()}
+                    disabled={
+                      !notifications.some((item) => !item.isRead)
+                    }
+                  >
+                    خواندن همه
+                  </button>
+                </div>
+                <div className="notification-list">
+                  {notifications.length ? (
+                    notifications.map((item) => (
+                      <button
+                        key={item.id}
+                        type="button"
+                        className={`notification-item ${item.isRead ? "" : "unread"}`}
+                        onClick={() => {
+                          onMarkNotificationRead?.(item.id);
+                          setNotificationsOpen(false);
+                        }}
+                      >
+                        <span className="notification-item-icon">
+                          <Icon
+                            name={
+                              item.type === "leave"
+                                ? "bi-calendar2-check"
+                                : item.type === "objection"
+                                  ? "bi-shield-exclamation"
+                                  : "bi-bell"
+                            }
+                          />
+                        </span>
+                        <span className="notification-item-copy">
+                          <strong>{item.title}</strong>
+                          <p>{item.message}</p>
+                          <small>
+                            {new Date(item.createdAt).toLocaleString("fa-IR")}
+                          </small>
+                        </span>
+                      </button>
+                    ))
+                  ) : (
+                    <div className="notification-empty">
+                      <Icon name="bi-bell-slash" />
+                      <span>اعلان جدیدی ندارید</span>
+                    </div>
+                  )}
+                </div>
+              </div>
+            )}
           </div>
           <button
             className="icon-button student-theme-toggle"
@@ -3697,6 +3929,18 @@ export function StudentPortal({
                       <span className={`student-record-status ${kind}`}>
                         {statusLabel(record.status)}
                       </span>
+                      {record.databaseId && kind !== "present" ? (
+                        <button
+                          type="button"
+                          className="btn btn-light-outline btn-sm student-record-action"
+                          onClick={() => {
+                            setObjectionNotice({ tone: "", text: "" });
+                            setObjectionTarget(record);
+                          }}
+                        >
+                          <Icon name="bi-exclamation-circle" /> اعتراض
+                        </button>
+                      ) : null}
                     </article>
                   );
                 })}
@@ -4201,6 +4445,252 @@ export function StudentPortal({
             </div>
           </section>
         )}
+        {tab === "leave" && (
+          <section className="student-help-section">
+            <div className="student-help-hero">
+              <div className="student-help-copy">
+                <span className="student-welcome-eyebrow">
+                  <i /> مرخصی و توجیه غیبت
+                </span>
+                <h1>ثبت درخواست مرخصی</h1>
+                <p>
+                  برای روزهایی که نمی‌توانید در کلاس حاضر شوید، درخواست مرخصی
+                  یا توجیه غیبت ثبت کنید. پس از تایید مدیر، وضعیت حضور شما به
+                  «موجه» تغییر می‌کند.
+                </p>
+              </div>
+              <span className="student-help-mark">
+                <Icon name="bi-calendar2-check" />
+              </span>
+            </div>
+
+            <div className="student-help-grid">
+              <section className="content-card student-faq-card">
+                <div className="student-section-heading">
+                  <div>
+                    <span>ثبت درخواست</span>
+                    <h2>درخواست جدید</h2>
+                  </div>
+                </div>
+                <label className="form-label">
+                  نوع درخواست
+                  <select
+                    className="form-select"
+                    value={leaveForm.type}
+                    onChange={(event) =>
+                      setLeaveForm((current) => ({
+                        ...current,
+                        type: event.target.value,
+                      }))
+                    }
+                  >
+                    <option value="leave">مرخصی</option>
+                    <option value="excuse">توجیه غیبت</option>
+                  </select>
+                </label>
+                <div className="leave-date-grid">
+                  <label className="form-label">
+                    از تاریخ
+                    <input
+                      type="date"
+                      className="form-control"
+                      value={leaveForm.startDate}
+                      onChange={(event) =>
+                        setLeaveForm((current) => ({
+                          ...current,
+                          startDate: event.target.value,
+                        }))
+                      }
+                    />
+                  </label>
+                  <label className="form-label">
+                    تا تاریخ (اختیاری)
+                    <input
+                      type="date"
+                      className="form-control"
+                      value={leaveForm.endDate}
+                      min={leaveForm.startDate}
+                      onChange={(event) =>
+                        setLeaveForm((current) => ({
+                          ...current,
+                          endDate: event.target.value,
+                        }))
+                      }
+                    />
+                  </label>
+                </div>
+                <label className="form-label" style={{ marginTop: 12 }}>
+                  دلیل *
+                  <textarea
+                    className="form-control"
+                    rows={4}
+                    value={leaveForm.reason}
+                    onChange={(event) =>
+                      setLeaveForm((current) => ({
+                        ...current,
+                        reason: event.target.value,
+                      }))
+                    }
+                    placeholder="دلیل مرخصی یا توضیح غیبت را بنویسید…"
+                  />
+                </label>
+                <label className="form-label" style={{ marginTop: 12 }}>
+                  فایل پیوست (اختیاری)
+                  <input
+                    type="file"
+                    className="form-control"
+                    accept="image/jpeg,image/png,image/webp,application/pdf"
+                    onChange={(event) =>
+                      setLeaveProof(event.target.files?.[0] || null)
+                    }
+                  />
+                </label>
+                <div className="student-actions-cell" style={{ marginTop: 12 }}>
+                  <button
+                    className="btn btn-primary"
+                    type="button"
+                    disabled={leaveBusy || leaveForm.reason.trim().length < 5}
+                    onClick={handleCreateLeave}
+                  >
+                    <Icon name="bi-send" />{" "}
+                    {leaveBusy ? "در حال ثبت…" : "ثبت درخواست"}
+                  </button>
+                </div>
+                {leaveNotice.text ? (
+                  <p
+                    className={`student-photo-message ${leaveNotice.tone}`}
+                    role="status"
+                  >
+                    {leaveNotice.text}
+                  </p>
+                ) : null}
+              </section>
+
+              <aside className="content-card student-contact-card">
+                <div className="student-section-heading">
+                  <div>
+                    <span>وضعیت درخواست‌ها</span>
+                    <h2>پیگیری مرخصی‌ها</h2>
+                  </div>
+                </div>
+                {leaveRequests.length ? (
+                  <div className="student-contact-list">
+                    {leaveRequests.map((request) => (
+                      <div className="student-contact-row" key={request.id}>
+                        <span>
+                          <Icon name="bi-calendar2-check" />
+                        </span>
+                        <div>
+                          <strong>
+                            {request.type === "leave" ? "مرخصی" : "توجیه غیبت"}
+                          </strong>
+                          <small>
+                            {new Date(request.startDate).toLocaleDateString(
+                              "fa-IR",
+                            )}
+                            {request.endDate !== request.startDate
+                              ? ` تا ${new Date(
+                                  request.endDate,
+                                ).toLocaleDateString("fa-IR")}`
+                              : ""}
+                          </small>
+                          <p>{request.reason}</p>
+                          {request.adminNote ? (
+                            <small>پاسخ مدیر: {request.adminNote}</small>
+                          ) : null}
+                        </div>
+                        {requestStatusBadge(request.status)}
+                      </div>
+                    ))}
+                  </div>
+                ) : (
+                  <div className="student-portal-empty-state compact">
+                    <Icon name="bi-calendar2-x" />
+                    <strong>درخواستی ثبت نشده</strong>
+                    <span>
+                      اولین درخواست مرخصی یا توجیه خود را از بخش بالا ثبت کنید.
+                    </span>
+                  </div>
+                )}
+              </aside>
+            </div>
+          </section>
+        )}
+        {objectionTarget ? (
+          <div
+            className="modal-backdrop-custom"
+            onClick={(event) => {
+              if (event.target === event.currentTarget) setObjectionTarget(null);
+            }}
+          >
+            <div className="custom-modal" role="dialog" aria-modal="true">
+              <div className="ticket-modal-head">
+                <div>
+                  <span>اعتراض به وضعیت حضور</span>
+                  <h3>{objectionTarget.course || "جلسهٔ درسی"}</h3>
+                  <div className="ticket-modal-student">
+                    <Icon name="bi-calendar-event" />
+                    <div>
+                      <strong>
+                        {formatDate(
+                          objectionTarget.sessionDate || objectionTarget.date,
+                        )}
+                        {objectionTarget.time ? ` · ${objectionTarget.time}` : ""}
+                      </strong>
+                      <span className="student-id-small">
+                        وضعیت فعلی: {statusLabel(objectionTarget.status)}
+                      </span>
+                    </div>
+                  </div>
+                </div>
+                <button
+                  type="button"
+                  className="ticket-modal-close"
+                  aria-label="بستن"
+                  onClick={() => setObjectionTarget(null)}
+                >
+                  <Icon name="bi-x-lg" />
+                </button>
+              </div>
+              <label className="form-label ticket-modal-label">
+                دلیل اعتراض
+                <textarea
+                  className="form-control"
+                  rows={4}
+                  value={objectionReason}
+                  onChange={(event) => setObjectionReason(event.target.value)}
+                  placeholder="توضیح دهید چرا معتقدید این وضعیت اشتباه ثبت شده است…"
+                />
+              </label>
+              {objectionNotice.text ? (
+                <p
+                  className={`student-photo-message ${objectionNotice.tone}`}
+                  role="status"
+                >
+                  {objectionNotice.text}
+                </p>
+              ) : null}
+              <div className="ticket-modal-actions">
+                <button
+                  className="btn btn-primary"
+                  type="button"
+                  disabled={objectionBusy || objectionReason.trim().length < 5}
+                  onClick={handleCreateObjection}
+                >
+                  <Icon name="bi-send" />{" "}
+                  {objectionBusy ? "در حال ثبت…" : "ثبت اعتراض"}
+                </button>
+                <button
+                  className="btn btn-light-outline"
+                  type="button"
+                  onClick={() => setObjectionTarget(null)}
+                >
+                  انصراف
+                </button>
+              </div>
+            </div>
+          </div>
+        ) : null}
       </main>
       <button
         className="student-help-fab"
@@ -4308,6 +4798,7 @@ export function Registrations({ registrations = [], onApprove, onReject, onRefre
 export function Tickets({
   tickets = [],
   students = [],
+  loading = false,
   onRespond,
   onClose,
   onRefresh,
@@ -4437,25 +4928,29 @@ export function Tickets({
         }
       />
 
-      <div className="ticket-stat-grid">
-        {statCards.map((card) => (
-          <button
-            key={card.key}
-            type="button"
-            className={`ticket-stat-btn ${statusFilter === card.key ? "active" : ""}`}
-            onClick={() => setStatusFilter(card.key)}
-            title={`فیلتر بر اساس «${card.label}»`}
-          >
-            <StatCard
-              icon={card.icon}
-              color={card.color}
-              label={card.label}
-              value={counts[card.key].toLocaleString("fa-IR")}
-              detail={card.detail}
-            />
-          </button>
-        ))}
-      </div>
+      {loading && !tickets.length ? (
+        <SkeletonCards />
+      ) : (
+        <div className="ticket-stat-grid">
+          {statCards.map((card) => (
+            <button
+              key={card.key}
+              type="button"
+              className={`ticket-stat-btn ${statusFilter === card.key ? "active" : ""}`}
+              onClick={() => setStatusFilter(card.key)}
+              title={`فیلتر بر اساس «${card.label}»`}
+            >
+              <StatCard
+                icon={card.icon}
+                color={card.color}
+                label={card.label}
+                value={counts[card.key].toLocaleString("fa-IR")}
+                detail={card.detail}
+              />
+            </button>
+          ))}
+        </div>
+      )}
 
       <div className="content-card data-card">
         <div className="table-toolbar ticket-toolbar">
@@ -4498,7 +4993,9 @@ export function Tickets({
           </div>
         </div>
 
-        {filteredTickets.length ? (
+        {loading && !tickets.length ? (
+          <SkeletonTable rows={5} columns={6} />
+        ) : filteredTickets.length ? (
           <div className="table-responsive">
             <table className="table custom-table align-middle">
               <thead>
@@ -4716,5 +5213,741 @@ export function Tickets({
         </div>
       ) : null}
     </>
+  );
+}
+
+/* ================= مرخصی و اعتراض ================= */
+
+function RequestReviewModal({
+  title,
+  subtitle,
+  studentLabel,
+  message,
+  approveLabel = "تایید",
+  rejectLabel = "رد",
+  busy,
+  onClose,
+  onConfirm,
+}) {
+  const [status, setStatus] = useState("approved");
+  const [note, setNote] = useState("");
+  return (
+    <div
+      className="modal-backdrop-custom"
+      onClick={(event) => {
+        if (event.target === event.currentTarget) onClose();
+      }}
+    >
+      <div className="custom-modal" role="dialog" aria-modal="true">
+        <div className="ticket-modal-head">
+          <div>
+            <span>{subtitle}</span>
+            <h3>{title}</h3>
+            <div className="ticket-modal-student">
+              <Icon name="bi-person-badge" />
+              <div>
+                <strong>{studentLabel}</strong>
+              </div>
+            </div>
+          </div>
+          <button
+            type="button"
+            className="ticket-modal-close"
+            aria-label="بستن"
+            onClick={onClose}
+          >
+            <Icon name="bi-x-lg" />
+          </button>
+        </div>
+        <div className="ticket-modal-message">
+          <Icon name="bi-chat-left-quote" />
+          <p>{message}</p>
+        </div>
+        <label className="form-label ticket-modal-label">
+          یادداشت مدیر (اختیاری)
+          <textarea
+            className="form-control"
+            rows={3}
+            value={note}
+            onChange={(event) => setNote(event.target.value)}
+            placeholder="توضیح یا دلیل تصمیم را بنویسید…"
+          />
+        </label>
+        <div className="ticket-modal-label">
+          نتیجهٔ بررسی
+          <div className="ticket-outcome-toggle" role="group">
+            <button
+              type="button"
+              className={status === "approved" ? "active" : ""}
+              onClick={() => setStatus("approved")}
+            >
+              <Icon name="bi-check2" /> {approveLabel}
+            </button>
+            <button
+              type="button"
+              className={status === "rejected" ? "active" : ""}
+              onClick={() => setStatus("rejected")}
+            >
+              <Icon name="bi-x-lg" /> {rejectLabel}
+            </button>
+          </div>
+        </div>
+        <div className="ticket-modal-actions">
+          <button
+            className="btn btn-primary"
+            type="button"
+            disabled={busy}
+            onClick={() => onConfirm({ status, adminNote: note.trim() })}
+          >
+            <Icon name="bi-send" /> {busy ? "در حال ثبت…" : "ثبت تصمیم"}
+          </button>
+          <button className="btn btn-light-outline" type="button" onClick={onClose}>
+            انصراف
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function requestStatusBadge(status) {
+  if (status === "approved") return <Badge tone="success">تایید شد</Badge>;
+  if (status === "rejected") return <Badge tone="danger">رد شد</Badge>;
+  return <Badge tone="warning">در انتظار</Badge>;
+}
+
+function recordStatusLabel(status) {
+  return (
+    {
+      present: "حاضر",
+      late: "تأخیر",
+      absent: "غایب",
+      excused: "موجه",
+      left_early: "خروج زودهنگام",
+      unmarked: "ثبت‌نشده",
+    }[status] ||
+    status ||
+    "—"
+  );
+}
+
+export function LeaveRequests({
+  requests = [],
+  students = [],
+  loading = false,
+  onReview,
+  onRefresh,
+}) {
+  const [filter, setFilter] = useState("all");
+  const [reviewingId, setReviewingId] = useState("");
+  const [busy, setBusy] = useState(false);
+
+  useEffect(() => {
+    onRefresh?.();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  const counts = {
+    all: requests.length,
+    pending: requests.filter((r) => r.status === "pending").length,
+    approved: requests.filter((r) => r.status === "approved").length,
+    rejected: requests.filter((r) => r.status === "rejected").length,
+  };
+  const filtered = requests.filter(
+    (request) => filter === "all" || request.status === filter,
+  );
+  const selected = requests.find((request) => request.id === reviewingId);
+
+  const photoByNumber = new Map(
+    students.map((student) => [String(student.id), student.faceImage || ""]),
+  );
+
+  async function submitReview(payload) {
+    if (!selected) return;
+    setBusy(true);
+    try {
+      await onReview(selected.id, payload);
+      setReviewingId("");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <>
+      <PanelTitle
+        eyebrow="پشتیبانی آموزشی"
+        title="درخواست‌های مرخصی و توجیه"
+        description="درخواست‌های مرخصی و توجیه غیبت دانشجویان را بررسی و تایید کنید."
+        action={
+          <button className="btn btn-light-outline" onClick={onRefresh}>
+            <Icon name="bi-arrow-clockwise" /> بروزرسانی
+          </button>
+        }
+      />
+      {loading && !requests.length ? (
+        <SkeletonCards />
+      ) : (
+        <div className="ticket-stat-grid">
+          {[
+            { key: "all", icon: "bi-inbox", color: "blue", label: "کل درخواست‌ها" },
+            { key: "pending", icon: "bi-hourglass-split", color: "orange", label: "در انتظار" },
+            { key: "approved", icon: "bi-check2-circle", color: "green", label: "تایید شده" },
+            { key: "rejected", icon: "bi-x-circle", color: "red", label: "رد شده" },
+          ].map((card) => (
+            <button
+              key={card.key}
+              type="button"
+              className={`ticket-stat-btn ${filter === card.key ? "active" : ""}`}
+              onClick={() => setFilter(card.key)}
+            >
+              <StatCard
+                icon={card.icon}
+                color={card.color}
+                label={card.label}
+                value={counts[card.key].toLocaleString("fa-IR")}
+                detail="برای فیلتر کلیک کنید"
+              />
+            </button>
+          ))}
+        </div>
+      )}
+      <div className="content-card data-card">
+        <div className="table-toolbar ticket-toolbar">
+          <div className="ticket-filter-chips" role="group">
+            {[
+              ["all", "همه"],
+              ["pending", "در انتظار"],
+              ["approved", "تایید شده"],
+              ["rejected", "رد شده"],
+            ].map(([key, label]) => (
+              <button
+                key={key}
+                type="button"
+                className={`ticket-chip ${filter === key ? "active" : ""}`}
+                onClick={() => setFilter(key)}
+              >
+                {label} <span>{counts[key].toLocaleString("fa-IR")}</span>
+              </button>
+            ))}
+          </div>
+        </div>
+        {loading && !requests.length ? (
+          <SkeletonTable rows={5} columns={6} />
+        ) : filtered.length ? (
+          <div className="table-responsive">
+            <table className="table custom-table align-middle">
+              <thead>
+                <tr>
+                  <th>دانشجو</th>
+                  <th>نوع</th>
+                  <th>تاریخ / جلسه</th>
+                  <th>دلیل</th>
+                  <th>پیوست</th>
+                  <th>وضعیت</th>
+                  <th>عملیات</th>
+                </tr>
+              </thead>
+              <tbody>
+                {filtered.map((request, index) => (
+                  <tr key={request.id}>
+                    <td>
+                      <div className="student-cell">
+                        <StudentAvatar
+                          name={request.studentName}
+                          photo={photoByNumber.get(String(request.studentNumber)) || ""}
+                          index={index}
+                        />
+                        <div>
+                          <strong>{request.studentName}</strong>
+                          <span className="student-id-small">
+                            {request.studentNumber}
+                          </span>
+                        </div>
+                      </div>
+                    </td>
+                    <td>
+                      <Badge tone={request.type === "leave" ? "purple" : "neutral"}>
+                        {request.type === "leave" ? "مرخصی" : "توجیه غیبت"}
+                      </Badge>
+                    </td>
+                    <td>
+                      <div className="ticket-subject-cell">
+                        <strong>{request.courseTitle || "همهٔ کلاس‌ها"}</strong>
+                        <span>
+                          {new Date(request.startDate).toLocaleDateString("fa-IR")}
+                          {request.endDate !== request.startDate
+                            ? ` تا ${new Date(request.endDate).toLocaleDateString("fa-IR")}`
+                            : ""}
+                        </span>
+                      </div>
+                    </td>
+                    <td>
+                      <span className="ticket-text-cell" title={request.reason}>
+                        {request.reason}
+                      </span>
+                    </td>
+                    <td>
+                      {request.proofFile ? (
+                        <a
+                          className="btn btn-light-outline btn-sm"
+                          href={request.proofFile}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                        >
+                          <Icon name="bi-paperclip" /> مشاهده
+                        </a>
+                      ) : (
+                        <span className="text-muted">—</span>
+                      )}
+                    </td>
+                    <td>
+                      {requestStatusBadge(request.status)}
+                      {request.adminNote ? (
+                        <span className="student-id-small" title={request.adminNote}>
+                          {request.adminNote}
+                        </span>
+                      ) : null}
+                    </td>
+                    <td>
+                      {request.status === "pending" ? (
+                        <button
+                          className="btn btn-success-soft btn-sm"
+                          onClick={() => setReviewingId(request.id)}
+                        >
+                          <Icon name="bi-clipboard-check" /> بررسی
+                        </button>
+                      ) : (
+                        <span className="text-muted">—</span>
+                      )}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        ) : (
+          <EmptyState
+            icon="bi-calendar2-check"
+            title="درخواستی وجود ندارد"
+            text="در حال حاضر درخواست مرخصی یا توجیهی با این فیلتر ثبت نشده است."
+          />
+        )}
+      </div>
+      {selected ? (
+        <RequestReviewModal
+          title={selected.type === "leave" ? "درخواست مرخصی" : "توجیه غیبت"}
+          subtitle={selected.courseTitle || "بازهٔ انتخابی"}
+          studentLabel={`${selected.studentName} · ${selected.studentNumber}`}
+          message={selected.reason}
+          approveLabel="تایید"
+          busy={busy}
+          onClose={() => setReviewingId("")}
+          onConfirm={submitReview}
+        />
+      ) : null}
+    </>
+  );
+}
+
+export function AttendanceObjections({
+  objections = [],
+  loading = false,
+  onReview,
+  onRefresh,
+}) {
+  const [filter, setFilter] = useState("all");
+  const [reviewingId, setReviewingId] = useState("");
+  const [busy, setBusy] = useState(false);
+
+  useEffect(() => {
+    onRefresh?.();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  const counts = {
+    all: objections.length,
+    pending: objections.filter((o) => o.status === "pending").length,
+    approved: objections.filter((o) => o.status === "approved").length,
+    rejected: objections.filter((o) => o.status === "rejected").length,
+  };
+  const filtered = objections.filter(
+    (objection) => filter === "all" || objection.status === filter,
+  );
+  const selected = objections.find((objection) => objection.id === reviewingId);
+
+  async function submitReview(payload) {
+    if (!selected) return;
+    setBusy(true);
+    try {
+      await onReview(selected.id, payload);
+      setReviewingId("");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <>
+      <PanelTitle
+        eyebrow="پشتیبانی آموزشی"
+        title="اعتراض‌های حضور"
+        description="اعتراض دانشجویان به وضعیت حضور یک جلسه را بررسی و در صورت نیاز اصلاح کنید."
+        action={
+          <button className="btn btn-light-outline" onClick={onRefresh}>
+            <Icon name="bi-arrow-clockwise" /> بروزرسانی
+          </button>
+        }
+      />
+      {loading && !objections.length ? (
+        <SkeletonCards />
+      ) : (
+        <div className="ticket-stat-grid">
+          {[
+            { key: "all", icon: "bi-shield-exclamation", color: "blue", label: "کل اعتراض‌ها" },
+            { key: "pending", icon: "bi-hourglass-split", color: "orange", label: "در انتظار" },
+            { key: "approved", icon: "bi-check2-circle", color: "green", label: "اصلاح‌شده" },
+            { key: "rejected", icon: "bi-x-circle", color: "red", label: "ردشده" },
+          ].map((card) => (
+            <button
+              key={card.key}
+              type="button"
+              className={`ticket-stat-btn ${filter === card.key ? "active" : ""}`}
+              onClick={() => setFilter(card.key)}
+            >
+              <StatCard
+                icon={card.icon}
+                color={card.color}
+                label={card.label}
+                value={counts[card.key].toLocaleString("fa-IR")}
+                detail="برای فیلتر کلیک کنید"
+              />
+            </button>
+          ))}
+        </div>
+      )}
+      <div className="content-card data-card">
+        <div className="table-toolbar ticket-toolbar">
+          <div className="ticket-filter-chips" role="group">
+            {[
+              ["all", "همه"],
+              ["pending", "در انتظار"],
+              ["approved", "اصلاح‌شده"],
+              ["rejected", "ردشده"],
+            ].map(([key, label]) => (
+              <button
+                key={key}
+                type="button"
+                className={`ticket-chip ${filter === key ? "active" : ""}`}
+                onClick={() => setFilter(key)}
+              >
+                {label} <span>{counts[key].toLocaleString("fa-IR")}</span>
+              </button>
+            ))}
+          </div>
+        </div>
+        {loading && !objections.length ? (
+          <SkeletonTable rows={5} columns={6} />
+        ) : filtered.length ? (
+          <div className="table-responsive">
+            <table className="table custom-table align-middle">
+              <thead>
+                <tr>
+                  <th>دانشجو</th>
+                  <th>درس / جلسه</th>
+                  <th>وضعیت ثبت‌شده</th>
+                  <th>دلیل اعتراض</th>
+                  <th>وضعیت</th>
+                  <th>عملیات</th>
+                </tr>
+              </thead>
+              <tbody>
+                {filtered.map((objection, index) => (
+                  <tr key={objection.id}>
+                    <td>
+                      <div className="student-cell">
+                        <StudentAvatar
+                          name={objection.studentName}
+                          index={index}
+                        />
+                        <div>
+                          <strong>{objection.studentName}</strong>
+                          <span className="student-id-small">
+                            {objection.studentNumber}
+                          </span>
+                        </div>
+                      </div>
+                    </td>
+                    <td>
+                      <div className="ticket-subject-cell">
+                        <strong>{objection.courseTitle || "جلسه"}</strong>
+                        <span>
+                          {new Date(objection.sessionDate).toLocaleDateString(
+                            "fa-IR",
+                          )}
+                        </span>
+                      </div>
+                    </td>
+                    <td>
+                      <Badge tone="neutral">
+                        {recordStatusLabel(objection.recordStatus)}
+                      </Badge>
+                    </td>
+                    <td>
+                      <span className="ticket-text-cell" title={objection.reason}>
+                        {objection.reason}
+                      </span>
+                    </td>
+                    <td>{requestStatusBadge(objection.status)}</td>
+                    <td>
+                      {objection.status === "pending" ? (
+                        <button
+                          className="btn btn-success-soft btn-sm"
+                          onClick={() => setReviewingId(objection.id)}
+                        >
+                          <Icon name="bi-clipboard-check" /> بررسی
+                        </button>
+                      ) : (
+                        <span className="text-muted">—</span>
+                      )}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        ) : (
+          <EmptyState
+            icon="bi-shield-check"
+            title="اعتراضی وجود ندارد"
+            text="در حال حاضر اعتراضی با این فیلتر ثبت نشده است."
+          />
+        )}
+      </div>
+      {selected ? (
+        <RequestReviewModal
+          title="اعتراض حضور"
+          subtitle={selected.courseTitle || "جلسه"}
+          studentLabel={`${selected.studentName} · ${selected.studentNumber}`}
+          message={selected.reason}
+          approveLabel="تایید و اصلاح"
+          busy={busy}
+          onClose={() => setReviewingId("")}
+          onConfirm={submitReview}
+        />
+      ) : null}
+    </>
+  );
+}
+
+const IMPORT_ALIASES = {
+  studentNumber: ["شماره دانشجویی", "شماره دانشجويی", "شماره", "studentnumber", "student_number", "id"],
+  fullName: ["نام و نام خانوادگی", "نام کامل", "نام", "fullname", "full_name", "name"],
+  major: ["رشته", "رشته تحصیلی", "major"],
+  term: ["ترم", "نیم‌سال", "term"],
+  phone: ["تلفن", "شماره تماس", "موبایل", "phone"],
+  code: ["کد درس", "کد", "code"],
+  title: ["عنوان درس", "نام درس", "عنوان", "title"],
+  teacherName: ["استاد", "نام استاد", "teacher", "teachername", "teacher_name"],
+  room: ["کلاس", "اتاق", "room"],
+  weekday: ["روز", "روز هفته", "weekday"],
+  startTime: ["ساعت شروع", "شروع", "starttime", "start_time"],
+  endTime: ["ساعت پایان", "پایان", "endtime", "end_time"],
+};
+
+function normalizeHeader(value) {
+  return String(value ?? "").trim().toLowerCase().replace(/\s+/g, " ");
+}
+
+function mapImportRow(raw) {
+  const mapped = {};
+  const entries = Object.entries(raw);
+  for (const [field, aliases] of Object.entries(IMPORT_ALIASES)) {
+    const match = entries.find(([key]) =>
+      aliases.includes(normalizeHeader(key)),
+    );
+    if (match) mapped[field] = String(match[1] ?? "").trim();
+  }
+  if (mapped.startTime) mapped.startTime = toClock(mapped.startTime);
+  if (mapped.endTime) mapped.endTime = toClock(mapped.endTime);
+  return mapped;
+}
+
+function toClock(value) {
+  const text = String(value).trim();
+  const match = text.match(/^(\d{1,2}):(\d{2})/);
+  if (match) return `${match[1].padStart(2, "0")}:${match[2]}`;
+  const number = Number(text);
+  if (Number.isFinite(number) && number >= 0 && number < 1) {
+    const minutes = Math.round(number * 24 * 60);
+    return `${String(Math.floor(minutes / 60)).padStart(2, "0")}:${String(
+      minutes % 60,
+    ).padStart(2, "0")}`;
+  }
+  return text;
+}
+
+export function ImportPanel({ kind = "students", onImport, onClose }) {
+  const [rows, setRows] = useState([]);
+  const [fileName, setFileName] = useState("");
+  const [error, setError] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [result, setResult] = useState(null);
+  const fileRef = useRef(null);
+
+  async function handleFile(event) {
+    const file = event.target.files?.[0];
+    if (!file) return;
+    setError("");
+    setResult(null);
+    setFileName(file.name);
+    try {
+      const XLSX = await import("xlsx-js-style");
+      const buffer = await file.arrayBuffer();
+      const workbook = XLSX.read(buffer, { type: "array" });
+      const sheet = workbook.Sheets[workbook.SheetNames[0]];
+      const json = XLSX.utils.sheet_to_json(sheet, { defval: "" });
+      const mapped = json.map(mapImportRow).filter((row) => Object.keys(row).length);
+      if (!mapped.length)
+        throw new Error("هیچ سطر قابل خواندنی در فایل پیدا نشد.");
+      setRows(mapped);
+    } catch (err) {
+      setRows([]);
+      setError(err?.message || "خواندن فایل ناموفق بود.");
+    }
+  }
+
+  async function submit() {
+    setBusy(true);
+    setError("");
+    try {
+      const outcome = await onImport(rows);
+      setResult(outcome);
+    } catch (err) {
+      setError(err?.message || "ایمپورت ناموفق بود.");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <div
+      className="modal-backdrop-custom"
+      onClick={(event) => {
+        if (event.target === event.currentTarget) onClose();
+      }}
+    >
+      <div className="custom-modal modal-wide" role="dialog" aria-modal="true">
+        <div className="ticket-modal-head">
+          <div>
+            <span>ایمپورت اطلاعات</span>
+            <h3>
+              {kind === "students" ? "افزودن گروهی دانشجویان" : "افزودن گروهی درس‌ها"}
+            </h3>
+          </div>
+          <button
+            type="button"
+            className="ticket-modal-close"
+            aria-label="بستن"
+            onClick={onClose}
+          >
+            <Icon name="bi-x-lg" />
+          </button>
+        </div>
+        <div className="import-drop">
+          <Icon name="bi-file-earmark-spreadsheet" />
+          <strong>
+            {fileName || "فایل اکسل (xlsx) یا CSV را انتخاب کنید"}
+          </strong>
+          <small>
+            {kind === "students"
+              ? "ستون‌ها: شماره دانشجویی، نام و نام خانوادگی، رشته، ترم، تلفن"
+              : "ستون‌ها: کد درس، عنوان درس، استاد، کلاس، روز، ساعت شروع، ساعت پایان"}
+          </small>
+          <button
+            type="button"
+            className="btn btn-light-outline"
+            onClick={() => fileRef.current?.click()}
+          >
+            <Icon name="bi-upload" /> انتخاب فایل
+          </button>
+          <input
+            ref={fileRef}
+            type="file"
+            accept=".xlsx,.xls,.csv"
+            hidden
+            onChange={handleFile}
+          />
+        </div>
+        {error ? (
+          <p className="student-photo-message error" role="alert">
+            {error}
+          </p>
+        ) : null}
+        {rows.length ? (
+          <>
+            <div className="import-preview">
+              <table className="table custom-table">
+                <thead>
+                  <tr>
+                    {Object.keys(rows[0]).slice(0, 5).map((key) => (
+                      <th key={key}>{key}</th>
+                    ))}
+                  </tr>
+                </thead>
+                <tbody>
+                  {rows.slice(0, 6).map((row, index) => (
+                    <tr key={index}>
+                      {Object.keys(rows[0]).slice(0, 5).map((key) => (
+                        <td key={key}>{row[key] || "—"}</td>
+                      ))}
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+              <small>
+                {rows.length.toLocaleString("fa-IR")} سطر آمادهٔ ایمپورت
+                {rows.length > 6 ? " (پیش‌نمایش ۶ سطر اول)" : ""}
+              </small>
+            </div>
+            {result ? (
+              <div className="import-result" role="status">
+                <Badge tone="success">
+                  {result.created.toLocaleString("fa-IR")} سطر ثبت شد
+                </Badge>
+                {result.errors?.length ? (
+                  <Badge tone="danger">
+                    {result.errors.length.toLocaleString("fa-IR")} خطا
+                  </Badge>
+                ) : null}
+                {result.errors?.length ? (
+                  <ul>
+                    {result.errors.slice(0, 5).map((item, index) => (
+                      <li key={index}>
+                        سطر {item.row}: {item.message}
+                      </li>
+                    ))}
+                  </ul>
+                ) : null}
+              </div>
+            ) : null}
+          </>
+        ) : null}
+        <div className="ticket-modal-actions">
+          <button
+            className="btn btn-primary"
+            type="button"
+            disabled={!rows.length || busy || Boolean(result)}
+            onClick={submit}
+          >
+            <Icon name="bi-cloud-arrow-up" />{" "}
+            {busy ? "در حال ایمپورت…" : "ایمپورت کن"}
+          </button>
+          <button className="btn btn-light-outline" type="button" onClick={onClose}>
+            بستن
+          </button>
+        </div>
+      </div>
+    </div>
   );
 }

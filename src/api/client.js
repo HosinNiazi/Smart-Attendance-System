@@ -122,6 +122,50 @@ export function startMyFingerprintRegistration() {
 export function finishMyFingerprintRegistration(response) {
   return api('/fingerprint/self/verify', { method: 'POST', body: JSON.stringify({ response }) });
 }
+export function fetchLeaveRequests() {
+  return api('/leave-requests');
+}
+export function createLeaveRequest(payload, proofFile) {
+  if (proofFile) {
+    const form = new FormData();
+    Object.entries(payload).forEach(([key, value]) => {
+      if (value != null && value !== '') form.append(key, value);
+    });
+    form.append('proof', proofFile);
+    return api('/leave-requests', { method: 'POST', body: form });
+  }
+  return api('/leave-requests', { method: 'POST', body: JSON.stringify(payload) });
+}
+export function reviewLeaveRequest(id, payload) {
+  return api(`/leave-requests/${id}/review`, { method: 'POST', body: JSON.stringify(payload) });
+}
+export function fetchAttendanceObjections() {
+  return api('/attendance-objections');
+}
+export function createAttendanceObjection(payload) {
+  return api('/attendance-objections', { method: 'POST', body: JSON.stringify(payload) });
+}
+export function reviewAttendanceObjection(id, payload) {
+  return api(`/attendance-objections/${id}/review`, { method: 'POST', body: JSON.stringify(payload) });
+}
+export function fetchNotifications() {
+  return api('/notifications');
+}
+export function fetchUnreadNotificationCount() {
+  return api('/notifications/unread-count');
+}
+export function markNotificationRead(id) {
+  return api(`/notifications/${id}/read`, { method: 'POST' });
+}
+export function markAllNotificationsRead() {
+  return api('/notifications/read-all', { method: 'POST' });
+}
+export function importStudents(rows) {
+  return api('/import/students', { method: 'POST', body: JSON.stringify({ rows }) });
+}
+export function importCourses(rows) {
+  return api('/import/courses', { method: 'POST', body: JSON.stringify({ rows }) });
+}
 export function revokeFingerprintCredential(credentialId) {
   return api(`/fingerprint/credentials/${encodeURIComponent(credentialId)}`, { method: 'DELETE' });
 }

@@ -2126,6 +2126,543 @@ app.post(
   }),
 );
 
+/* ================= leave requests / objections / notifications / imports ================= */
+
+const leaveProofsDir = path.join(uploadsRoot, "leave-proofs");
+fs.mkdirSync(leaveProofsDir, { recursive: true });
+const leaveProofStorage = multer.diskStorage({
+  destination: (_req, _file, cb) => cb(null, leaveProofsDir),
+  filename: (_req, file, cb) => {
+    const ext = path.extname(file.originalname || "").toLowerCase().slice(0, 10) || ".bin";
+    cb(null, `${crypto.randomUUID()}${ext}`);
+  },
+});
+const uploadLeaveProof = multer({
+  storage: leaveProofStorage,
+  limits: { fileSize: 5 * 1024 * 1024, files: 1 },
+  fileFilter: (_req, file, cb) => {
+    const allowed = ["image/jpeg", "image/png", "image/webp", "application/pdf"];
+    if (!allowed.includes(file.mimetype))
+      return cb(
+        Object.assign(new Error("فقط تصویر یا فایل PDF مجاز است."), {
+          status: 400,
+        }),
+      );
+    cb(null, true);
+  },
+});
+
+const leaveSchema = z.object({
+  type: z.enum(["leave", "excuse"]),
+  sessionId: z.string().uuid().optional().or(z.literal("")),
+  startDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/, "تاریخ شروع نامعتبر است."),
+  endDate: z
+    .string()
+    .regex(/^\d{4}-\d{2}-\d{2}$/, "تاریخ پایان نامعتبر است.")
+    .optional()
+    .or(z.literal("")),
+  reason: z.string().trim().min(5).max(2000),
+});
+const reviewSchema = z.object({
+  status: z.enum(["approved", "rejected"]),
+  adminNote: z.string().trim().max(2000).optional().default(""),
+});
+const objectionSchema = z.object({
+  attendanceId: z.string().uuid(),
+  reason: z.string().trim().min(5).max(2000),
+});
+
+async function notifyUsers(orgId, userIds, { type, title, message, link }) {
+  if (!userIds.length) return;
+  const params = [];
+  const values = userIds.map((userId, index) => {
+    const base = index * 6;
+    params.push(orgId, userId, type, title, message, link || null);
+    return `($${base + 1},$${base + 2},$${base + 3},$${base + 4},$${base + 5},$${base + 6})`;
+  });
+  await pool.query(
+    `INSERT INTO notifications (organization_id, user_id, type, title, message, link) VALUES ${values.join(",")}`,
+    params,
+  );
+}
+async function adminUserIds(orgId) {
+  const { rows } = await pool.query(
+    `SELECT id FROM users WHERE organization_id=$1 AND role='admin' AND is_active=true`,
+    [orgId],
+  );
+  return rows.map((row) => row.id);
+}
+async function studentUserIds(orgId, studentId) {
+  const { rows } = await pool.query(
+    `SELECT id FROM users WHERE organization_id=$1 AND student_id::text=$2 AND is_active=true`,
+    [orgId, String(studentId)],
+  );
+  return rows.map((row) => row.id);
+}
+
+const leaveSelect = `SELECT lr.id, lr.student_id AS "studentId", lr.student_number AS "studentNumber",
+  lr.student_name AS "studentName", lr.type, lr.session_id AS "sessionId",
+  lr.start_date AS "startDate", lr.end_date AS "endDate", lr.reason,
+  lr.proof_file AS "proofFile", lr.status, lr.admin_note AS "adminNote",
+  lr.reviewed_at AS "reviewedAt", lr.created_at AS "createdAt",
+  cs.session_date AS "sessionDate", c.title AS "courseTitle"
+  FROM leave_requests lr
+  LEFT JOIN class_sessions cs ON cs.id = lr.session_id
+  LEFT JOIN courses c ON c.id = cs.course_id`;
+
+app.post(
+  "/api/leave-requests",
+  uploadLeaveProof.single("proof"),
+  validate(leaveSchema),
+  asyncRoute(async (req, res) => {
+    const student = await findStudentByUserId(req.user.sub, req.user.org);
+    if (!student)
+      return res.status(404).json({ message: "حساب دانشجویی پیدا نشد." });
+    const { type, sessionId, reason } = req.body;
+    let startDate = req.body.startDate;
+    let endDate = req.body.endDate || startDate;
+    if (sessionId) {
+      const { rows } = await pool.query(
+        `SELECT session_date AS "date" FROM class_sessions WHERE id=$1 AND organization_id=$2`,
+        [sessionId, req.user.org],
+      );
+      if (!rows[0])
+        return res.status(404).json({ message: "جلسه یافت نشد." });
+      const date = String(rows[0].date).slice(0, 10);
+      startDate = date;
+      endDate = date;
+    }
+    if (endDate < startDate)
+      return res
+        .status(400)
+        .json({ message: "تاریخ پایان نمی‌تواند قبل از تاریخ شروع باشد." });
+    const proofFile = req.file
+      ? `/uploads/leave-proofs/${req.file.filename}`
+      : null;
+    const { rows } = await pool.query(
+      `INSERT INTO leave_requests
+         (organization_id, student_id, student_number, student_name, type, session_id, start_date, end_date, reason, proof_file)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)
+       RETURNING id`,
+      [
+        req.user.org,
+        student.id,
+        student.studentNumber,
+        student.fullName,
+        type,
+        sessionId || null,
+        startDate,
+        endDate,
+        reason,
+        proofFile,
+      ],
+    );
+    await notifyUsers(req.user.org, await adminUserIds(req.user.org), {
+      type: "leave",
+      title: "درخواست جدید مرخصی/توجیه",
+      message: `${student.fullName} یک درخواست ${
+        type === "leave" ? "مرخصی" : "توجیه غیبت"
+      } ثبت کرد.`,
+      link: "leave-requests",
+    });
+    const { rows: created } = await pool.query(
+      `${leaveSelect} WHERE lr.id=$1`,
+      [rows[0].id],
+    );
+    res.status(201).json(created[0]);
+  }),
+);
+
+app.get(
+  "/api/leave-requests",
+  asyncRoute(async (req, res) => {
+    const isAdmin = req.user.role === "admin";
+    const params = [req.user.org];
+    let sql = `${leaveSelect} WHERE lr.organization_id=$1`;
+    if (!isAdmin) {
+      const student = await findStudentByUserId(req.user.sub, req.user.org);
+      if (!student) return res.json([]);
+      params.push(student.id);
+      sql += ` AND lr.student_id=$2`;
+    }
+    sql += ` ORDER BY lr.created_at DESC`;
+    const { rows } = await pool.query(sql, params);
+    res.json(rows);
+  }),
+);
+
+app.post(
+  "/api/leave-requests/:id/review",
+  authorize("admin"),
+  validate(reviewSchema),
+  asyncRoute(async (req, res) => {
+    const { status, adminNote } = req.body;
+    const { rows } = await pool.query(
+      `UPDATE leave_requests
+          SET status=$3, admin_note=$4, reviewed_by=$5, reviewed_at=now(), updated_at=now()
+        WHERE id=$1 AND organization_id=$2 AND status='pending'
+        RETURNING id, student_id AS "studentId", student_number AS "studentNumber",
+                  student_name AS "studentName", type, session_id AS "sessionId",
+                  start_date AS "startDate", end_date AS "endDate"`,
+      [req.params.id, req.user.org, status, adminNote, req.user.sub],
+    );
+    const leave = rows[0];
+    if (!leave)
+      return res
+        .status(404)
+        .json({ message: "درخواست یافت نشد یا قبلاً بررسی شده است." });
+
+    let affected = 0;
+    if (status === "approved") {
+      affected = await withTransaction(async (client) => {
+        const params = [leave.studentId, req.user.org];
+        let sql = `SELECT ar.id, ar.status FROM attendance_records ar
+                     JOIN class_sessions cs ON cs.id = ar.session_id
+                    WHERE ar.student_id=$1 AND cs.organization_id=$2 AND ar.status <> 'excused'`;
+        if (leave.sessionId) {
+          params.push(leave.sessionId);
+          sql += ` AND ar.session_id=$3`;
+        } else {
+          params.push(leave.startDate, leave.endDate || leave.startDate);
+          sql += ` AND cs.session_date BETWEEN $3 AND $4`;
+        }
+        const { rows: records } = await client.query(sql, params);
+        for (const record of records) {
+          await client.query(
+            `UPDATE attendance_records SET status='excused', updated_at=now() WHERE id=$1`,
+            [record.id],
+          );
+          await client.query(
+            `INSERT INTO attendance_history (attendance_id, from_status, to_status, reason, method, changed_by)
+             VALUES ($1,$2,'excused',$3,'system',$4)`,
+            [
+              record.id,
+              record.status,
+              `تایید درخواست ${leave.type === "leave" ? "مرخصی" : "توجیه"}`,
+              req.user.sub,
+            ],
+          );
+        }
+        return records.length;
+      });
+    }
+
+    await notifyUsers(
+      req.user.org,
+      await studentUserIds(req.user.org, leave.studentId),
+      {
+        type: "leave",
+        title:
+          status === "approved"
+            ? "درخواست مرخصی تایید شد"
+            : "درخواست مرخصی رد شد",
+        message:
+          status === "approved"
+            ? `درخواست شما تایید شد${affected ? ` و ${affected} رکورد حضور به «موجه» تغییر کرد` : ""}.`
+            : `درخواست شما رد شد${adminNote ? `: ${adminNote}` : "."}`,
+        link: "portal",
+      },
+    );
+    res.json({ ...leave, status, adminNote, affectedRecords: affected });
+  }),
+);
+
+const objectionSelect = `SELECT ao.id, ao.student_id AS "studentId", ao.attendance_id AS "attendanceId",
+  ao.student_number AS "studentNumber", ao.student_name AS "studentName", ao.reason, ao.status,
+  ao.admin_note AS "adminNote", ao.reviewed_at AS "reviewedAt", ao.created_at AS "createdAt",
+  ar.status AS "recordStatus", ar.session_id AS "sessionId",
+  cs.session_date AS "sessionDate", c.title AS "courseTitle"
+  FROM attendance_objections ao
+  JOIN attendance_records ar ON ar.id = ao.attendance_id
+  JOIN class_sessions cs ON cs.id = ar.session_id
+  LEFT JOIN courses c ON c.id = cs.course_id`;
+
+app.post(
+  "/api/attendance-objections",
+  validate(objectionSchema),
+  asyncRoute(async (req, res) => {
+    const student = await findStudentByUserId(req.user.sub, req.user.org);
+    if (!student)
+      return res.status(404).json({ message: "حساب دانشجویی پیدا نشد." });
+    const { rows: recordRows } = await pool.query(
+      `SELECT ar.id, ar.status FROM attendance_records ar
+         JOIN class_sessions cs ON cs.id = ar.session_id
+        WHERE ar.id=$1 AND ar.student_id=$2 AND cs.organization_id=$3`,
+      [req.body.attendanceId, student.id, req.user.org],
+    );
+    if (!recordRows[0])
+      return res.status(404).json({ message: "رکورد حضور یافت نشد." });
+    if (recordRows[0].status === "present")
+      return res
+        .status(400)
+        .json({ message: "وضعیت این رکورد در حال حاضر «حاضر» است." });
+    const { rows: dupe } = await pool.query(
+      `SELECT id FROM attendance_objections WHERE attendance_id=$1 AND status='pending'`,
+      [req.body.attendanceId],
+    );
+    if (dupe[0])
+      return res
+        .status(409)
+        .json({ message: "برای این رکورد اعتراض باز ثبت شده است." });
+    const { rows } = await pool.query(
+      `INSERT INTO attendance_objections
+         (organization_id, student_id, attendance_id, student_number, student_name, reason)
+       VALUES ($1,$2,$3,$4,$5,$6) RETURNING id`,
+      [
+        req.user.org,
+        student.id,
+        req.body.attendanceId,
+        student.studentNumber,
+        student.fullName,
+        req.body.reason,
+      ],
+    );
+    await notifyUsers(req.user.org, await adminUserIds(req.user.org), {
+      type: "objection",
+      title: "اعتراض حضور جدید",
+      message: `${student.fullName} به وضعیت حضور خود اعتراض کرد.`,
+      link: "objections",
+    });
+    const { rows: created } = await pool.query(
+      `${objectionSelect} WHERE ao.id=$1`,
+      [rows[0].id],
+    );
+    res.status(201).json(created[0]);
+  }),
+);
+
+app.get(
+  "/api/attendance-objections",
+  asyncRoute(async (req, res) => {
+    const isAdmin = req.user.role === "admin";
+    const params = [req.user.org];
+    let sql = `${objectionSelect} WHERE ao.organization_id=$1`;
+    if (!isAdmin) {
+      const student = await findStudentByUserId(req.user.sub, req.user.org);
+      if (!student) return res.json([]);
+      params.push(student.id);
+      sql += ` AND ao.student_id=$2`;
+    }
+    sql += ` ORDER BY ao.created_at DESC`;
+    const { rows } = await pool.query(sql, params);
+    res.json(rows);
+  }),
+);
+
+app.post(
+  "/api/attendance-objections/:id/review",
+  authorize("admin"),
+  validate(reviewSchema),
+  asyncRoute(async (req, res) => {
+    const { status, adminNote } = req.body;
+    const { rows } = await pool.query(
+      `UPDATE attendance_objections
+          SET status=$3, admin_note=$4, reviewed_by=$5, reviewed_at=now(), updated_at=now()
+        WHERE id=$1 AND organization_id=$2 AND status='pending'
+        RETURNING id, student_id AS "studentId", attendance_id AS "attendanceId"`,
+      [req.params.id, req.user.org, status, adminNote, req.user.sub],
+    );
+    const objection = rows[0];
+    if (!objection)
+      return res
+        .status(404)
+        .json({ message: "اعتراض یافت نشد یا قبلاً بررسی شده است." });
+
+    if (status === "approved") {
+      await withTransaction(async (client) => {
+        const { rows: recordRows } = await client.query(
+          `SELECT id, status FROM attendance_records WHERE id=$1`,
+          [objection.attendanceId],
+        );
+        const record = recordRows[0];
+        if (record && record.status !== "present") {
+          await client.query(
+            `UPDATE attendance_records SET status='present', updated_at=now() WHERE id=$1`,
+            [record.id],
+          );
+          await client.query(
+            `INSERT INTO attendance_history (attendance_id, from_status, to_status, reason, method, changed_by)
+             VALUES ($1,$2,'present',$3,'system',$4)`,
+            [
+              record.id,
+              record.status,
+              "تایید اعتراض حضور توسط مدیر",
+              req.user.sub,
+            ],
+          );
+        }
+      });
+    }
+
+    await notifyUsers(
+      req.user.org,
+      await studentUserIds(req.user.org, objection.studentId),
+      {
+        type: "objection",
+        title:
+          status === "approved"
+            ? "اعتراض حضور تایید شد"
+            : "اعتراض حضور رد شد",
+        message:
+          status === "approved"
+            ? "وضعیت حضور شما اصلاح و به «حاضر» تغییر کرد."
+            : `اعتراض شما رد شد${adminNote ? `: ${adminNote}` : "."}`,
+        link: "portal",
+      },
+    );
+    res.json({ ...objection, status, adminNote });
+  }),
+);
+
+app.get(
+  "/api/notifications",
+  asyncRoute(async (req, res) => {
+    const { rows } = await pool.query(
+      `SELECT id, type, title, message, link, is_read AS "isRead", created_at AS "createdAt"
+         FROM notifications WHERE user_id=$1 ORDER BY created_at DESC LIMIT 40`,
+      [req.user.sub],
+    );
+    res.json(rows);
+  }),
+);
+app.get(
+  "/api/notifications/unread-count",
+  asyncRoute(async (req, res) => {
+    const { rows } = await pool.query(
+      `SELECT count(*)::int AS count FROM notifications WHERE user_id=$1 AND is_read=false`,
+      [req.user.sub],
+    );
+    res.json({ count: rows[0]?.count || 0 });
+  }),
+);
+app.post(
+  "/api/notifications/:id/read",
+  asyncRoute(async (req, res) => {
+    await pool.query(
+      `UPDATE notifications SET is_read=true WHERE id=$1 AND user_id=$2`,
+      [req.params.id, req.user.sub],
+    );
+    res.json({ ok: true });
+  }),
+);
+app.post(
+  "/api/notifications/read-all",
+  asyncRoute(async (req, res) => {
+    await pool.query(
+      `UPDATE notifications SET is_read=true WHERE user_id=$1 AND is_read=false`,
+      [req.user.sub],
+    );
+    res.json({ ok: true });
+  }),
+);
+
+app.post(
+  "/api/import/students",
+  authorize("admin"),
+  asyncRoute(async (req, res) => {
+    const rows = Array.isArray(req.body?.rows) ? req.body.rows : [];
+    if (!rows.length)
+      return res.status(400).json({ message: "فایل هیچ سطری ندارد." });
+    if (rows.length > 2000)
+      return res
+        .status(400)
+        .json({ message: "حداکثر ۲۰۰۰ سطر در هر ایمپورت مجاز است." });
+    const result = { created: 0, errors: [] };
+    await withTransaction(async (client) => {
+      for (const [index, row] of rows.entries()) {
+        const parsed = studentSchema.safeParse(row);
+        if (!parsed.success) {
+          result.errors.push({
+            row: index + 1,
+            message: "شماره دانشجویی یا نام کامل نامعتبر است.",
+          });
+          continue;
+        }
+        const data = parsed.data;
+        try {
+          await client.query(
+            `INSERT INTO students (organization_id, student_number, full_name, major, term, phone, status)
+             VALUES ($1,$2,$3,$4,$5,$6,$7)`,
+            [
+              req.user.org,
+              data.studentNumber,
+              data.fullName,
+              data.major,
+              data.term,
+              data.phone,
+              data.status,
+            ],
+          );
+          result.created += 1;
+        } catch (error) {
+          result.errors.push({
+            row: index + 1,
+            message:
+              error.code === "23505"
+                ? "شماره دانشجویی تکراری است."
+                : "ثبت این سطر ناموفق بود.",
+          });
+        }
+      }
+    });
+    res.status(201).json(result);
+  }),
+);
+
+app.post(
+  "/api/import/courses",
+  authorize("admin"),
+  asyncRoute(async (req, res) => {
+    const rows = Array.isArray(req.body?.rows) ? req.body.rows : [];
+    if (!rows.length)
+      return res.status(400).json({ message: "فایل هیچ سطری ندارد." });
+    if (rows.length > 500)
+      return res
+        .status(400)
+        .json({ message: "حداکثر ۵۰۰ درس در هر ایمپورت مجاز است." });
+    const result = { created: 0, errors: [] };
+    await withTransaction(async (client) => {
+      for (const [index, row] of rows.entries()) {
+        const parsed = courseSchema.omit({ studentIds: true }).safeParse(row);
+        if (!parsed.success) {
+          result.errors.push({
+            row: index + 1,
+            message: "کد، عنوان یا نام استاد درس نامعتبر است.",
+          });
+          continue;
+        }
+        const data = parsed.data;
+        try {
+          await client.query(
+            `INSERT INTO courses (organization_id, code, title, teacher_name, room, weekday, start_time, end_time)
+             VALUES ($1,$2,$3,$4,$5,$6,$7,$8)`,
+            [
+              req.user.org,
+              data.code,
+              data.title,
+              data.teacherName,
+              data.room || null,
+              data.weekday || null,
+              data.startTime || null,
+              data.endTime || null,
+            ],
+          );
+          result.created += 1;
+        } catch (error) {
+          result.errors.push({
+            row: index + 1,
+            message:
+              error.code === "23505"
+                ? "کد یا عنوان درس تکراری است."
+                : "ثبت این سطر ناموفق بود.",
+          });
+        }
+      }
+    });
+    res.status(201).json(result);
+  }),
+);
+
 app.use((error, _req, res, _next) => {
   const status =
     error instanceof multer.MulterError

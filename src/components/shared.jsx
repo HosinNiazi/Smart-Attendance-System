@@ -54,6 +54,41 @@ export function EmptyState({ icon = "bi-inbox", title, text }) {
     </div>
   );
 }
+export function Skeleton({ className = "", style }) {
+  return <span className={`skeleton ${className}`} style={style} aria-hidden="true" />;
+}
+export function SkeletonTable({ rows = 5, columns = 5 }) {
+  return (
+    <div className="skeleton-table" aria-hidden="true">
+      {Array.from({ length: rows }).map((_, row) => (
+        <div className="skeleton-row" key={row}>
+          {Array.from({ length: columns }).map((__, column) => (
+            <Skeleton
+              key={column}
+              className="skeleton-line"
+              style={{ width: `${[42, 28, 52, 20, 24][column % 5]}%` }}
+            />
+          ))}
+        </div>
+      ))}
+    </div>
+  );
+}
+export function SkeletonCards({ count = 4 }) {
+  return (
+    <div className="ticket-stat-grid" aria-hidden="true">
+      {Array.from({ length: count }).map((_, index) => (
+        <div className="stat-card skeleton-card" key={index}>
+          <Skeleton className="skeleton-icon" />
+          <div className="stat-copy">
+            <Skeleton className="skeleton-line" style={{ width: "55%" }} />
+            <Skeleton className="skeleton-line lg" style={{ width: "30%" }} />
+          </div>
+        </div>
+      ))}
+    </div>
+  );
+}
 /** آواتار دانشجو: عکس پروفایل (عکس تشخیص چهره) یا حرف اول نام. */
 export function StudentAvatar({ name = "", photo = "", index = 0, className = "" }) {
   const cls = className || `student-avatar avatar-${index % 5}`;
