@@ -166,6 +166,40 @@ export function importStudents(rows) {
 export function importCourses(rows) {
   return api('/import/courses', { method: 'POST', body: JSON.stringify({ rows }) });
 }
+export function createGroupLeaveRequest(payload) {
+  return api('/leave-requests/bulk', {
+    method: 'POST',
+    body: JSON.stringify(payload),
+  });
+}
+function withQuery(path, params = {}) {
+  const search = new URLSearchParams();
+  Object.entries(params).forEach(([key, value]) => {
+    if (value !== undefined && value !== null && value !== '') {
+      search.set(key, value);
+    }
+  });
+  const query = search.toString();
+  return query ? `${path}?${query}` : path;
+}
+export function fetchAttendanceTrend(params) {
+  return api(withQuery('/analytics/trend', params));
+}
+export function fetchCourseAnalytics(params) {
+  return api(withQuery('/analytics/courses', params));
+}
+export function fetchLiveSessions(date) {
+  return api(withQuery('/sessions/live', { date }));
+}
+export function fetchLiveSession(sessionId) {
+  return api(`/sessions/${sessionId}/live`);
+}
+export function startLiveSession(sessionId) {
+  return api(`/sessions/${sessionId}/live/start`, { method: 'POST' });
+}
+export function endLiveSession(sessionId) {
+  return api(`/sessions/${sessionId}/live/end`, { method: 'POST' });
+}
 export function revokeFingerprintCredential(credentialId) {
   return api(`/fingerprint/credentials/${encodeURIComponent(credentialId)}`, { method: 'DELETE' });
 }

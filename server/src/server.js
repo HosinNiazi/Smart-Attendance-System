@@ -146,15 +146,26 @@ function authenticate(req, res, next) {
     return res.status(401).json({ message: "نشست معتبر نیست." });
   }
 }
-function validate(schema) {
+function validate(schema, source = "body") {
   return (req, res, next) => {
-    const result = schema.safeParse(req.body);
+    const result = schema.safeParse(
+      source === "query" ? req.query : req.body,
+    );
     if (!result.success)
       return res.status(422).json({
         message: "اطلاعات ارسالی معتبر نیست.",
         errors: result.error.flatten(),
       });
-    req.body = result.data;
+    if (source === "query") {
+      Object.defineProperty(req, "query", {
+        value: result.data,
+        writable: true,
+        configurable: true,
+        enumerable: true,
+      });
+    } else {
+      req.body = result.data;
+    }
     return next();
   };
 }
@@ -587,7 +598,7 @@ app.get(
           params,
         ),
         pool.query(
-          `SELECT s.id, s.course_id AS "courseId", to_char(s.session_date,'YYYY-MM-DD') AS date, s.teacher_name AS "teacherName", to_char(s.start_time,'HH24:MI') AS "startTime", to_char(s.end_time,'HH24:MI') AS "endTime", s.grace_minutes AS "graceMinutes", s.open_before_minutes AS "openBeforeMinutes", s.close_after_minutes AS "closeAfterMinutes", s.status, COALESCE(array_agg(ss.student_id) FILTER (WHERE ss.student_id IS NOT NULL), '{}') AS "studentIds" FROM class_sessions s LEFT JOIN session_students ss ON ss.session_id=s.id WHERE s.organization_id=$1 GROUP BY s.id ORDER BY s.session_date DESC, s.start_time DESC`,
+          `SELECT s.id, s.course_id AS "courseId", to_char(s.session_date,'YYYY-MM-DD') AS date, s.teacher_name AS "teacherName", to_char(s.start_time,'HH24:MI') AS "startTime", to_char(s.end_time,'HH24:MI') AS "endTime", s.grace_minutes AS "graceMinutes", s.open_before_minutes AS "openBeforeMinutes", s.close_after_minutes AS "closeAfterMinutes", s.status, s.live_status AS "liveStatus", s.started_at AS "startedAt", s.ended_at AS "endedAt", COALESCE(array_agg(ss.student_id) FILTER (WHERE ss.student_id IS NOT NULL), '{}') AS "studentIds" FROM class_sessions s LEFT JOIN session_students ss ON ss.session_id=s.id WHERE s.organization_id=$1 GROUP BY s.id ORDER BY s.session_date DESC, s.start_time DESC`,
           params,
         ),
         pool.query(
@@ -2166,13 +2177,33 @@ const leaveSchema = z.object({
 const reviewSchema = z.object({
   status: z.enum(["approved", "rejected"]),
   adminNote: z.string().trim().max(2000).optional().default(""),
+  applyToGroup: z.boolean().optional().default(false),
+});
+const groupLeaveSchema = z.object({
+  studentIds: z.array(id).min(1).max(200),
+  title: z.string().trim().max(160).optional().default(""),
+  type: z.enum(["leave", "excuse"]),
+  sessionId: z.string().uuid().optional().or(z.literal("")),
+  startDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/, "تاریخ شروع نامعتبر است."),
+  endDate: z
+    .string()
+    .regex(/^\d{4}-\d{2}-\d{2}$/, "تاریخ پایان نامعتبر است.")
+    .optional()
+    .or(z.literal("")),
+  reason: z.string().trim().min(5).max(2000),
+  approveNow: z.boolean().optional().default(true),
 });
 const objectionSchema = z.object({
   attendanceId: z.string().uuid(),
   reason: z.string().trim().min(5).max(2000),
 });
 
-async function notifyUsers(orgId, userIds, { type, title, message, link }) {
+async function notifyUsers(
+  orgId,
+  userIds,
+  { type, title, message, link },
+  client = pool,
+) {
   if (!userIds.length) return;
   const params = [];
   const values = userIds.map((userId, index) => {
@@ -2180,7 +2211,7 @@ async function notifyUsers(orgId, userIds, { type, title, message, link }) {
     params.push(orgId, userId, type, title, message, link || null);
     return `($${base + 1},$${base + 2},$${base + 3},$${base + 4},$${base + 5},$${base + 6})`;
   });
-  await pool.query(
+  await client.query(
     `INSERT INTO notifications (organization_id, user_id, type, title, message, link) VALUES ${values.join(",")}`,
     params,
   );
@@ -2204,11 +2235,44 @@ const leaveSelect = `SELECT lr.id, lr.student_id AS "studentId", lr.student_numb
   lr.student_name AS "studentName", lr.type, lr.session_id AS "sessionId",
   lr.start_date AS "startDate", lr.end_date AS "endDate", lr.reason,
   lr.proof_file AS "proofFile", lr.status, lr.admin_note AS "adminNote",
+  lr.group_id AS "groupId", lr.group_title AS "groupTitle",
   lr.reviewed_at AS "reviewedAt", lr.created_at AS "createdAt",
   cs.session_date AS "sessionDate", c.title AS "courseTitle"
   FROM leave_requests lr
   LEFT JOIN class_sessions cs ON cs.id = lr.session_id
   LEFT JOIN courses c ON c.id = cs.course_id`;
+
+async function applyExcusedForLeave(client, leave, orgId, reviewerId) {
+  const params = [leave.studentId, orgId];
+  let sql = `SELECT ar.id, ar.status FROM attendance_records ar
+               JOIN class_sessions cs ON cs.id = ar.session_id
+              WHERE ar.student_id=$1 AND cs.organization_id=$2 AND ar.status <> 'excused'`;
+  if (leave.sessionId) {
+    params.push(leave.sessionId);
+    sql += ` AND ar.session_id=$3`;
+  } else {
+    params.push(leave.startDate, leave.endDate || leave.startDate);
+    sql += ` AND cs.session_date BETWEEN $3 AND $4`;
+  }
+  const { rows: records } = await client.query(sql, params);
+  for (const record of records) {
+    await client.query(
+      `UPDATE attendance_records SET status='excused', updated_at=now() WHERE id=$1`,
+      [record.id],
+    );
+    await client.query(
+      `INSERT INTO attendance_history (attendance_id, from_status, to_status, reason, method, changed_by)
+       VALUES ($1,$2,'excused',$3,'system',$4)`,
+      [
+        record.id,
+        record.status,
+        `تایید درخواست ${leave.type === "leave" ? "مرخصی" : "توجیه"}`,
+        reviewerId,
+      ],
+    );
+  }
+  return records.length;
+}
 
 app.post(
   "/api/leave-requests",
@@ -2273,6 +2337,127 @@ app.post(
   }),
 );
 
+app.post(
+  "/api/leave-requests/bulk",
+  authorize("admin"),
+  validate(groupLeaveSchema),
+  asyncRoute(async (req, res) => {
+    const {
+      studentIds,
+      title,
+      type,
+      sessionId,
+      reason,
+      approveNow,
+    } = req.body;
+    let startDate = req.body.startDate;
+    let endDate = req.body.endDate || startDate;
+    let resolvedSessionId = sessionId || null;
+
+    if (resolvedSessionId) {
+      const { rows } = await pool.query(
+        `SELECT to_char(session_date,'YYYY-MM-DD') AS date
+           FROM class_sessions WHERE id=$1 AND organization_id=$2`,
+        [resolvedSessionId, req.user.org],
+      );
+      if (!rows[0])
+        return res.status(404).json({ message: "جلسه یافت نشد." });
+      startDate = rows[0].date;
+      endDate = rows[0].date;
+    }
+    if (endDate < startDate)
+      return res
+        .status(400)
+        .json({ message: "تاریخ پایان نمی‌تواند قبل از تاریخ شروع باشد." });
+
+    const { rows: studentRows } = await pool.query(
+      `SELECT id, student_number AS "studentNumber", full_name AS "fullName"
+         FROM students
+        WHERE organization_id=$1 AND id = ANY($2::uuid[]) AND status='active'`,
+      [req.user.org, studentIds],
+    );
+    if (!studentRows.length)
+      return res
+        .status(400)
+        .json({ message: "هیچ دانشجوی فعالی برای این درخواست پیدا نشد." });
+
+    const groupId = crypto.randomUUID();
+    const groupTitle = title?.trim() || null;
+    const result = await withTransaction(async (client) => {
+      let affectedRecords = 0;
+      for (const student of studentRows) {
+        await client.query(
+          `INSERT INTO leave_requests
+             (organization_id, student_id, student_number, student_name, type, session_id,
+              start_date, end_date, reason, status, group_id, group_title, reviewed_by, reviewed_at)
+           VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)`,
+          [
+            req.user.org,
+            student.id,
+            student.studentNumber,
+            student.fullName,
+            type,
+            resolvedSessionId,
+            startDate,
+            endDate,
+            reason,
+            approveNow ? "approved" : "pending",
+            groupId,
+            groupTitle,
+            approveNow ? req.user.sub : null,
+            approveNow ? new Date() : null,
+          ],
+        );
+        if (approveNow) {
+          affectedRecords += await applyExcusedForLeave(
+            client,
+            {
+              studentId: student.id,
+              sessionId: resolvedSessionId,
+              startDate,
+              endDate,
+              type,
+            },
+            req.user.org,
+            req.user.sub,
+          );
+        }
+        await notifyUsers(
+          req.user.org,
+          await studentUserIds(req.user.org, student.id),
+          {
+            type: "leave",
+            title: approveNow
+              ? "مرخصی گروهی برای شما ثبت شد"
+              : "درخواست مرخصی گروهی ثبت شد",
+            message: approveNow
+              ? `مدیر سامانه برای شما ${
+                  type === "leave" ? "مرخصی" : "توجیه غیبت"
+                } ثبت کرد${groupTitle ? ` (${groupTitle})` : ""}.`
+              : `درخواست ${
+                  type === "leave" ? "مرخصی" : "توجیه غیبت"
+                } گروهی برای شما ثبت شد و در انتظار بررسی است.`,
+            link: "portal",
+          },
+          client,
+        );
+      }
+      return { created: studentRows.length, affectedRecords };
+    });
+
+    const { rows: created } = await pool.query(
+      `${leaveSelect} WHERE lr.group_id=$1 ORDER BY lr.created_at DESC`,
+      [groupId],
+    );
+    res.status(201).json({
+      groupId,
+      created: result.created,
+      affectedRecords: result.affectedRecords,
+      requests: created,
+    });
+  }),
+);
+
 app.get(
   "/api/leave-requests",
   asyncRoute(async (req, res) => {
@@ -2296,74 +2481,93 @@ app.post(
   authorize("admin"),
   validate(reviewSchema),
   asyncRoute(async (req, res) => {
-    const { status, adminNote } = req.body;
-    const { rows } = await pool.query(
-      `UPDATE leave_requests
-          SET status=$3, admin_note=$4, reviewed_by=$5, reviewed_at=now(), updated_at=now()
-        WHERE id=$1 AND organization_id=$2 AND status='pending'
-        RETURNING id, student_id AS "studentId", student_number AS "studentNumber",
-                  student_name AS "studentName", type, session_id AS "sessionId",
-                  start_date AS "startDate", end_date AS "endDate"`,
-      [req.params.id, req.user.org, status, adminNote, req.user.sub],
+    const { status, adminNote, applyToGroup } = req.body;
+    const { rows: targetRows } = await pool.query(
+      `SELECT id, student_id AS "studentId", group_id AS "groupId",
+              student_number AS "studentNumber", student_name AS "studentName",
+              type, session_id AS "sessionId", start_date AS "startDate",
+              end_date AS "endDate"
+         FROM leave_requests
+        WHERE id=$1 AND organization_id=$2 AND status='pending'`,
+      [req.params.id, req.user.org],
     );
-    const leave = rows[0];
-    if (!leave)
+    const target = targetRows[0];
+    if (!target)
       return res
         .status(404)
         .json({ message: "درخواست یافت نشد یا قبلاً بررسی شده است." });
 
-    let affected = 0;
-    if (status === "approved") {
-      affected = await withTransaction(async (client) => {
-        const params = [leave.studentId, req.user.org];
-        let sql = `SELECT ar.id, ar.status FROM attendance_records ar
-                     JOIN class_sessions cs ON cs.id = ar.session_id
-                    WHERE ar.student_id=$1 AND cs.organization_id=$2 AND ar.status <> 'excused'`;
-        if (leave.sessionId) {
-          params.push(leave.sessionId);
-          sql += ` AND ar.session_id=$3`;
-        } else {
-          params.push(leave.startDate, leave.endDate || leave.startDate);
-          sql += ` AND cs.session_date BETWEEN $3 AND $4`;
-        }
-        const { rows: records } = await client.query(sql, params);
-        for (const record of records) {
-          await client.query(
-            `UPDATE attendance_records SET status='excused', updated_at=now() WHERE id=$1`,
-            [record.id],
-          );
-          await client.query(
-            `INSERT INTO attendance_history (attendance_id, from_status, to_status, reason, method, changed_by)
-             VALUES ($1,$2,'excused',$3,'system',$4)`,
-            [
-              record.id,
-              record.status,
-              `تایید درخواست ${leave.type === "leave" ? "مرخصی" : "توجیه"}`,
-              req.user.sub,
-            ],
-          );
-        }
-        return records.length;
-      });
+    let pendingRows = [target];
+    if (applyToGroup && target.groupId) {
+      const { rows } = await pool.query(
+        `SELECT id, student_id AS "studentId", group_id AS "groupId",
+                student_number AS "studentNumber", student_name AS "studentName",
+                type, session_id AS "sessionId", start_date AS "startDate",
+                end_date AS "endDate"
+           FROM leave_requests
+          WHERE group_id=$1 AND organization_id=$2 AND status='pending'`,
+        [target.groupId, req.user.org],
+      );
+      if (rows.length) pendingRows = rows;
     }
 
-    await notifyUsers(
-      req.user.org,
-      await studentUserIds(req.user.org, leave.studentId),
-      {
-        type: "leave",
-        title:
-          status === "approved"
-            ? "درخواست مرخصی تایید شد"
-            : "درخواست مرخصی رد شد",
-        message:
-          status === "approved"
-            ? `درخواست شما تایید شد${affected ? ` و ${affected} رکورد حضور به «موجه» تغییر کرد` : ""}.`
-            : `درخواست شما رد شد${adminNote ? `: ${adminNote}` : "."}`,
-        link: "portal",
-      },
-    );
-    res.json({ ...leave, status, adminNote, affectedRecords: affected });
+    let affectedTotal = 0;
+    const reviewed = await withTransaction(async (client) => {
+      const output = [];
+      for (const leave of pendingRows) {
+        const { rows } = await client.query(
+          `UPDATE leave_requests
+              SET status=$3, admin_note=$4, reviewed_by=$5, reviewed_at=now(), updated_at=now()
+            WHERE id=$1 AND organization_id=$2 AND status='pending'
+            RETURNING id, student_id AS "studentId", student_number AS "studentNumber",
+                      student_name AS "studentName", type, session_id AS "sessionId",
+                      start_date AS "startDate", end_date AS "endDate",
+                      group_id AS "groupId", group_title AS "groupTitle"`,
+          [leave.id, req.user.org, status, adminNote, req.user.sub],
+        );
+        if (!rows[0]) continue;
+        if (status === "approved") {
+          affectedTotal += await applyExcusedForLeave(
+            client,
+            rows[0],
+            req.user.org,
+            req.user.sub,
+          );
+        }
+        output.push(rows[0]);
+      }
+      return output;
+    });
+
+    for (const leave of reviewed) {
+      const affected =
+        status === "approved" && reviewed.length === 1 ? affectedTotal : 0;
+      await notifyUsers(
+        req.user.org,
+        await studentUserIds(req.user.org, leave.studentId),
+        {
+          type: "leave",
+          title:
+            status === "approved"
+              ? "درخواست مرخصی تایید شد"
+              : "درخواست مرخصی رد شد",
+          message:
+            status === "approved"
+              ? `درخواست شما تایید شد${affected ? ` و ${affected} رکورد حضور به «موجه» تغییر کرد` : ""}.`
+              : `درخواست شما رد شد${adminNote ? `: ${adminNote}` : "."}`,
+          link: "portal",
+        },
+      );
+    }
+
+    const primary = reviewed[0] || target;
+    res.json({
+      ...primary,
+      status,
+      adminNote,
+      affectedRecords: affectedTotal,
+      reviewedCount: reviewed.length,
+    });
   }),
 );
 
@@ -2660,6 +2864,216 @@ app.post(
       }
     });
     res.status(201).json(result);
+  }),
+);
+
+/* ================= phase 2: analytics + live class ================= */
+
+const analyticsSchema = z.object({
+  from: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(),
+  to: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(),
+  granularity: z.enum(["day", "week", "month"]).default("day"),
+  courseId: z.string().uuid().optional(),
+});
+
+function analyticsRange(input) {
+  const to =
+    input.to || new Date().toISOString().slice(0, 10);
+  const from =
+    input.from ||
+    new Date(new Date(`${to}T00:00:00Z`).getTime() - 29 * 86400000)
+      .toISOString()
+      .slice(0, 10);
+  return { from, to };
+}
+
+async function analyticsScope(req) {
+  if (req.user.role !== "student") return { studentId: null };
+  const student = await findStudentByUserId(req.user.sub, req.user.org);
+  return { studentId: student?.id || "00000000-0000-0000-0000-000000000000" };
+}
+
+app.get(
+  "/api/analytics/trend",
+  validate(analyticsSchema, "query"),
+  asyncRoute(async (req, res) => {
+    const { from, to } = analyticsRange(req.query);
+    const { studentId } = await analyticsScope(req);
+    const granularity = req.query.granularity || "day";
+    const params = [req.user.org, from, to];
+    let scope = "";
+    if (studentId) {
+      params.push(studentId);
+      scope += ` AND ar.student_id=$${params.length}`;
+    }
+    if (req.query.courseId) {
+      params.push(req.query.courseId);
+      scope += ` AND cs.course_id=$${params.length}`;
+    }
+    const { rows } = await pool.query(
+      `SELECT to_char(date_trunc('${granularity}', cs.session_date),'YYYY-MM-DD') AS bucket,
+              count(*)::int AS total,
+              count(*) FILTER (WHERE ar.status='present')::int AS present,
+              count(*) FILTER (WHERE ar.status='late')::int AS late,
+              count(*) FILTER (WHERE ar.status='absent')::int AS absent,
+              count(*) FILTER (WHERE ar.status='excused')::int AS excused,
+              count(*) FILTER (WHERE ar.status='left_early')::int AS "leftEarly"
+         FROM attendance_records ar
+         JOIN class_sessions cs ON cs.id=ar.session_id
+        WHERE cs.organization_id=$1 AND cs.session_date BETWEEN $2 AND $3${scope}
+        GROUP BY 1 ORDER BY 1`,
+      params,
+    );
+    res.json({ from, to, granularity, rows });
+  }),
+);
+
+app.get(
+  "/api/analytics/courses",
+  validate(
+    z.object({
+      from: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(),
+      to: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(),
+    }),
+    "query",
+  ),
+  asyncRoute(async (req, res) => {
+    const { from, to } = analyticsRange(req.query);
+    const { studentId } = await analyticsScope(req);
+    const params = [req.user.org, from, to];
+    let scope = "";
+    if (studentId) {
+      params.push(studentId);
+      scope += ` AND ar.student_id=$${params.length}`;
+    }
+    const { rows } = await pool.query(
+      `SELECT c.id, c.title,
+              count(*)::int AS total,
+              count(*) FILTER (WHERE ar.status='present')::int AS present,
+              count(*) FILTER (WHERE ar.status='late')::int AS late,
+              count(*) FILTER (WHERE ar.status='absent')::int AS absent,
+              count(*) FILTER (WHERE ar.status='excused')::int AS excused,
+              round(100.0 * count(*) FILTER (WHERE ar.status IN ('present','late'))
+                    / greatest(count(*),1))::int AS rate
+         FROM attendance_records ar
+         JOIN class_sessions cs ON cs.id=ar.session_id
+         JOIN courses c ON c.id=cs.course_id
+        WHERE cs.organization_id=$1 AND cs.session_date BETWEEN $2 AND $3${scope}
+        GROUP BY c.id, c.title ORDER BY rate DESC, c.title`,
+      params,
+    );
+    res.json({ from, to, rows });
+  }),
+);
+
+app.get(
+  "/api/sessions/live",
+  authorize("admin", "teacher"),
+  asyncRoute(async (req, res) => {
+    const date = /^\d{4}-\d{2}-\d{2}$/.test(req.query.date || "")
+      ? req.query.date
+      : new Date().toISOString().slice(0, 10);
+    const { rows } = await pool.query(
+      `SELECT s.id, c.title AS "courseTitle", c.code AS "courseCode",
+              to_char(s.session_date,'YYYY-MM-DD') AS date,
+              to_char(s.start_time,'HH24:MI') AS "startTime",
+              to_char(s.end_time,'HH24:MI') AS "endTime",
+              s.teacher_name AS "teacherName", s.status,
+              s.live_status AS "liveStatus", s.started_at AS "startedAt",
+              s.ended_at AS "endedAt",
+              count(ar.id)::int AS total,
+              count(ar.id) FILTER (WHERE ar.status='present')::int AS present,
+              count(ar.id) FILTER (WHERE ar.status='late')::int AS late,
+              count(ar.id) FILTER (WHERE ar.status='absent')::int AS absent,
+              count(ar.id) FILTER (WHERE ar.status='excused')::int AS excused,
+              count(ar.id) FILTER (WHERE ar.status='unmarked')::int AS unmarked
+         FROM class_sessions s
+         JOIN courses c ON c.id=s.course_id
+         LEFT JOIN attendance_records ar ON ar.session_id=s.id
+        WHERE s.organization_id=$1 AND s.session_date=$2
+        GROUP BY s.id, c.id
+        ORDER BY s.start_time`,
+      [req.user.org, date],
+    );
+    res.json(rows);
+  }),
+);
+
+app.get(
+  "/api/sessions/:sessionId/live",
+  asyncRoute(async (req, res) => {
+    const { rows: sessionRows } = await pool.query(
+      `SELECT s.id, s.course_id AS "courseId", c.title AS "courseTitle",
+              c.code AS "courseCode",
+              to_char(s.session_date,'YYYY-MM-DD') AS date,
+              to_char(s.start_time,'HH24:MI') AS "startTime",
+              to_char(s.end_time,'HH24:MI') AS "endTime",
+              s.teacher_name AS "teacherName", s.status,
+              s.live_status AS "liveStatus", s.started_at AS "startedAt",
+              s.ended_at AS "endedAt"
+         FROM class_sessions s
+         JOIN courses c ON c.id=s.course_id
+        WHERE s.id=$1 AND s.organization_id=$2`,
+      [req.params.sessionId, req.user.org],
+    );
+    const session = sessionRows[0];
+    if (!session) return res.status(404).json({ message: "جلسه یافت نشد." });
+
+    const params = [req.params.sessionId];
+    let scope = "";
+    if (req.user.role === "student") {
+      const student = await findStudentByUserId(req.user.sub, req.user.org);
+      if (!student)
+        return res.status(404).json({ message: "حساب دانشجویی پیدا نشد." });
+      params.push(student.id);
+      scope = ` AND ar.student_id=$2`;
+    }
+    const { rows: students } = await pool.query(
+      `SELECT ar.id AS "attendanceId", st.id AS "studentId",
+              st.student_number AS "studentNumber", st.full_name AS "fullName",
+              ar.status, ar.method, ar.checked_at AS "checkedAt"
+         FROM attendance_records ar
+         JOIN students st ON st.id=ar.student_id
+        WHERE ar.session_id=$1${scope}
+        ORDER BY st.full_name`,
+      params,
+    );
+    res.json({ ...session, students });
+  }),
+);
+
+app.post(
+  "/api/sessions/:sessionId/live/start",
+  authorize("admin", "teacher"),
+  asyncRoute(async (req, res) => {
+    const { rows } = await pool.query(
+      `UPDATE class_sessions
+          SET live_status='live', started_at=COALESCE(started_at, now()),
+              ended_at=NULL,
+              status=CASE WHEN status='finalized' THEN status ELSE 'started' END,
+              updated_at=now()
+        WHERE id=$1 AND organization_id=$2
+        RETURNING id, live_status AS "liveStatus", started_at AS "startedAt"`,
+      [req.params.sessionId, req.user.org],
+    );
+    if (!rows[0]) return res.status(404).json({ message: "جلسه یافت نشد." });
+    res.json(rows[0]);
+  }),
+);
+
+app.post(
+  "/api/sessions/:sessionId/live/end",
+  authorize("admin", "teacher"),
+  asyncRoute(async (req, res) => {
+    const { rows } = await pool.query(
+      `UPDATE class_sessions
+          SET live_status='ended', ended_at=now(), updated_at=now()
+        WHERE id=$1 AND organization_id=$2
+        RETURNING id, live_status AS "liveStatus", ended_at AS "endedAt"`,
+      [req.params.sessionId, req.user.org],
+    );
+    if (!rows[0]) return res.status(404).json({ message: "جلسه یافت نشد." });
+    res.json(rows[0]);
   }),
 );
 

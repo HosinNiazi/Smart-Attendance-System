@@ -118,6 +118,9 @@ export function adaptBootstrap(data) {
       finalized: session.status === "finalized",
       cancelled: session.status === "cancelled",
       status: session.status,
+      liveStatus: session.liveStatus || "scheduled",
+      startedAt: session.startedAt || null,
+      endedAt: session.endedAt || null,
       studentIds: (session.studentIds || [])
         .map((id) => studentByDatabaseId.get(id))
         .filter(Boolean),

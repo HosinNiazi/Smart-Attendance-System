@@ -19,6 +19,7 @@ import {
   Tickets,
 } from "./components/pages.jsx";
 import { VoiceAttendance } from "./voice/VoiceAttendance.jsx";
+import { LiveClass, TrendAnalysis } from "./components/phase2.jsx";
 import {
   exportAudioProfiles,
   restoreAudioProfiles,
@@ -69,6 +70,13 @@ import {
   markAllNotificationsRead,
   importStudents,
   importCourses,
+  createGroupLeaveRequest,
+  fetchAttendanceTrend,
+  fetchCourseAnalytics,
+  fetchLiveSessions,
+  fetchLiveSession,
+  startLiveSession,
+  endLiveSession,
 } from "./api/client.js";
 import { adaptBootstrap, toEnStatus } from "./api/adapter.js";
 import { HelpChat } from "./help/HelpChat.jsx";
@@ -94,6 +102,8 @@ const navGroups = [
       { id: "face", label: "تشخیص چهره", icon: "bi-camera-video" },
       { id: "class-camera", label: "دوربین کلاس", icon: "bi-camera-reels" },
       { id: "fingerprint", label: "اثر انگشت", icon: "bi-fingerprint" },
+      { id: "class-live", label: "کلاس زنده", icon: "bi-broadcast" },
+      { id: "trends", label: "تحلیل روند", icon: "bi-graph-up-arrow" },
       { id: "reports", label: "گزارش‌ها", icon: "bi-bar-chart-line" },
     ],
   },
@@ -127,6 +137,8 @@ const ROLE_PERMISSIONS = {
     "face",
     "class-camera",
     "fingerprint",
+    "class-live",
+    "trends",
     "reports",
     "profile",
   ]),
@@ -519,6 +531,11 @@ export default function App() {
         (record) => String(record.id) === String(studentAccount.id),
       )
     : [];
+  const studentSessions = studentAccount
+    ? Object.values(sessionHistory).filter((session) =>
+        (session.studentIds || []).includes(studentAccount.id),
+      )
+    : [];
   const allowedPages = ROLE_PERMISSIONS[loginRole] || ROLE_PERMISSIONS.teacher;
   const visibleNavGroups = navGroups
     .map((group) => ({
@@ -697,6 +714,32 @@ export default function App() {
       }.`,
     );
     return result;
+  }
+
+  async function createGroupLeave(payload) {
+    const result = await createGroupLeaveRequest(payload);
+    await refreshLeaveRequests();
+    if (result.affectedRecords) await loadFromServer({ silent: true });
+    await refreshNotifications();
+    notify(
+      `${result.created.toLocaleString("fa-IR")} درخواست گروهی ثبت شد${
+        result.affectedRecords
+          ? ` و ${result.affectedRecords.toLocaleString("fa-IR")} رکورد به «موجه» تغییر یافت`
+          : ""
+      }.`,
+    );
+    return result;
+  }
+
+  async function markLiveAttendance(sessionId, studentId, status) {
+    await upsertAttendance({
+      sessionId,
+      studentId,
+      status,
+      method: "manual",
+      reason: "ثبت از پنل زندهٔ کلاس",
+    });
+    return true;
   }
 
   async function createTicket(payload) {
@@ -2167,6 +2210,8 @@ export default function App() {
         notifications={notifications}
         onMarkNotificationRead={readNotification}
         onMarkAllNotificationsRead={readAllNotifications}
+        sessions={studentSessions}
+        onLoadTrend={fetchAttendanceTrend}
       />
     );
   }
@@ -2641,6 +2686,7 @@ export default function App() {
               loading={leaveLoading}
               onReview={reviewLeave}
               onRefresh={refreshLeaveRequests}
+              onCreateGroup={createGroupLeave}
             />
           )}
           {active === "objections" && (
@@ -2649,6 +2695,22 @@ export default function App() {
               loading={objectionsLoading}
               onReview={reviewObjection}
               onRefresh={refreshObjections}
+            />
+          )}
+          {active === "class-live" && (
+            <LiveClass
+              onLoadSessions={fetchLiveSessions}
+              onLoadSession={fetchLiveSession}
+              onStartSession={startLiveSession}
+              onEndSession={endLiveSession}
+              onMarkStudent={markLiveAttendance}
+            />
+          )}
+          {active === "trends" && (
+            <TrendAnalysis
+              courses={courses}
+              onLoadTrend={fetchAttendanceTrend}
+              onLoadCourses={fetchCourseAnalytics}
             />
           )}
         </div>

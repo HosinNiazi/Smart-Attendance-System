@@ -1,5 +1,6 @@
 import React, { useEffect, useRef, useState } from "react";
 import { Icon, PanelTitle, Badge, EmptyState, StudentAvatar } from "../components/shared.jsx";
+import { JalaliDateInput } from "../components/JalaliDateInput.jsx";
 import { saveClip } from "./audioStore.js";
 
 const PHRASE = "امروز برای حضور در کلاس جمله ثابت را واضح می‌خوانم";
@@ -317,7 +318,7 @@ export function VoiceAttendance({ courses, students, attendance, sessionCourse, 
         <div className="voice-session-controls">
           <MicrophoneStatus status={micStatus} />
           <label className="form-label">درس / کلاس</label><select className="form-select" disabled={Boolean(recording) || busy} value={sessionCourse} onChange={(event) => setSessionCourse(event.target.value)}>{courses.map((course) => <option key={course.id} value={course.title}>{course.title}</option>)}</select>
-          <label className="form-label" htmlFor="voice-session-date">تاریخ جلسه</label><input id="voice-session-date" className="form-control" disabled={Boolean(recording) || busy} type="date" value={sessionDate} onChange={(event) => setSessionDate(event.target.value)} />
+          <label className="form-label" htmlFor="voice-session-date">تاریخ جلسه</label><JalaliDateInput id="voice-session-date" disabled={Boolean(recording) || busy} value={sessionDate} onChange={(next) => setSessionDate(next)} ariaLabel="تاریخ جلسه" />
           {recording === "session" ? <button className="btn btn-danger voice-record-button" onClick={() => stopRef.current?.()}><Icon name="bi-stop-circle" /> توقف ضبط · {seconds} ثانیه</button> : <button className="btn btn-primary voice-record-button" disabled={busy || micStatus === "requesting" || profiles.length === 0 || Boolean(recording)} onClick={() => startRecording()}><Icon name={micStatus === "requesting" ? "bi-hourglass-split" : "bi-mic-fill"} /> {micStatus === "requesting" ? "در انتظار دسترسی میکروفون" : "ضبط زنده و ثبت حضور"}</button>}
           {recording === "session" && <RecordingIndicator seconds={seconds} level={micLevel} />}
           <div className="settings-warning"><Icon name="bi-info-circle" /> این تطبیق آزمایشی است و برای احراز هویت قطعی مناسب نیست. صدا در فضای محلی مرورگر ذخیره می‌شود.</div>

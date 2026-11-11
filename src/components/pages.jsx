@@ -1,5 +1,10 @@
 import React, { useEffect, useRef, useState } from "react";
 import { Badge, EmptyState, Icon, PanelTitle, SkeletonCards, SkeletonTable, StatCard, StudentAvatar } from "./shared.jsx";
+import { JalaliDateInput } from "./JalaliDateInput.jsx";
+import {
+  LiveClassBanner,
+  StudentCalendar,
+} from "./phase2.jsx";
 import { HelpChat } from "../help/HelpChat.jsx";
 import {
   CLASSROOM_SCAN_INTERVAL_MS,
@@ -1867,12 +1872,11 @@ export function FaceAttendance({
             <label className="form-label" htmlFor="face-session-date">
               تاریخ جلسه
             </label>
-            <input
+            <JalaliDateInput
               id="face-session-date"
-              className="form-control"
-              type="date"
               value={sessionDate}
-              onChange={(event) => setSessionDate(event.target.value)}
+              onChange={(next) => setSessionDate(next)}
+              ariaLabel="تاریخ جلسه"
             />
             <div className="face-info-row">
               <span>
@@ -2315,20 +2319,24 @@ export function Reports({
           </label>
           <label>
             از تاریخ
-            <input
-              className="form-control"
-              type="date"
+            <JalaliDateInput
               value={fromDate}
-              onChange={(event) => setFromDate(event.target.value)}
+              onChange={(next) => setFromDate(next)}
+              max={toDate || ""}
+              clearable
+              placeholder="همهٔ تاریخ‌ها"
+              ariaLabel="از تاریخ"
             />
           </label>
           <label>
             تا تاریخ
-            <input
-              className="form-control"
-              type="date"
+            <JalaliDateInput
               value={toDate}
-              onChange={(event) => setToDate(event.target.value)}
+              onChange={(next) => setToDate(next)}
+              min={fromDate || ""}
+              clearable
+              placeholder="همهٔ تاریخ‌ها"
+              ariaLabel="تا تاریخ"
             />
           </label>
           <button
@@ -3014,12 +3022,11 @@ export function FingerprintAttendance({
             <label className="form-label" htmlFor="fingerprint-session-date">
               تاریخ جلسه
             </label>
-            <input
+            <JalaliDateInput
               id="fingerprint-session-date"
-              className="form-control"
-              type="date"
               value={sessionDate}
-              onChange={(event) => setSessionDate(event.target.value)}
+              onChange={(next) => setSessionDate(next)}
+              ariaLabel="تاریخ جلسه"
             />
             <div className="face-info-row">
               <span>
@@ -3268,6 +3275,8 @@ export function StudentPortal({
   notifications = [],
   onMarkNotificationRead,
   onMarkAllNotificationsRead,
+  sessions = [],
+  onLoadTrend,
 }) {
   const [tab, setTab] = useState("overview");
   const [notificationsOpen, setNotificationsOpen] = useState(false);
@@ -3637,6 +3646,7 @@ export function StudentPortal({
     { id: "fingerprint", label: "اثر انگشت", icon: "bi-fingerprint" },
     { id: "profile", label: "پروفایل من", icon: "bi-person-circle" },
     { id: "tickets", label: "تیکت‌ها", icon: "bi-ticket" },
+    { id: "calendar", label: "تقویم من", icon: "bi-calendar3" },
     { id: "leave", label: "مرخصی و توجیه", icon: "bi-calendar2-check" },
     { id: "help", label: "کمک و ارتباط با ما", icon: "bi-headset" },
   ];
@@ -3674,6 +3684,13 @@ export function StudentPortal({
   )}&body=${encodeURIComponent(
     `نام: ${student.name}\nشماره دانشجویی: ${student.id}\n\nمتن درخواست:\n`,
   )}`;
+
+  const liveSession = sessions.find(
+    (session) => session.liveStatus === "live",
+  );
+  const liveRecord = liveSession
+    ? records.find((record) => record.sessionId === liveSession.id)
+    : null;
 
   return (
     <div className="student-portal" dir="rtl">
@@ -3826,6 +3843,10 @@ export function StudentPortal({
       <main className="student-portal-content">
         {tab === "overview" && (
           <>
+        <LiveClassBanner
+          session={liveSession}
+          status={liveRecord?.status}
+        />
         <section className="student-welcome-card">
           <div className="student-welcome-copy">
             <span className="student-welcome-eyebrow">
@@ -4445,6 +4466,14 @@ export function StudentPortal({
             </div>
           </section>
         )}
+        {tab === "calendar" && (
+          <StudentCalendar
+            sessions={sessions}
+            records={records}
+            leaveRequests={leaveRequests}
+            onLoadTrend={onLoadTrend}
+          />
+        )}
         {tab === "leave" && (
           <section className="student-help-section">
             <div className="student-help-hero">
@@ -4491,31 +4520,35 @@ export function StudentPortal({
                 <div className="leave-date-grid">
                   <label className="form-label">
                     از تاریخ
-                    <input
-                      type="date"
-                      className="form-control"
+                    <JalaliDateInput
                       value={leaveForm.startDate}
-                      onChange={(event) =>
+                      onChange={(next) =>
                         setLeaveForm((current) => ({
                           ...current,
-                          startDate: event.target.value,
+                          startDate: next,
+                          endDate:
+                            current.endDate && current.endDate < next
+                              ? ""
+                              : current.endDate,
                         }))
                       }
+                      ariaLabel="تاریخ شروع مرخصی"
                     />
                   </label>
                   <label className="form-label">
                     تا تاریخ (اختیاری)
-                    <input
-                      type="date"
-                      className="form-control"
+                    <JalaliDateInput
                       value={leaveForm.endDate}
                       min={leaveForm.startDate}
-                      onChange={(event) =>
+                      clearable
+                      placeholder="همان روز"
+                      onChange={(next) =>
                         setLeaveForm((current) => ({
                           ...current,
-                          endDate: event.target.value,
+                          endDate: next,
                         }))
                       }
+                      ariaLabel="تاریخ پایان مرخصی"
                     />
                   </label>
                 </div>
@@ -5226,11 +5259,13 @@ function RequestReviewModal({
   approveLabel = "تایید",
   rejectLabel = "رد",
   busy,
+  groupTitle,
   onClose,
   onConfirm,
 }) {
   const [status, setStatus] = useState("approved");
   const [note, setNote] = useState("");
+  const [applyToGroup, setApplyToGroup] = useState(true);
   return (
     <div
       className="modal-backdrop-custom"
@@ -5292,12 +5327,30 @@ function RequestReviewModal({
             </button>
           </div>
         </div>
+        {groupTitle ? (
+          <label className="request-group-option">
+            <input
+              type="checkbox"
+              checked={applyToGroup}
+              onChange={(event) => setApplyToGroup(event.target.checked)}
+            />
+            <span>
+              اعمال این تصمیم روی همهٔ اعضای گروه «{groupTitle}»
+            </span>
+          </label>
+        ) : null}
         <div className="ticket-modal-actions">
           <button
             className="btn btn-primary"
             type="button"
             disabled={busy}
-            onClick={() => onConfirm({ status, adminNote: note.trim() })}
+            onClick={() =>
+              onConfirm({
+                status,
+                adminNote: note.trim(),
+                applyToGroup: Boolean(groupTitle && applyToGroup),
+              })
+            }
           >
             <Icon name="bi-send" /> {busy ? "در حال ثبت…" : "ثبت تصمیم"}
           </button>
@@ -5331,16 +5384,243 @@ function recordStatusLabel(status) {
   );
 }
 
+function GroupLeaveModal({ students = [], busy, onClose, onSubmit }) {
+  const [selected, setSelected] = useState(() => new Set());
+  const [search, setSearch] = useState("");
+  const [title, setTitle] = useState("");
+  const [type, setType] = useState("leave");
+  const [startDate, setStartDate] = useState(() =>
+    new Date().toISOString().slice(0, 10),
+  );
+  const [endDate, setEndDate] = useState("");
+  const [reason, setReason] = useState("");
+  const [approveNow, setApproveNow] = useState(true);
+  const [error, setError] = useState("");
+
+  const filtered = students.filter((student) =>
+    `${student.name} ${student.id}`
+      .toLowerCase()
+      .includes(search.toLowerCase()),
+  );
+
+  function toggle(student) {
+    if (!student.databaseId) return;
+    setSelected((current) => {
+      const next = new Set(current);
+      if (next.has(student.databaseId)) next.delete(student.databaseId);
+      else next.add(student.databaseId);
+      return next;
+    });
+  }
+
+  function toggleAll() {
+    const assignable = filtered.filter((student) => student.databaseId);
+    const allSelected =
+      assignable.length > 0 &&
+      assignable.every((student) => selected.has(student.databaseId));
+    setSelected((current) => {
+      const next = new Set(current);
+      assignable.forEach((student) => {
+        if (allSelected) next.delete(student.databaseId);
+        else next.add(student.databaseId);
+      });
+      return next;
+    });
+  }
+
+  async function submit() {
+    if (!selected.size) return setError("حداقل یک دانشجو انتخاب کنید.");
+    if (reason.trim().length < 5)
+      return setError("دلیل را کامل‌تر بنویسید (حداقل ۵ کاراکتر).");
+    if (endDate && endDate < startDate)
+      return setError("تاریخ پایان نمی‌تواند قبل از شروع باشد.");
+    setError("");
+    await onSubmit({
+      studentIds: Array.from(selected),
+      title: title.trim(),
+      type,
+      startDate,
+      endDate: endDate || startDate,
+      reason: reason.trim(),
+      approveNow,
+    });
+  }
+
+  return (
+    <div
+      className="modal-backdrop-custom"
+      onClick={(event) => {
+        if (event.target === event.currentTarget) onClose();
+      }}
+    >
+      <div className="custom-modal modal-wide" role="dialog" aria-modal="true">
+        <div className="ticket-modal-head">
+          <div>
+            <span>ثبت نیابتی</span>
+            <h3>درخواست مرخصی گروهی</h3>
+          </div>
+          <button
+            type="button"
+            className="ticket-modal-close"
+            aria-label="بستن"
+            onClick={onClose}
+          >
+            <Icon name="bi-x-lg" />
+          </button>
+        </div>
+
+        <div className="group-leave-form">
+          <label className="form-label">
+            عنوان گروه (اختیاری)
+            <input
+              className="form-control"
+              value={title}
+              onChange={(event) => setTitle(event.target.value)}
+              placeholder="مثلاً اردوی علمی دانشکده"
+            />
+          </label>
+          <label className="form-label">
+            نوع درخواست
+            <select
+              className="form-select"
+              value={type}
+              onChange={(event) => setType(event.target.value)}
+            >
+              <option value="leave">مرخصی</option>
+              <option value="excuse">توجیه غیبت</option>
+            </select>
+          </label>
+          <div className="leave-date-grid">
+            <label className="form-label">
+              از تاریخ
+              <JalaliDateInput
+                value={startDate}
+                onChange={(next) => {
+                  setStartDate(next);
+                  setEndDate((current) =>
+                    current && current < next ? "" : current,
+                  );
+                }}
+                ariaLabel="تاریخ شروع مرخصی گروهی"
+              />
+            </label>
+            <label className="form-label">
+              تا تاریخ (اختیاری)
+              <JalaliDateInput
+                value={endDate}
+                min={startDate}
+                clearable
+                placeholder="همان روز"
+                onChange={(next) => setEndDate(next)}
+                ariaLabel="تاریخ پایان مرخصی گروهی"
+              />
+            </label>
+          </div>
+          <label className="form-label">
+            دلیل *
+            <textarea
+              className="form-control"
+              rows={3}
+              value={reason}
+              onChange={(event) => setReason(event.target.value)}
+              placeholder="دلیل مرخصی گروهی را بنویسید…"
+            />
+          </label>
+          <label className="request-group-option">
+            <input
+              type="checkbox"
+              checked={approveNow}
+              onChange={(event) => setApproveNow(event.target.checked)}
+            />
+            <span>
+              تایید فوری و تغییر رکوردهای حضور این بازه به «موجه»
+            </span>
+          </label>
+        </div>
+
+        <div className="group-leave-picker">
+          <div className="table-toolbar ticket-toolbar">
+            <div className="search-wrap">
+              <Icon name="bi-search" />
+              <input
+                className="form-control"
+                value={search}
+                onChange={(event) => setSearch(event.target.value)}
+                placeholder="جست‌وجوی دانشجو…"
+              />
+            </div>
+            <span className="result-count">
+              {selected.size.toLocaleString("fa-IR")} انتخاب‌شده
+            </span>
+            <button type="button" className="ticket-chip" onClick={toggleAll}>
+              انتخاب همه
+            </button>
+          </div>
+          <div className="group-leave-list">
+            {filtered.length ? (
+              filtered.map((student) => (
+                <label
+                  key={student.id}
+                  className={`group-leave-item ${
+                    selected.has(student.databaseId) ? "selected" : ""
+                  }`}
+                >
+                  <input
+                    type="checkbox"
+                    checked={selected.has(student.databaseId)}
+                    disabled={!student.databaseId}
+                    onChange={() => toggle(student)}
+                  />
+                  <StudentAvatar name={student.name} photo={student.faceImage} />
+                  <span>
+                    <strong>{student.name}</strong>
+                    <small>{student.id}</small>
+                  </span>
+                </label>
+              ))
+            ) : (
+              <p className="text-muted">دانشجویی با این جست‌وجو پیدا نشد.</p>
+            )}
+          </div>
+        </div>
+
+        {error ? (
+          <p className="student-photo-message error" role="alert">
+            {error}
+          </p>
+        ) : null}
+        <div className="ticket-modal-actions">
+          <button
+            className="btn btn-primary"
+            type="button"
+            disabled={busy}
+            onClick={submit}
+          >
+            <Icon name="bi-people" />{" "}
+            {busy ? "در حال ثبت…" : "ثبت درخواست گروهی"}
+          </button>
+          <button className="btn btn-light-outline" type="button" onClick={onClose}>
+            انصراف
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 export function LeaveRequests({
   requests = [],
   students = [],
   loading = false,
   onReview,
   onRefresh,
+  onCreateGroup,
 }) {
   const [filter, setFilter] = useState("all");
   const [reviewingId, setReviewingId] = useState("");
   const [busy, setBusy] = useState(false);
+  const [groupOpen, setGroupOpen] = useState(false);
+  const [groupBusy, setGroupBusy] = useState(false);
 
   useEffect(() => {
     onRefresh?.();
@@ -5380,9 +5660,20 @@ export function LeaveRequests({
         title="درخواست‌های مرخصی و توجیه"
         description="درخواست‌های مرخصی و توجیه غیبت دانشجویان را بررسی و تایید کنید."
         action={
-          <button className="btn btn-light-outline" onClick={onRefresh}>
-            <Icon name="bi-arrow-clockwise" /> بروزرسانی
-          </button>
+          <div className="page-action-row">
+            {onCreateGroup ? (
+              <button
+                className="btn btn-primary"
+                type="button"
+                onClick={() => setGroupOpen(true)}
+              >
+                <Icon name="bi-people" /> درخواست گروهی
+              </button>
+            ) : null}
+            <button className="btn btn-light-outline" onClick={onRefresh}>
+              <Icon name="bi-arrow-clockwise" /> بروزرسانی
+            </button>
+          </div>
         }
       />
       {loading && !requests.length ? (
@@ -5467,9 +5758,16 @@ export function LeaveRequests({
                       </div>
                     </td>
                     <td>
-                      <Badge tone={request.type === "leave" ? "purple" : "neutral"}>
-                        {request.type === "leave" ? "مرخصی" : "توجیه غیبت"}
-                      </Badge>
+                      <div className="request-type-cell">
+                        <Badge tone={request.type === "leave" ? "purple" : "neutral"}>
+                          {request.type === "leave" ? "مرخصی" : "توجیه غیبت"}
+                        </Badge>
+                        {request.groupId ? (
+                          <Badge tone="info">
+                            گروهی{request.groupTitle ? ` · ${request.groupTitle}` : ""}
+                          </Badge>
+                        ) : null}
+                      </div>
                     </td>
                     <td>
                       <div className="ticket-subject-cell">
@@ -5542,8 +5840,29 @@ export function LeaveRequests({
           message={selected.reason}
           approveLabel="تایید"
           busy={busy}
+          groupTitle={
+            selected.groupId
+              ? selected.groupTitle || "بدون عنوان"
+              : ""
+          }
           onClose={() => setReviewingId("")}
           onConfirm={submitReview}
+        />
+      ) : null}
+      {groupOpen ? (
+        <GroupLeaveModal
+          students={students}
+          busy={groupBusy}
+          onClose={() => setGroupOpen(false)}
+          onSubmit={async (payload) => {
+            setGroupBusy(true);
+            try {
+              await onCreateGroup?.(payload);
+              setGroupOpen(false);
+            } finally {
+              setGroupBusy(false);
+            }
+          }}
         />
       ) : null}
     </>
