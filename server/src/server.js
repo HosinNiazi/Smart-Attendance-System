@@ -751,6 +751,10 @@ app.patch(
           WHERE id=$4`,
         [req.user.sub, studentId, userId, r.id],
       );
+      await audit(client, req.user.org, req.user.sub, "approve", "registration", r.id, {
+        fullName: r.full_name,
+        username: r.username,
+      });
       await client.query("COMMIT");
       res.json({ ok: true, studentId, userId });
     } catch (error) {
@@ -772,6 +776,7 @@ app.patch(
       [req.user.sub, req.params.id, req.user.org],
     );
     if (!rowCount) return res.status(404).json({ message: "درخواست یافت نشد یا قبلاً بررسی شده." });
+    await audit(pool, req.user.org, req.user.sub, "reject", "registration", req.params.id, {});
     res.json({ ok: true });
   }),
 );
@@ -951,6 +956,43 @@ app.get(
   }),
 );
 
+// Admin activity feed: who did what, scoped to the current faculty. Uses the
+// existing audit_logs table (courses, sessions, attendance, teacher
+// management, registration review, ...).
+app.get(
+  "/api/admin/activity",
+  authorize("admin"),
+  validate(
+    z.object({
+      entityType: z.string().trim().min(1).max(60).optional(),
+      limit: z.coerce.number().int().min(1).max(500).optional(),
+    }),
+    "query",
+  ),
+  asyncRoute(async (req, res) => {
+    const { entityType, limit } = req.query;
+    const params = [req.user.org];
+    let where = "al.organization_id = $1";
+    if (entityType) {
+      params.push(entityType);
+      where += ` AND al.entity_type = $${params.length}`;
+    }
+    params.push(limit ?? 100);
+    const { rows } = await pool.query(
+      `SELECT al.id, al.action, al.entity_type AS "entityType", al.entity_id AS "entityId",
+              al.metadata, al.created_at AS "createdAt",
+              au.display_name AS "actorName", au.email AS "actorEmail"
+         FROM audit_logs al
+         LEFT JOIN users au ON au.id = al.actor_id
+        WHERE ${where}
+        ORDER BY al.created_at DESC
+        LIMIT $${params.length}`,
+      params,
+    );
+    res.json({ activity: rows });
+  }),
+);
+
 app.get(
   "/api/teachers",
   authorize("admin"),
@@ -964,12 +1006,18 @@ app.get(
               (SELECT count(*)::int
                  FROM user_faculties uf2
                 WHERE uf2.user_id = u.id AND uf2.organization_id <> $1) AS "otherFaculties",
-              u.created_at AS "createdAt"
+              u.created_at AS "createdAt",
+              uf.created_at AS "addedAt",
+              au.display_name AS "addedByName",
+              au.email AS "addedByEmail"
          FROM users u
+         LEFT JOIN user_faculties uf
+                ON uf.user_id = u.id AND uf.organization_id = $1
+         LEFT JOIN users au ON au.id = uf.added_by
         WHERE u.role = 'teacher'
           AND (u.organization_id = $1 OR EXISTS (
-                SELECT 1 FROM user_faculties uf
-                 WHERE uf.user_id = u.id AND uf.organization_id = $1))
+                SELECT 1 FROM user_faculties uf3
+                 WHERE uf3.user_id = u.id AND uf3.organization_id = $1))
         ORDER BY (u.organization_id = $1) DESC, u.display_name`,
       [req.user.org],
     );
@@ -1053,7 +1101,22 @@ app.post(
          VALUES ($1, $2, now())`,
         [created.rows[0].id, passwordHash],
       );
+      await audit(client, req.user.org, req.user.sub, "create", "teacher", created.rows[0].id, {
+        email,
+        fullName,
+      });
       await client.query("COMMIT");
+      try {
+        const faculty = await loadFaculty(req.user.org);
+        await notifyUsers(req.user.org, [created.rows[0].id], {
+          type: "membership",
+          title: "عضویت در دانشکده",
+          message: `حساب شما با نقش «استاد» در دانشکدهٔ «${faculty?.name ?? ""}» فعال شد.`,
+          link: "dashboard",
+        });
+      } catch (notifyError) {
+        console.warn("[teachers] welcome notification failed:", notifyError.message);
+      }
       res.status(201).json({
         teacher: {
           ...created.rows[0],
@@ -1111,6 +1174,22 @@ app.post(
         .status(409)
         .json({ message: "این استاد از قبل عضو این دانشکده است." });
 
+    await audit(pool, req.user.org, req.user.sub, "attach", "teacher", teacher.id, {
+      email: teacher.email,
+      fullName: teacher.fullName,
+    });
+    try {
+      const faculty = await loadFaculty(req.user.org);
+      await notifyUsers(req.user.org, [teacher.id], {
+        type: "membership",
+        title: "عضویت در دانشکدهٔ جدید",
+        message: `شما به‌عنوان استاد به دانشکدهٔ «${faculty?.name ?? ""}» افزوده شدید.`,
+        link: "dashboard",
+      });
+    } catch (notifyError) {
+      console.warn("[teachers] membership notification failed:", notifyError.message);
+    }
+
     res.status(201).json({
       teacher: {
         id: teacher.id,
@@ -1157,6 +1236,10 @@ app.post(
       `UPDATE users SET password_hash = $1, must_change_password = true, password_last_changed = now() WHERE id = $2`,
       [passwordHash, teacher.id],
     );
+    await audit(pool, req.user.org, req.user.sub, "reset_password", "teacher", teacher.id, {
+      email: teacher.email,
+      fullName: teacher.fullName,
+    });
     const emailResult = await sendPasswordEmail(
       teacher.email,
       temporaryPassword,
@@ -1207,6 +1290,7 @@ app.delete(
       return res
         .status(404)
         .json({ message: "این استاد عضو دانشکدهٔ شما نیست." });
+    await audit(pool, req.user.org, req.user.sub, "detach", "teacher", teacher.id, {});
     res.status(204).end();
   }),
 );
@@ -1249,6 +1333,15 @@ app.patch(
     await pool.query(
       "UPDATE users SET is_active = $1, updated_at = now() WHERE id = $2",
       [req.body.isActive, teacher.id],
+    );
+    await audit(
+      pool,
+      req.user.org,
+      req.user.sub,
+      req.body.isActive ? "activate" : "deactivate",
+      "teacher",
+      teacher.id,
+      {},
     );
     res.json({ ok: true, isActive: req.body.isActive });
   }),
@@ -1593,6 +1686,7 @@ app.post(
         "create",
         "course",
         rows[0].id,
+        { code: c.code, title: c.title },
       );
       return rows[0];
     });
@@ -1676,6 +1770,11 @@ app.patch(
         "update",
         "course",
         req.params.courseId,
+        {
+          fields: changes.map(([key]) => key),
+          ...(c.title ? { title: c.title } : {}),
+          ...(c.code ? { code: c.code } : {}),
+        },
       );
       return rows[0];
     });
@@ -1855,6 +1954,7 @@ app.post(
         "create",
         "session",
         rows[0].id,
+        { courseId: s.courseId, date: s.date },
       );
       return rows[0];
     });

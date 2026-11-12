@@ -33,6 +33,92 @@ const METHOD_LABELS = {
   auto: "خودکار",
 };
 
+// Persian labels for the admin activity feed (audit_logs).
+const AUDIT_ACTION_LABELS = {
+  create: "ایجاد",
+  update: "تغییر",
+  delete: "حذف",
+  approve: "تأیید",
+  reject: "رد",
+  attach: "افزودن عضویت",
+  detach: "حذف عضویت",
+  finalize: "نهایی‌سازی",
+  reset_password: "بازنشانی رمز",
+  activate: "فعال‌سازی",
+  deactivate: "غیرفعال‌سازی",
+  import: "ورود داده",
+};
+const AUDIT_ACTION_TONES = {
+  create: "success",
+  update: "neutral",
+  delete: "danger",
+  approve: "success",
+  reject: "danger",
+  attach: "purple",
+  detach: "warning",
+  finalize: "success",
+  reset_password: "purple",
+  activate: "success",
+  deactivate: "warning",
+  import: "neutral",
+};
+const AUDIT_ENTITY_LABELS = {
+  course: "درس",
+  session: "جلسه",
+  attendance: "حضور و غیاب",
+  teacher: "استاد",
+  registration: "درخواست ثبت‌نام",
+  voice_sample: "نمونهٔ صدا",
+  browser_snapshot: "بک‌آپ مرورگر",
+};
+const AUDIT_ENTITY_OPTIONS = [
+  ["", "همهٔ موجودیت‌ها"],
+  ...Object.entries(AUDIT_ENTITY_LABELS),
+];
+const ATTENDANCE_STATUS_FA = {
+  present: "حاضر",
+  late: "تأخیر",
+  absent: "غایب",
+  excused: "غیبت موجه",
+  left_early: "خروج زودهنگام",
+  unmarked: "ثبت‌نشده",
+};
+const AUDIT_FIELD_LABELS = {
+  code: "کد",
+  title: "عنوان",
+  teacherName: "استاد",
+  teacherId: "استاد",
+  room: "کلاس",
+  weekday: "روز",
+  startTime: "شروع",
+  endTime: "پایان",
+};
+
+function activityMetadataSummary(metadata) {
+  if (!metadata || typeof metadata !== "object") return "—";
+  const parts = [];
+  if (metadata.fullName) parts.push(String(metadata.fullName));
+  else if (metadata.studentName) parts.push(String(metadata.studentName));
+  if (metadata.title) parts.push(String(metadata.title));
+  if (metadata.code) parts.push(`کد ${metadata.code}`);
+  if (metadata.email) parts.push(String(metadata.email));
+  if (metadata.username) parts.push(`نام کاربری: ${metadata.username}`);
+  if (metadata.status)
+    parts.push(`وضعیت: ${ATTENDANCE_STATUS_FA[metadata.status] || metadata.status}`);
+  if (metadata.method)
+    parts.push(`روش: ${METHOD_LABELS[metadata.method] || metadata.method}`);
+  if (metadata.absent != null)
+    parts.push(`غایب: ${Number(metadata.absent).toLocaleString("fa-IR")}`);
+  if (metadata.date) parts.push(String(metadata.date));
+  if (Array.isArray(metadata.fields) && metadata.fields.length)
+    parts.push(
+      `تغییر فیلدها: ${metadata.fields
+        .map((field) => AUDIT_FIELD_LABELS[field] || field)
+        .join("، ")}`,
+    );
+  return parts.length ? parts.join(" · ") : "—";
+}
+
 function methodLabel(method) {
   return METHOD_LABELS[method] || "ثبت دستی";
 }
@@ -5026,7 +5112,7 @@ export function Teachers({
 
       <div className="content-card data-card">
         {loading && !teachers.length ? (
-          <SkeletonTable rows={4} columns={4} />
+          <SkeletonTable rows={4} columns={6} />
         ) : teachers.length ? (
           <div className="table-responsive">
             <table className="table custom-table align-middle">
@@ -5035,6 +5121,7 @@ export function Teachers({
                   <th>نام و نام خانوادگی</th>
                   <th>ایمیل (نام کاربری)</th>
                   <th>نوع عضویت</th>
+                  <th>افزودن‌کننده</th>
                   <th>وضعیت</th>
                   <th>عملیات</th>
                 </tr>
@@ -5052,6 +5139,26 @@ export function Teachers({
                       <Badge tone={teacher.isHome ? "success" : "warning"}>
                         {teacher.isHome ? "دانشکدهٔ اصلی" : "عضو مهمان"}
                       </Badge>
+                    </td>
+                    <td title={teacher.addedByEmail || ""}>
+                      {teacher.addedByName ? (
+                        <>
+                          <strong>{teacher.addedByName}</strong>
+                          {teacher.addedAt && (
+                            <span className="student-id-small">
+                              {new Date(teacher.addedAt).toLocaleDateString("fa-IR", {
+                                year: "numeric",
+                                month: "2-digit",
+                                day: "2-digit",
+                              })}
+                            </span>
+                          )}
+                        </>
+                      ) : (
+                        <span className="page-note" style={{ margin: 0 }}>
+                          —
+                        </span>
+                      )}
                     </td>
                     <td>
                       <Badge tone={teacher.isActive ? "success" : "danger"}>
@@ -6927,5 +7034,112 @@ export function ImportPanel({ kind = "students", onImport, onClose }) {
         </div>
       </div>
     </div>
+  );
+}
+
+// Admin activity feed («چه کسی چه کاری کرد»), backed by the existing
+// audit_logs table via GET /api/admin/activity, scoped to the current faculty.
+export function AdminActivity({
+  activity = [],
+  loading = false,
+  error = "",
+  entityType = "",
+  onEntityTypeChange,
+  onRefresh,
+}) {
+  return (
+    <>
+      <PanelTitle
+        eyebrow="سیستم"
+        title="گزارش فعالیت مدیران"
+        description="چه کسی چه کاری انجام داده است؛ از گزارش‌های حسابرسی این دانشکده."
+        action={
+          <button className="btn btn-light-outline" onClick={onRefresh}>
+            <Icon name="bi-arrow-clockwise" /> بروزرسانی
+          </button>
+        }
+      />
+      <div className="content-card data-card">
+        <div className="table-toolbar">
+          <select
+            className="form-select filter-select"
+            value={entityType}
+            aria-label="فیلتر بر اساس نوع موجودیت"
+            onChange={(event) => onEntityTypeChange?.(event.target.value)}
+          >
+            {AUDIT_ENTITY_OPTIONS.map(([value, label]) => (
+              <option key={value || "all"} value={value}>
+                {label}
+              </option>
+            ))}
+          </select>
+          <span className="result-count">
+            {activity.length.toLocaleString("fa-IR")} رکورد
+          </span>
+        </div>
+        {loading && !activity.length ? (
+          <SkeletonTable rows={6} columns={5} />
+        ) : activity.length ? (
+          <div className="table-responsive">
+            <table className="table custom-table align-middle">
+              <thead>
+                <tr>
+                  <th>زمان</th>
+                  <th>مدیر</th>
+                  <th>عملیات</th>
+                  <th>موجودیت</th>
+                  <th>جزئیات</th>
+                </tr>
+              </thead>
+              <tbody>
+                {activity.map((item, index) => (
+                  <tr key={item.id || index}>
+                    <td dir="ltr" style={{ textAlign: "right" }}>
+                      {item.createdAt
+                        ? new Date(item.createdAt).toLocaleString("fa-IR")
+                        : "—"}
+                    </td>
+                    <td>
+                      <strong>{item.actorName || "سیستم"}</strong>
+                      {item.actorEmail && (
+                        <span className="student-id-small" dir="ltr">
+                          {item.actorEmail}
+                        </span>
+                      )}
+                    </td>
+                    <td>
+                      <Badge tone={AUDIT_ACTION_TONES[item.action] || "neutral"}>
+                        {AUDIT_ACTION_LABELS[item.action] || item.action}
+                      </Badge>
+                    </td>
+                    <td title={item.entityId || ""}>
+                      {AUDIT_ENTITY_LABELS[item.entityType] || item.entityType}
+                    </td>
+                    <td
+                      className="text-truncate"
+                      style={{ maxWidth: 320 }}
+                      title={activityMetadataSummary(item.metadata)}
+                    >
+                      {activityMetadataSummary(item.metadata)}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        ) : (
+          <EmptyState
+            icon="bi-journal-text"
+            title="فعالیتی ثبت نشده است"
+            text="برای این دانشکده هنوز عملیاتی در گزارش‌های حسابرسی ثبت نشده است."
+          />
+        )}
+        {error && (
+          <p className="profile-error" role="alert" style={{ padding: "0 20px 16px" }}>
+            {error}
+          </p>
+        )}
+      </div>
+    </>
   );
 }

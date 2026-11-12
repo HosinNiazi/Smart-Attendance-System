@@ -2,6 +2,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Icon } from "./components/shared.jsx";
 import {
+  AdminActivity,
   AttendanceObjections,
   Courses,
   Dashboard,
@@ -41,6 +42,7 @@ import {
   setTeacherActive,
   resetTeacherPassword,
   fetchLoginHistory,
+  fetchAdminActivity,
   approveRegistration,
   rejectRegistration,
   fetchBootstrap,
@@ -134,6 +136,7 @@ const navGroups = [
       { id: "profile", label: "پروفایل من", icon: "bi-person-circle" },
       { id: "registrations", label: "پذیرش درخواست‌ها", icon: "bi-person-check" },
       { id: "teachers", label: "اساتید", icon: "bi-person-workspace" },
+      { id: "activity", label: "گزارش فعالیت مدیران", icon: "bi-journal-text" },
       { id: "tickets", label: "تیکت‌ها", icon: "bi-ticket" },
       { id: "settings", label: "تنظیمات", icon: "bi-gear" },
     ],
@@ -677,6 +680,11 @@ export default function App() {
   const [helpOpen, setHelpOpen] = useState(false);
   const [loginHistory, setLoginHistory] = useState([]);
   const [historyError, setHistoryError] = useState("");
+  const [activity, setActivity] = useState([]);
+  const [activityLoading, setActivityLoading] = useState(false);
+  const [activityError, setActivityError] = useState("");
+  const [activityEntityType, setActivityEntityType] = useState("");
+  const [activityNonce, setActivityNonce] = useState(0);
   const [tickets, setTickets] = useState([]);
   const [leaveRequests, setLeaveRequests] = useState([]);
   const [objections, setObjections] = useState([]);
@@ -739,6 +747,28 @@ export default function App() {
     }
   }, []);
 
+  useEffect(() => {
+    if (active !== "activity") return;
+    let cancelled = false;
+    setActivityLoading(true);
+    setActivityError("");
+    fetchAdminActivity(activityEntityType)
+      .then((result) => {
+        if (cancelled) return;
+        setActivity(Array.isArray(result?.activity) ? result.activity : []);
+      })
+      .catch((error) => {
+        if (cancelled) return;
+        setActivityError(error.message || "دریافت گزارش فعالیت انجام نشد.");
+        setActivity([]);
+      })
+      .finally(() => {
+        if (!cancelled) setActivityLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [active, activityEntityType, activityNonce]);
   useEffect(() => {
     if (active !== "profile") return;
     let cancelled = false;
@@ -3236,6 +3266,16 @@ export default function App() {
                   return null;
                 }
               }}
+            />
+          )}
+          {active === "activity" && (
+            <AdminActivity
+              activity={activity}
+              loading={activityLoading}
+              error={activityError}
+              entityType={activityEntityType}
+              onEntityTypeChange={setActivityEntityType}
+              onRefresh={() => setActivityNonce((current) => current + 1)}
             />
           )}
           {active === "tickets" && (

@@ -69,6 +69,10 @@ export async function changePassword(currentPassword, newPassword) {
 export function fetchLoginHistory() {
   return api('/auth/login-history');
 }
+export function fetchAdminActivity(entityType) {
+  const qs = entityType ? `?entityType=${encodeURIComponent(entityType)}` : '';
+  return api(`/admin/activity${qs}`);
+}
 
 export function fetchTeachers() {
   return api('/teachers');

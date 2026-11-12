@@ -49,7 +49,8 @@
 | مرخصی و توجیه | بررسی درخواست‌های مرخصی (تکی و **گروهی**) و اعتراض‌های حضور؛ تأیید/رد با ثبت اعلان |
 | پذیرش درخواست‌ها | بررسی درخواست‌های ثبت‌نام دانشجویان |
 | تیکت‌ها | پاسخ به تیکت‌های پشتیبانی دانشجو (پذیرش/رد/بستن) |
-| اساتید | افزودن استاد جدید، اتصال استاد موجود از دانشکده دیگر، غیرفعال‌سازی/فعال‌سازی، **بازنشانی رمز عبور** |
+| اساتید | افزودن استاد جدید، اتصال استاد موجود از دانشکده دیگر، غیرفعال‌سازی/فعال‌سازی، **بازنشانی رمز عبور**؛ ستون «افزودن‌کننده» مشخص می‌کند چه کسی این استاد را به این دانشکده اضافه کرده |
+| گزارش فعالیت مدیران | «چه کسی چه کاری کرد»: خوراک فعالیت مدیران از `audit_logs` (درس، جلسه، حضور، استاد، ثبت‌نام) با فیلتر نوع موجودیت، فقط برای همین دانشکده |
 | تنظیمات | تنظیمات سامانه در سطح سازمان |
 
 #### پورتال دانشجو
@@ -69,6 +70,7 @@
 - احراز هویت JWT با کنترل دسترسی مبتنی بر نقش (`admin` / `teacher` / `student`)
 - **امنیت حساب استاد:** رمز موقت یک‌بارمصرف هنگام ساخت حساب؛ اجبار به تعیین رمز جدید در نخستین ورود (دیالوگ غیرقابل بستن)؛ رمز جدید حداقل ۸ کاراکتر، متفاوت از رمز فعلی و غیرقابل تکرار از ۵ رمز اخیر؛ قفل خودکار حساب پس از ۵ تلاش ناموفق ورود (به مدت ۵ دقیقه)؛ تاریخچهٔ ورود (IP، زمان، دستگاه) در صفحهٔ پروفایل
 - **بازنشانی رمز استاد توسط مدیر:** تولید رمز موقت جدید، اجبار به تغییر در ورود بعدی و ارسال خودکار رمز موقت از طریق ایمیل (SMTP)؛ در صورت نبود SMTP، رمز در لاگ سرور و پاسخ API نمایش داده می‌شود
+- **شفافیت مدیریتی (فاز ۳):** نمایش «چه کسی این استاد را اضافه کرده» از `user_faculties.added_by` در صفحهٔ اساتید؛ **گزارش فعالیت مدیران** در صفحهٔ «گزارش فعالیت مدیران» (زمان، مدیر، عملیات، موجودیت، جزئیات + فیلتر نوع موجودیت)؛ **اعلان به استاد هنگام افزوده‌شدن به دانشکدهٔ جدید** (اعلان نوع `membership` در زنگ اعلان)؛ همهٔ این‌ها روی همان جدول حسابرسی `audit_logs` و بدون مایگریشن جدید انجام می‌شود؛ ماتریس نقش/دسترسی در [`docs/PERMISSIONS.md`](docs/PERMISSIONS.md)
 - **تقویم کاملاً شمسی:** تمام تاریخ‌ها شمسی نمایش داده می‌شوند؛ مقادیر داخلی ISO میلادی هستند
 - نوتیفیکیشن واقعی (ذخیره در دیتابیس + شمارندهٔ خوانده‌نشده)
 - تم روشن/تیره، RTL کامل، فونت Vazirmatn
@@ -302,6 +304,8 @@ Repository: [github.com/HosinNiazi/Smart-Attendance-System](https://github.com/H
 | Trend analytics | Present/absent/late rates over 7/30/90-day or custom Jalali ranges, per-course breakdown |
 | Reports | From/to filters, real styled **.xlsx export**, print/PDF, one-click filter reset |
 | Leave & objections | Review (individual & **group**) leave requests and attendance objections; approve/reject with notifications |
+| Teachers | Add new teacher, attach existing teacher from another faculty, activate/deactivate, **reset password**; the "added by" column shows which admin added each membership |
+| Admin activity | "Who did what" feed built on `audit_logs` (course, session, attendance, teacher, registration) with an entity-type filter, scoped to the faculty |
 | Registration requests | Approve/reject incoming student registration requests |
 | Support tickets | Respond/accept/reject/close student tickets |
 | Settings | Organization-level configuration |
@@ -323,6 +327,7 @@ Repository: [github.com/HosinNiazi/Smart-Attendance-System](https://github.com/H
 - JWT authentication with role-based access control (`admin` / `teacher` / `student`)
 - **Full Jalali calendar:** all dates display in Persian; values are stored as ISO internally
 - Real database-backed notifications with unread counter
+- **Administrative transparency (Phase 3):** the Teachers page shows who added each membership (`user_faculties.added_by`); an **Admin Activity** page renders "who did what" from the existing `audit_logs` with an entity-type filter, scoped to the faculty; a teacher is notified when added to a new faculty; no new migration required; role/access matrix documented in [`docs/PERMISSIONS.md`](docs/PERMISSIONS.md)
 - Light/dark theme, full RTL, Vazirmatn font
 
 ### Tech stack
