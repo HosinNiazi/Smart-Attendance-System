@@ -20,3 +20,14 @@ createRoot(document.getElementById('root')).render(
     <AppErrorBoundary><App /></AppErrorBoundary>
   </StrictMode>,
 );
+
+// محو اسپلش بعد از اولین رسم اپ (حداقل ~۱.۱ ثانیه نمایش برای حس هاله)
+function hideSplash() {
+  const splash = document.getElementById('splash');
+  if (!splash) return;
+  splash.classList.add('splash-hide');
+  window.setTimeout(() => splash.remove(), 650);
+}
+requestAnimationFrame(() => {
+  window.setTimeout(hideSplash, 1100);
+});
