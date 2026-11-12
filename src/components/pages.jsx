@@ -3154,7 +3154,7 @@ export function FingerprintAttendance({
   );
 }
 
-export function Profile({ name, role, photo, onSave }) {
+export function Profile({ name, role, photo, onSave, loginHistory = [], historyError = "" }) {
   const [draftName, setDraftName] = useState(name);
   const [draftPhoto, setDraftPhoto] = useState(photo || "");
   const [error, setError] = useState("");
@@ -3305,6 +3305,54 @@ export function Profile({ name, role, photo, onSave }) {
             </strong>
           </div>
         </aside>
+      </div>
+
+      <div className="content-card data-card" style={{ marginTop: 16 }}>
+        <div className="panel-title-inline" style={{ marginBottom: 12 }}>
+          <div className="eyebrow">امنیت حساب</div>
+          <h4>تاریخچهٔ ورود</h4>
+        </div>
+        {loginHistory.length ? (
+          <div className="table-responsive">
+            <table className="table custom-table align-middle">
+              <thead>
+                <tr>
+                  <th>زمان</th>
+                  <th>IP</th>
+                  <th>مرورگر/دستگاه</th>
+                  <th>نتیجه</th>
+                </tr>
+              </thead>
+              <tbody>
+                {loginHistory.map((item, index) => (
+                  <tr key={item.id || index}>
+                    <td dir="ltr" style={{ textAlign: "right" }}>
+                      {new Date(item.loginTime || item.login_time).toLocaleString("fa-IR")}
+                    </td>
+                    <td dir="ltr" style={{ textAlign: "right" }}>
+                      {item.ipAddress || item.ip_address || "—"}
+                    </td>
+                    <td className="text-truncate" style={{ maxWidth: 240 }} title={item.userAgent || item.user_agent || ""}>
+                      {item.userAgent || item.user_agent || "—"}
+                    </td>
+                    <td>
+                      {item.successful ? (
+                        <Badge tone="success">موفق</Badge>
+                      ) : (
+                        <Badge tone="danger">ناموفق</Badge>
+                      )}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        ) : (
+          <p className="page-note">رکورد ورودی وجود ندارد.</p>
+        )}
+        {historyError && (
+          <p className="profile-error" role="alert">{historyError}</p>
+        )}
       </div>
     </>
   );
@@ -4806,6 +4854,7 @@ export function Teachers({
   onLookup,
   onRemove,
   onToggleActive,
+  onResetPassword,
 }) {
   const [modalOpen, setModalOpen] = useState(false);
   const [mode, setMode] = useState("new");
@@ -4814,6 +4863,7 @@ export function Teachers({
   const [lookupPending, setLookupPending] = useState(false);
   const [pending, setPending] = useState(false);
   const [formError, setFormError] = useState("");
+  const [resetResult, setResetResult] = useState(null);
   const [created, setCreated] = useState(null);
   const [copied, setCopied] = useState(false);
 
@@ -4918,6 +4968,17 @@ export function Teachers({
       setCopied(true);
     } catch {
       setCopied(false);
+    }
+  }
+
+  async function resetPassword(teacherId) {
+    if (!onResetPassword) return;
+    try {
+      const result = await onResetPassword(teacherId);
+      if (result) setResetResult(result);
+    } catch (error) {
+      // Errors are shown by the parent caller via notify; optionally show here
+      console.error(error);
     }
   }
 
@@ -5036,6 +5097,14 @@ export function Teachers({
                               }
                             />
                             {teacher.isActive ? "غیرفعال‌سازی" : "فعال‌سازی"}
+                          </button>
+                        )}
+                        {teacher.isHome && (
+                          <button
+                            className="btn btn-light-outline"
+                            onClick={() => resetPassword(teacher.id)}
+                          >
+                            <Icon name="bi-arrow-counterclockwise" /> بازنشانی رمز
                           </button>
                         )}
                         {teacher.isHome && teacher.otherFaculties > 0 && (
@@ -5264,6 +5333,62 @@ export function Teachers({
                 <Icon name="bi-clipboard" /> {copied ? "کپی شد" : "کپی اطلاعات"}
               </button>
               <button className="btn btn-light" onClick={() => setCreated(null)}>
+                بستن
+              </button>
+            </div>
+          </section>
+        </div>
+      )}
+
+      {resetResult && (
+        <div
+          className="modal-backdrop-custom"
+          role="presentation"
+          onMouseDown={(event) => {
+            if (event.target === event.currentTarget) setResetResult(null);
+          }}
+        >
+          <section
+            className="custom-modal"
+            role="dialog"
+            aria-modal="true"
+            style={{ maxWidth: 520 }}
+          >
+            <div className="modal-head">
+              <div>
+                <div className="eyebrow">مدیریت اساتید</div>
+                <h3>رمز موقت استاد بازنشانی شد</h3>
+              </div>
+              <button
+                className="icon-button"
+                type="button"
+                onClick={() => setResetResult(null)}
+              >
+                <Icon name="bi-x-lg" />
+              </button>
+            </div>
+            <p className="page-note">
+              این رمز فقط یک‌بار نمایش داده می‌شود. آن را به استاد تحویل دهید تا
+              وارد شود و سپس رمز خود را عوض کند.
+            </p>
+            <div className="teacher-credential">
+              <div>
+                <span>نام کاربری</span>
+                <strong dir="ltr">{resetResult.teacher.email}</strong>
+              </div>
+              <div>
+                <span>رمز موقت</span>
+                <strong dir="ltr">{resetResult.temporaryPassword}</strong>
+              </div>
+            </div>
+            <div className="modal-actions" style={{ marginTop: 14 }}>
+              <button className="btn btn-primary" onClick={() => {
+                const text = `ایمیل: ${resetResult.teacher.email}\nرمز موقت: ${resetResult.temporaryPassword}`;
+                navigator.clipboard.writeText(text).then(() => {});
+              }}>
+                <Icon name="bi-clipboard" /> کپی اطلاعات
+              </button>
+              <button className="btn btn-light" onClick={() => setResetResult(null)}>
                 بستن
               </button>
             </div>

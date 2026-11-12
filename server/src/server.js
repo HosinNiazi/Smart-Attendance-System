@@ -11,6 +11,7 @@ import { pool, withTransaction, audit } from "./db.js";
 import multer from "multer";
 import path from "node:path";
 import fs from "node:fs";
+import { sendPasswordEmail } from "./mail.js";
 import {
   generateAuthenticationOptions,
   generateRegistrationOptions,
@@ -558,9 +559,6 @@ app.post(
   ),
   asyncRoute(async (req, res) => {
     const { email, password, facultyId } = req.body;
-    // A multi-tenant deployment may legitimately reuse an email in different
-    // organizations, so compare the password against every active candidate
-    // instead of trusting whichever row PostgreSQL happens to return first.
     const result = await pool.query(
       `SELECT * FROM users
         WHERE lower(email) = lower($1) AND is_active = true
@@ -574,8 +572,62 @@ app.post(
         break;
       }
     }
-    if (!user)
+
+    if (!user) {
+      // Increment failed attempts for any account with this email.
+      const { rowCount } = await pool.query(
+        `UPDATE users
+            SET failed_login_attempts = failed_login_attempts + 1,
+                last_failed_login = now()
+          WHERE lower(email) = lower($1) AND is_active = true
+          RETURNING id, email`,
+        [email],
+      );
+      if (rowCount > 0) {
+        const { rows: lockedRows } = await pool.query(
+          `SELECT id FROM users
+            WHERE lower(email) = lower($1) AND is_active = true
+              AND failed_login_attempts >= 5`,
+          [email],
+        );
+        for (const lock of lockedRows) {
+          await pool.query(
+            `UPDATE users SET account_locked_until = now() + interval '5 minutes' WHERE id = $1`,
+            [lock.id],
+          );
+        }
+      }
       return res.status(401).json({ message: "ایمیل یا رمز عبور نادرست است." });
+    }
+
+    // Lockout check: if account is locked, deny login
+    if (user.account_locked_until && user.account_locked_until > new Date()) {
+      const remainingMs = user.account_locked_until - new Date();
+      const remainingSec = Math.ceil(remainingMs / 1000);
+      return res
+        .status(423)
+        .json({
+          message:
+            remainingSec > 60
+              ? `حساب شما به دلیل تلاش‌های ناموفق موقت قفل شده است. لطفاً بعد از ${Math.ceil(remainingSec / 60)} دقیقه دوباره تلاش کنید.`
+              : `حساب شما به دلیل تلاش‌های ناموفق موقت قفل شده است. لطفاً بعد از ${remainingSec} ثانیه دوباره تلاش کنید.`,
+        });
+    }
+
+    // Successful login: reset failed attempts and record login history
+    await pool.query(
+      `UPDATE users SET failed_login_attempts = 0,
+                         last_failed_login = NULL,
+                         account_locked_until = NULL,
+                         password_last_changed = COALESCE(password_last_changed, now())
+        WHERE id = $1`,
+      [user.id],
+    );
+    await pool.query(
+      `INSERT INTO login_history (user_id, organization_id, ip_address, user_agent, successful)
+       VALUES ($1, $2, $3, $4, true)`,
+      [user.id, user.organization_id, req.ip, req.get("user-agent") || null],
+    );
 
     const selectedOrg = facultyId || user.organization_id;
     const faculty = await loadFaculty(selectedOrg);
@@ -846,15 +898,52 @@ app.post(
         .status(400)
         .json({ message: "رمز عبور جدید باید با رمز فعلی متفاوت باشد." });
 
+    // Prevent reuse of the last N passwords for this account.
+    const historyLimit = Number(process.env.PASSWORD_HISTORY_LIMIT || 5);
+    const { rows: history } = await pool.query(
+      "SELECT password_hash FROM password_history WHERE user_id = $1 ORDER BY created_at DESC LIMIT $2",
+      [user.id, historyLimit],
+    );
+    for (const entry of history) {
+      const matches = await bcrypt.compare(newPassword, entry.password_hash);
+      if (matches) {
+        return res
+          .status(400)
+          .json({ message: "رمز عبور جدید نباید با رمزهای قبلی یکسان باشد." });
+      }
+    }
+
     const passwordHash = await bcrypt.hash(newPassword, 10);
     const updated = await pool.query(
       `UPDATE users
-          SET password_hash = $1, must_change_password = false, updated_at = now()
+          SET password_hash = $1,
+              must_change_password = false,
+              password_last_changed = now(),
+              updated_at = now()
         WHERE id = $2
         RETURNING *`,
       [passwordHash, user.id],
     );
+    await pool.query(
+      "INSERT INTO password_history (user_id, password_hash, created_at) VALUES ($1, $2, now())",
+      [user.id, passwordHash],
+    );
     res.json({ ok: true, user: publicUser(updated.rows[0]) });
+  }),
+);
+
+app.get(
+  "/api/auth/login-history",
+  asyncRoute(async (req, res) => {
+    const { rows } = await pool.query(
+      `SELECT id, ip_address, user_agent, login_time, successful
+         FROM login_history
+        WHERE user_id = $1
+        ORDER BY login_time DESC
+        LIMIT 20`,
+      [req.user.sub],
+    );
+    res.json({ history: rows });
   }),
 );
 
@@ -955,6 +1044,11 @@ app.post(
          ON CONFLICT DO NOTHING`,
         [created.rows[0].id, req.user.org, req.user.sub],
       );
+      await client.query(
+        `INSERT INTO password_history (user_id, password_hash, created_at)
+         VALUES ($1, $2, now())`,
+        [created.rows[0].id, passwordHash],
+      );
       await client.query("COMMIT");
       res.status(201).json({
         teacher: {
@@ -1022,6 +1116,60 @@ app.post(
         isHome: false,
         otherFaculties: 0,
       },
+    });
+  }),
+);
+
+app.post(
+  "/api/teachers/:userId/reset-password",
+  authorize("admin"),
+  asyncRoute(async (req, res) => {
+    const parsed = id.safeParse(req.params.userId);
+    if (!parsed.success)
+      return res.status(400).json({ message: "شناسهٔ استاد معتبر نیست." });
+    const { rows } = await pool.query(
+      `SELECT id, display_name AS "fullName", email, organization_id, is_active
+         FROM users
+        WHERE id = $1 AND role = 'teacher'`,
+      [parsed.data],
+    );
+    const teacher = rows[0];
+    if (!teacher)
+      return res.status(404).json({ message: "استاد یافت نشد." });
+    if (teacher.organization_id !== req.user.org)
+      return res.status(409).json({
+        message:
+          "فقط مدیر دانشکدهٔ اصلی استاد می‌تواند رمز عبور او را بازنشانی کند.",
+      });
+
+    const temporaryPassword = generateTemporaryPassword();
+    const passwordHash = await bcrypt.hash(temporaryPassword, 10);
+    const passwordResult = await pool.query(
+      `INSERT INTO password_history (user_id, password_hash, created_at)
+        VALUES ($1, $2, now())`,
+      [teacher.id, passwordHash],
+    );
+    await pool.query(
+      `UPDATE users SET password_hash = $1, must_change_password = true, password_last_changed = now() WHERE id = $2`,
+      [passwordHash, teacher.id],
+    );
+    const emailResult = await sendPasswordEmail(
+      teacher.email,
+      temporaryPassword,
+      teacher.fullName,
+    );
+    if (!emailResult.ok) {
+      console.warn("[reset-password] email failed, password reset applied:", emailResult.error);
+    }
+    res.status(200).json({
+      teacher: {
+        id: teacher.id,
+        fullName: teacher.fullName,
+        email: teacher.email,
+        isActive: true,
+      },
+      temporaryPassword,
+      message: "رمز موقت برای این استاد ارسال شد و باید تغییر رمز شود.",
     });
   }),
 );

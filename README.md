@@ -49,6 +49,7 @@
 | مرخصی و توجیه | بررسی درخواست‌های مرخصی (تکی و **گروهی**) و اعتراض‌های حضور؛ تأیید/رد با ثبت اعلان |
 | پذیرش درخواست‌ها | بررسی درخواست‌های ثبت‌نام دانشجویان |
 | تیکت‌ها | پاسخ به تیکت‌های پشتیبانی دانشجو (پذیرش/رد/بستن) |
+| اساتید | افزودن استاد جدید، اتصال استاد موجود از دانشکده دیگر، غیرفعال‌سازی/فعال‌سازی، **بازنشانی رمز عبور** |
 | تنظیمات | تنظیمات سامانه در سطح سازمان |
 
 #### پورتال دانشجو
@@ -66,6 +67,8 @@
 #### امکانات مشترک
 
 - احراز هویت JWT با کنترل دسترسی مبتنی بر نقش (`admin` / `teacher` / `student`)
+- **امنیت حساب استاد:** رمز موقت یک‌بارمصرف هنگام ساخت حساب؛ اجبار به تعیین رمز جدید در نخستین ورود (دیالوگ غیرقابل بستن)؛ رمز جدید حداقل ۸ کاراکتر، متفاوت از رمز فعلی و غیرقابل تکرار از ۵ رمز اخیر؛ قفل خودکار حساب پس از ۵ تلاش ناموفق ورود (به مدت ۵ دقیقه)؛ تاریخچهٔ ورود (IP، زمان، دستگاه) در صفحهٔ پروفایل
+- **بازنشانی رمز استاد توسط مدیر:** تولید رمز موقت جدید، اجبار به تغییر در ورود بعدی و ارسال خودکار رمز موقت از طریق ایمیل (SMTP)؛ در صورت نبود SMTP، رمز در لاگ سرور و پاسخ API نمایش داده می‌شود
 - **تقویم کاملاً شمسی:** تمام تاریخ‌ها شمسی نمایش داده می‌شوند؛ مقادیر داخلی ISO میلادی هستند
 - نوتیفیکیشن واقعی (ذخیره در دیتابیس + شمارندهٔ خوانده‌نشده)
 - تم روشن/تیره، RTL کامل، فونت Vazirmatn
@@ -144,12 +147,20 @@ PORT=8080
 DATABASE_URL=postgres://postgres:password@localhost:5432/hozorban
 JWT_SECRET=replace_with_a_long_random_secret_of_at_least_32_characters
 CORS_ORIGIN=http://localhost:5173
+
+# اختیاری: ارسال رمز موقت استاد با ایمیل (در صورت عدم تنظیم، رمز در لاگ سرور چاپ و در پنل مدیر نمایش داده می‌شود)
+# SMTP_HOST=smtp.example.com
+# SMTP_PORT=587
+# SMTP_SECURE=false
+# SMTP_USER=no-reply@example.com
+# SMTP_PASSWORD=...
+# SMTP_FROM=no-reply@example.com
 ```
 
 #### ۴) مایگریشن و دادهٔ نمونه
 
 ```bash
-npm run api:migrate          # ساخت/به‌روزرسانی جداول (۸ مایگریشن)
+npm run api:migrate          # ساخت/به‌روزرسانی جداول (۱۴ مایگریشن)
 npm --prefix server run seed # دادهٔ نمونه: مدیر، دانشجو، درس‌ها
 ```
 
@@ -216,7 +227,7 @@ docker compose up -d --build
 │   ├── help/                  # دستیار راهنمای آفلاین + چت
 │   └── styles.css             # استایل کلی + تم روشن/تیره
 └── server/
-    ├── migrations/            # 001 تا 008 (سازمان، کاربر، احراز، بیومتریک، …)
+    ├── migrations/            # 001 تا 014 (سازمان، کاربر، احراز، بیومتریک، …)
     ├── src/server.js          # بیش از ۶۰ مسیر REST
     ├── src/db.js · migrate.js · seed.js
     ├── uploads/students/      # عکس‌های پروفایل
@@ -225,7 +236,7 @@ docker compose up -d --build
 
 ### مایگریشن‌های دیتابیس
 
-`001_initial` (سازمان‌ها، کاربران، دانشجویان، درس‌ها، جلسات، حضور) → `002_biometrics_enhancements` → `003_consolidate_organizations` → `004_registration_requests` → `005_fingerprint` (WebAuthn) → `006_support_tickets` → `007_leave_objections_notifications` → `008_phase2` (مرخصی گروهی، پنل زنده، ایندکس‌های تحلیل روند)
+`001_initial` (سازمان‌ها، کاربران، دانشجویان، درس‌ها، جلسات، حضور) → `002_biometrics_enhancements` → `003_consolidate_organizations` → `004_registration_requests` → `005_fingerprint` (WebAuthn) → `006_support_tickets` → `007_leave_objections_notifications` → `008_phase2` (مرخصی گروهی، پنل زنده، ایندکس‌های تحلیل روند) → `009_faculties` → `010_teacher_management` → `011_teacher_password_change` → `012_course_ownership` → `013_password_recovery` (تاریخچهٔ ورود، جلوگیری از تکرار رمز) → `014_add_user_security_columns` (قفل حساب و تلاش‌های ناموفق)
 
 ### خلاصهٔ API (بیش از ۶۰ مسیر)
 
@@ -398,6 +409,14 @@ PORT=8080
 DATABASE_URL=postgres://postgres:password@localhost:5432/hozorban
 JWT_SECRET=replace_with_a_long_random_secret_of_at_least_32_characters
 CORS_ORIGIN=http://localhost:5173
+
+# اختیاری: ارسال رمز موقت استاد با ایمیل (در صورت عدم تنظیم، رمز در لاگ سرور چاپ و در پنل مدیر نمایش داده می‌شود)
+# SMTP_HOST=smtp.example.com
+# SMTP_PORT=587
+# SMTP_SECURE=false
+# SMTP_USER=no-reply@example.com
+# SMTP_PASSWORD=...
+# SMTP_FROM=no-reply@example.com
 ```
 
 ### Production build
@@ -443,7 +462,7 @@ Starts PostgreSQL 16 (with healthcheck) and the API on `127.0.0.1:8080`; the API
 │   ├── help/                  # offline rule-based assistant + chat
 │   └── styles.css             # global styles + light/dark theme
 └── server/
-    ├── migrations/            # 001 → 008 (org, users, auth, biometrics, …)
+    ├── migrations/            # 001 → 014 (org, users, auth, biometrics, …)
     ├── src/server.js          # 60+ REST routes
     ├── src/db.js · migrate.js · seed.js
     ├── uploads/students/      # profile photos
@@ -452,7 +471,7 @@ Starts PostgreSQL 16 (with healthcheck) and the API on `127.0.0.1:8080`; the API
 
 ### Database migrations
 
-`001_initial` (organizations, users, students, courses, sessions, attendance) → `002_biometrics_enhancements` → `003_consolidate_organizations` → `004_registration_requests` → `005_fingerprint` (WebAuthn) → `006_support_tickets` → `007_leave_objections_notifications` → `008_phase2` (group leave, live sessions, trend-analytics indexes)
+`001_initial` (organizations, users, students, courses, sessions, attendance) → `002_biometrics_enhancements` → `003_consolidate_organizations` → `004_registration_requests` → `005_fingerprint` (WebAuthn) → `006_support_tickets` → `007_leave_objections_notifications` → `008_phase2` (group leave, live sessions, trend-analytics indexes) → `009_faculties` → `010_teacher_management` → `011_teacher_password_change` → `012_course_ownership` → `013_password_recovery` (login history, password reuse prevention) → `014_add_user_security_columns` (account lockout, failed attempts)
 
 ### API overview (60+ routes)
 

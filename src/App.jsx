@@ -39,6 +39,8 @@ import {
   addExistingTeacher,
   removeTeacherFromFaculty,
   setTeacherActive,
+  resetTeacherPassword,
+  fetchLoginHistory,
   approveRegistration,
   rejectRegistration,
   fetchBootstrap,
@@ -673,6 +675,8 @@ export default function App() {
   });
   const [regPending, setRegPending] = useState(false);
   const [helpOpen, setHelpOpen] = useState(false);
+  const [loginHistory, setLoginHistory] = useState([]);
+  const [historyError, setHistoryError] = useState("");
   const [tickets, setTickets] = useState([]);
   const [leaveRequests, setLeaveRequests] = useState([]);
   const [objections, setObjections] = useState([]);
@@ -734,6 +738,25 @@ export default function App() {
       }));
     }
   }, []);
+
+  useEffect(() => {
+    if (active !== "profile") return;
+    let cancelled = false;
+    setHistoryError("");
+    fetchLoginHistory()
+      .then((result) => {
+        if (cancelled) return;
+        setLoginHistory(Array.isArray(result?.history) ? result.history : []);
+      })
+      .catch((error) => {
+        if (cancelled) return;
+        setHistoryError(error.message || "دریافت تاریخچهٔ ورود انجام نشد.");
+        setLoginHistory([]);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [active]);
   useEffect(() => {
     let cancelled = false;
     fetchFaculties()
@@ -3135,6 +3158,8 @@ export default function App() {
               role={ACCESS_ROLE_LABELS[loginRole]}
               photo={profilePhoto}
               onSave={saveProfile}
+              loginHistory={loginHistory}
+              historyError={historyError}
             />
           )}
           {active === "registrations" && (
@@ -3198,6 +3223,17 @@ export default function App() {
                   );
                 } catch (error) {
                   notify(error.message || "تغییر وضعیت استاد انجام نشد.");
+                }
+              }}
+              onResetPassword={async (id) => {
+                try {
+                  const result = await resetTeacherPassword(id);
+                  await refreshTeachers();
+                  notify("رمز موقت جدید ارسال شد؛ اطلاعات را به استاد تحویل دهید.");
+                  return result;
+                } catch (error) {
+                  notify(error.message || "بازنشانی رمز انجام نشد.");
+                  return null;
                 }
               }}
             />

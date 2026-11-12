@@ -66,6 +66,10 @@ export async function changePassword(currentPassword, newPassword) {
 }
 
 /* ---- Teacher management (faculty admin only) ---- */
+export function fetchLoginHistory() {
+  return api('/auth/login-history');
+}
+
 export function fetchTeachers() {
   return api('/teachers');
 }
@@ -89,6 +93,9 @@ export function setTeacherActive(userId, isActive) {
     method: 'PATCH',
     body: JSON.stringify({ isActive }),
   });
+}
+export function resetTeacherPassword(userId) {
+  return api(`/teachers/${encodeURIComponent(userId)}/reset-password`, { method: 'POST' });
 }
 
 export function browserSnapshot() {
