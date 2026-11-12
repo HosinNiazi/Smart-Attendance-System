@@ -108,13 +108,17 @@ const uploadStudentPhoto = multer({
     cb(null, true);
   },
 });
+// Brute-force protection is mounted only on the login endpoint and only
+// counts failed attempts; successful sign-ins and other /api/auth routes
+// (change-password, switch-faculty, login-history) must not exhaust it.
 app.use(
-  "/api/auth",
+  "/api/auth/login",
   rateLimit({
     windowMs: 15 * 60_000,
     limit: 10,
     standardHeaders: true,
     legacyHeaders: false,
+    skipSuccessfulRequests: true,
   }),
 );
 
