@@ -28,8 +28,29 @@ export async function api(path, options = {}) {
   return payload;
 }
 
-export async function signIn(email, password) {
-  const result = await api('/auth/login', { method: 'POST', body: JSON.stringify({ email, password }) });
+export async function signIn(email, password, facultyId) {
+  const result = await api('/auth/login', {
+    method: 'POST',
+    body: JSON.stringify({
+      email,
+      password,
+      ...(facultyId ? { facultyId } : {}),
+    }),
+  });
+  sessionStorage.setItem(tokenKey, result.token);
+  setApiUser(result.user);
+  return result;
+}
+
+export function fetchFaculties() {
+  return api('/faculties');
+}
+
+export async function switchFaculty(facultyId) {
+  const result = await api('/auth/switch-faculty', {
+    method: 'POST',
+    body: JSON.stringify({ facultyId }),
+  });
   sessionStorage.setItem(tokenKey, result.token);
   setApiUser(result.user);
   return result;

@@ -36,7 +36,7 @@ const demoUsers = [
 
 const orgRow = await pool.query(
   "SELECT id FROM organizations WHERE name = $1 ORDER BY created_at LIMIT 1",
-  ['سازمان پیش‌فرض'],
+  ['دانشکده شهید شمسی‌پور'],
 );
 if (!orgRow.rows[0]) {
   throw new Error('Run `npm run migrate` before seeding demo data.');

@@ -941,3 +941,28 @@ html[lang="en"] body,html[lang="en"] button,html[lang="en"] input,html[lang="en"
 :root[data-theme="dark"] .jalali-clear-btn:hover{background:#3a1d22}
 
 .leave-date-grid .jalali-date-field,.trend-filter-card .jalali-date-field{width:100%}
+
+/* Faculty (college) select and teacher faculty switcher */
+.faculty-select-field .login-role-trigger:disabled{opacity:.72;cursor:progress}
+.login-role-trigger .faculty-placeholder{color:#98a3b6}
+:root[data-theme="dark"] .login-role-trigger .faculty-placeholder{color:#7f8ca3}
+.workspace-wrap{position:relative;margin:18px 0 20px}
+.workspace-wrap .workspace-switch{margin:0}
+.workspace-toggle{flex:none;width:28px;height:28px;display:grid;place-items:center;border:0;border-radius:7px;background:transparent;color:#a2adbf;transition:background .15s,color .15s}
+.workspace-toggle:hover:not(:disabled){background:#eef2ff;color:var(--primary)}
+.workspace-toggle:disabled{opacity:.6;cursor:progress}
+.workspace-menu{position:absolute;z-index:36;inset:calc(100% + 6px) 0 auto;padding:6px;border:1px solid #e8edf5;border-radius:12px;background:#fff;box-shadow:0 12px 30px #1d29391a;animation:role-menu-in .15s ease-out}
+.workspace-menu-title{padding:5px 8px 7px;font-size:10px;color:var(--muted)}
+.workspace-option{width:100%;display:flex;align-items:center;gap:8px;padding:8px;border:0;border-radius:8px;background:transparent;color:#475467;font-family:inherit;font-size:11px;text-align:right;transition:background .15s,color .15s}
+.workspace-option>i:first-child{color:#98a3b6;font-size:14px}
+.workspace-option span{flex:1}
+.workspace-option small{font-size:9px;color:var(--muted)}
+.workspace-option:hover:not(:disabled),.workspace-option:focus-visible{outline:0;background:#f4f6ff;color:var(--primary)}
+.workspace-option:hover:not(:disabled)>i:first-child,.workspace-option:focus-visible>i:first-child{color:var(--primary)}
+.workspace-option.is-current{background:#f0f2ff;color:var(--primary);font-weight:700}
+.workspace-option.is-current>i:first-child{color:var(--primary)}
+.workspace-option:disabled{cursor:default;opacity:.85}
+:root[data-theme="dark"] .workspace-menu{background:#111d2d;border-color:#344258;box-shadow:0 14px 32px #0005}
+:root[data-theme="dark"] .workspace-option{color:#cbd5e1}
+:root[data-theme="dark"] .workspace-option:hover:not(:disabled),:root[data-theme="dark"] .workspace-option:focus-visible,:root[data-theme="dark"] .workspace-option.is-current{background:#202d48;color:#aebaff}
+:root[data-theme="dark"] .workspace-toggle:hover:not(:disabled){background:#202d48;color:#aebaff}

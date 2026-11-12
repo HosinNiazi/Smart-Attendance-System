@@ -20,16 +20,17 @@ for (const file of files) {
   console.log(`Applied ${file}`);
 }
 
-// Reuse the default organization instead of inserting a new one on every run.
+// Reuse the default faculty instead of inserting a new one on every run.
+const DEFAULT_FACULTY = 'دانشکده شهید شمسی‌پور';
 const organization = await pool.query(
-  `INSERT INTO organizations (name) VALUES ($1)
+  `INSERT INTO organizations (name, code) VALUES ($1, 'SHAMSIPOUR')
    ON CONFLICT (name) DO NOTHING RETURNING id`,
-  ['سازمان پیش‌فرض'],
+  [DEFAULT_FACULTY],
 );
 const orgId =
   organization.rows[0]?.id ||
   (await pool.query("SELECT id FROM organizations WHERE name = $1", [
-    'سازمان پیش‌فرض',
+    DEFAULT_FACULTY,
   ])).rows[0].id;
 
 const password = process.env.SEED_ADMIN_PASSWORD;

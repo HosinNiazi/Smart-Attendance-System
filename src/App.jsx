@@ -30,6 +30,8 @@ import {
   createSession,
   createRegistration,
   fetchRegistrations,
+  fetchFaculties,
+  switchFaculty,
   approveRegistration,
   rejectRegistration,
   fetchBootstrap,
@@ -259,6 +261,105 @@ function AccessRoleSelect({ value, onChange }) {
   );
 }
 
+function FacultySelect({ id, value, onChange, options = [], disabled = false }) {
+  const [open, setOpen] = useState(false);
+  const rootRef = useRef(null);
+  const buttonRef = useRef(null);
+  const selected = options.find((option) => option.id === value) || null;
+
+  useEffect(() => {
+    if (!open) return undefined;
+    const closeOnOutsideClick = (event) => {
+      if (!rootRef.current?.contains(event.target)) setOpen(false);
+    };
+    const closeOnEscape = (event) => {
+      if (event.key === "Escape") {
+        setOpen(false);
+        buttonRef.current?.focus();
+      }
+    };
+    document.addEventListener("pointerdown", closeOnOutsideClick);
+    document.addEventListener("keydown", closeOnEscape);
+    return () => {
+      document.removeEventListener("pointerdown", closeOnOutsideClick);
+      document.removeEventListener("keydown", closeOnEscape);
+    };
+  }, [open]);
+
+  const moveSelection = (direction) => {
+    if (!options.length) return;
+    const current = options.findIndex((option) => option.id === value);
+    const next = (current + direction + options.length) % options.length;
+    onChange(options[next].id);
+  };
+
+  const placeholder = disabled ? "در حال دریافت دانشکده‌ها…" : "انتخاب دانشکده";
+
+  return (
+    <div
+      className={`input-icon-wrap login-role-field faculty-select-field${open ? " is-open" : ""}`}
+      ref={rootRef}
+    >
+      <Icon name="bi-building" />
+      <button
+        ref={buttonRef}
+        id={id}
+        type="button"
+        className="form-select login-role-trigger"
+        aria-haspopup="listbox"
+        aria-expanded={open}
+        aria-controls={`${id}-options`}
+        disabled={disabled}
+        onClick={() => setOpen((current) => !current)}
+        onKeyDown={(event) => {
+          if (event.key === "ArrowDown" || event.key === "ArrowUp") {
+            event.preventDefault();
+            if (!open) setOpen(true);
+            moveSelection(event.key === "ArrowDown" ? 1 : -1);
+          }
+          if (event.key === "Enter" || event.key === " ") {
+            event.preventDefault();
+            setOpen((current) => !current);
+          }
+        }}
+      >
+        <span className={selected ? "" : "faculty-placeholder"}>
+          {selected?.name || placeholder}
+        </span>
+      </button>
+      {open && !disabled && (
+        <div
+          className="login-role-menu"
+          id={`${id}-options`}
+          role="listbox"
+          aria-labelledby={id}
+        >
+          {options.map((option) => (
+            <button
+              key={option.id}
+              type="button"
+              role="option"
+              aria-selected={value === option.id}
+              className={`login-role-option${value === option.id ? " is-selected" : ""}`}
+              onClick={() => {
+                onChange(option.id);
+                setOpen(false);
+                buttonRef.current?.focus();
+              }}
+            >
+              <span className="login-role-option-icon">
+                <Icon name="bi-mortarboard" />
+              </span>
+              <span>{option.name}</span>
+              {value === option.id && <Icon name="bi-check2" />}
+            </button>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
 function readStoredValue(key, fallback) {
   try {
     const value = localStorage.getItem(key);
@@ -408,11 +509,20 @@ export default function App() {
   const [loginPassword, setLoginPassword] = useState("");
   const [loginError, setLoginError] = useState("");
   const [loginPending, setLoginPending] = useState(false);
+  const [faculties, setFaculties] = useState([]);
+  const [authUser, setAuthUser] = useState(() => getApiUser());
+  const [facultyId, setFacultyId] = useState(
+    () => localStorage.getItem("smart-attendance:faculty-id") || "",
+  );
+  const [facultySwitcherOpen, setFacultySwitcherOpen] = useState(false);
+  const [facultySwitchPending, setFacultySwitchPending] = useState(false);
+  const facultySwitcherRef = useRef(null);
   const [regModal, setRegModal] = useState(false);
   const [regForm, setRegForm] = useState({
     fullName: "",
     username: "",
     password: "",
+    facultyId: "",
     nationalId: "",
     major: "",
     term: "",
@@ -482,6 +592,50 @@ export default function App() {
     }
   }, []);
   useEffect(() => {
+    let cancelled = false;
+    fetchFaculties()
+      .then((data) => {
+        if (cancelled) return;
+        const list = Array.isArray(data?.faculties) ? data.faculties : [];
+        setFaculties(list);
+        setFacultyId((current) => {
+          if (current && list.some((faculty) => faculty.id === current)) {
+            return current;
+          }
+          const savedUser = getApiUser();
+          const preferred =
+            list.find((faculty) => faculty.id === savedUser?.faculty?.id) ||
+            list.find((faculty) => faculty.code === "SHAMSIPOUR") ||
+            list[0];
+          return preferred?.id || "";
+        });
+      })
+      .catch((error) => console.warn("fetchFaculties failed", error));
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+  useEffect(() => {
+    if (facultyId) localStorage.setItem("smart-attendance:faculty-id", facultyId);
+  }, [facultyId]);
+  useEffect(() => {
+    if (!facultySwitcherOpen) return undefined;
+    const closeOnOutsideClick = (event) => {
+      if (!facultySwitcherRef.current?.contains(event.target)) {
+        setFacultySwitcherOpen(false);
+      }
+    };
+    const closeOnEscape = (event) => {
+      if (event.key === "Escape") setFacultySwitcherOpen(false);
+    };
+    document.addEventListener("pointerdown", closeOnOutsideClick);
+    document.addEventListener("keydown", closeOnEscape);
+    return () => {
+      document.removeEventListener("pointerdown", closeOnOutsideClick);
+      document.removeEventListener("keydown", closeOnEscape);
+    };
+  }, [facultySwitcherOpen]);
+  useEffect(() => {
     if (login) return undefined;
     refreshNotifications();
     const timer = setInterval(() => refreshNotifications(), 30000);
@@ -543,6 +697,16 @@ export default function App() {
       items: group.items.filter((item) => allowedPages.has(item.id)),
     }))
     .filter((group) => group.items.length > 0);
+  const currentFaculty =
+    authUser?.faculty ||
+    faculties.find((faculty) => faculty.id === facultyId) ||
+    null;
+  // Only teachers may belong to several faculties; admins/students have exactly one.
+  const switchableFaculties =
+    loginRole === "teacher" && Array.isArray(authUser?.faculties)
+      ? authUser.faculties
+      : [];
+  const canSwitchFaculty = switchableFaculties.length > 1;
 
   function notify(message) {
     setToast(message);
@@ -1036,6 +1200,28 @@ export default function App() {
           ? "teacher@hozorban.local"
           : "student@hozorban.local",
     );
+  }
+  async function changeFaculty(nextFacultyId) {
+    if (!nextFacultyId || nextFacultyId === authUser?.faculty?.id) {
+      setFacultySwitcherOpen(false);
+      return;
+    }
+    setFacultySwitchPending(true);
+    try {
+      const result = await switchFaculty(nextFacultyId);
+      setAuthUser(result.user);
+      setFacultyId(nextFacultyId);
+      setFacultySwitcherOpen(false);
+      await loadFromServer({ silent: true });
+      refreshNotifications().catch(() => {});
+      notify(
+        `دانشکده به «${result.user.faculty?.name || "دانشکدهٔ جدید"}» تغییر کرد.`,
+      );
+    } catch (error) {
+      notify(error.message || "تغییر دانشکده انجام نشد.");
+    } finally {
+      setFacultySwitchPending(false);
+    }
   }
   function go(id) {
     if (!allowedPages.has(id)) {
@@ -1954,9 +2140,18 @@ export default function App() {
             onSubmit={async (e) => {
               e.preventDefault();
               setLoginError("");
+              if (!facultyId) {
+                setLoginError("لطفاً دانشکده را انتخاب کنید.");
+                return;
+              }
               setLoginPending(true);
               try {
-                const result = await signIn(loginName.trim(), loginPassword);
+                const result = await signIn(
+                  loginName.trim(),
+                  loginPassword,
+                  facultyId,
+                );
+                setAuthUser(result.user);
 
                 try {
                   await loadFromServer({ silent: true });
@@ -2020,6 +2215,16 @@ export default function App() {
                   ? "برای مدیریت جلسات و ثبت حضور و غیاب کلاس‌ها وارد شوید."
                   : "برای مشاهدهٔ وضعیت حضور و درس‌های خود وارد شوید."}
             </p>
+            <label className="form-label" htmlFor="faculty">
+              نام دانشکده
+            </label>
+            <FacultySelect
+              id="faculty"
+              value={facultyId}
+              onChange={setFacultyId}
+              options={faculties}
+              disabled={!faculties.length}
+            />
             <label className="form-label" htmlFor="access-role">
               {"\u0646\u0648\u0639 \u062f\u0633\u062a\u0631\u0633\u06cc"}
             </label>
@@ -2114,6 +2319,21 @@ export default function App() {
                   <Icon name="bi-x-lg" />
                 </button>
               </div>
+              <label className="form-label" htmlFor="reg-faculty">
+                نام دانشکده
+              </label>
+              <FacultySelect
+                id="reg-faculty"
+                value={regForm.facultyId || facultyId}
+                onChange={(nextFacultyId) =>
+                  setRegForm((current) => ({
+                    ...current,
+                    facultyId: nextFacultyId,
+                  }))
+                }
+                options={faculties}
+                disabled={regPending || !faculties.length}
+              />
               <div className="course-form-grid">
                 {[
                   ["fullName", "نام و نام خانوادگی", "text"],
@@ -2143,15 +2363,25 @@ export default function App() {
                   className="btn btn-primary"
                   disabled={regPending}
                   onClick={async () => {
+                    const selectedRegistrationFaculty =
+                      regForm.facultyId || facultyId;
+                    if (!selectedRegistrationFaculty) {
+                      notify("لطفاً دانشکده را انتخاب کنید.");
+                      return;
+                    }
                     setRegPending(true);
                     try {
-                      await createRegistration(regForm);
+                      await createRegistration({
+                        ...regForm,
+                        facultyId: selectedRegistrationFaculty,
+                      });
                       notify("درخواست ثبت‌نام ارسال شد؛ پس از تأیید مدیر می‌توانید وارد شوید.");
                       setRegModal(false);
                       setRegForm({
                         fullName: "",
                         username: "",
                         password: "",
+                        facultyId: "",
                         nationalId: "",
                         major: "",
                         term: "",
@@ -2241,17 +2471,60 @@ export default function App() {
             <Icon name="bi-x-lg" />
           </button>
         </div>
-        <div className="workspace-switch">
-          <span className="workspace-icon">
-            <Icon name="bi-mortarboard-fill" />
-          </span>
-          <div>
-            <strong>دانشگاه نمونه</strong>
-            <small>
-              {loginRole === "admin" ? "پنل مدیریت آموزشی" : "پنل استاد"}
-            </small>
+        <div className="workspace-wrap" ref={facultySwitcherRef}>
+          <div className="workspace-switch">
+            <span className="workspace-icon">
+              <Icon name="bi-mortarboard-fill" />
+            </span>
+            <div>
+              <strong>{currentFaculty?.name || "دانشکده"}</strong>
+              <small>
+                {loginRole === "admin" ? "پنل مدیریت آموزشی" : "پنل استاد"}
+              </small>
+            </div>
+            {canSwitchFaculty ? (
+              <button
+                className="workspace-toggle"
+                type="button"
+                aria-haspopup="listbox"
+                aria-expanded={facultySwitcherOpen}
+                aria-label="تغییر دانشکده"
+                disabled={facultySwitchPending}
+                onClick={() => setFacultySwitcherOpen((value) => !value)}
+              >
+                <Icon name="bi-chevron-down" className="workspace-chevron" />
+              </button>
+            ) : null}
           </div>
-          <Icon name="bi-chevron-down" className="workspace-chevron" />
+          {canSwitchFaculty && facultySwitcherOpen && (
+            <div
+              className="workspace-menu"
+              role="listbox"
+              aria-label="دانشکده‌های من"
+            >
+              <div className="workspace-menu-title">دانشکده‌های شما</div>
+              {switchableFaculties.map((faculty) => {
+                const isCurrent = faculty.id === authUser?.faculty?.id;
+                return (
+                  <button
+                    key={faculty.id}
+                    className={`workspace-option${isCurrent ? " is-current" : ""}`}
+                    type="button"
+                    role="option"
+                    aria-selected={isCurrent}
+                    disabled={facultySwitchPending || isCurrent}
+                    onClick={() => changeFaculty(faculty.id)}
+                  >
+                    <Icon
+                      name={isCurrent ? "bi-check-circle-fill" : "bi-mortarboard"}
+                    />
+                    <span>{faculty.name}</span>
+                    {isCurrent && <small>فعال</small>}
+                  </button>
+                );
+              })}
+            </div>
+          )}
         </div>
         <nav className="side-nav">
           {visibleNavGroups.map((group) => (

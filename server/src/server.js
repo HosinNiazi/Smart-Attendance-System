@@ -119,9 +119,9 @@ app.use(
 
 const asyncRoute = (handler) => (req, res, next) =>
   Promise.resolve(handler(req, res, next)).catch(next);
-function tokenFor(user) {
+function tokenFor(user, organizationId = user.organization_id) {
   return jwt.sign(
-    { sub: user.id, org: user.organization_id, role: user.role },
+    { sub: user.id, org: organizationId, role: user.role },
     jwtSecret,
     { expiresIn: "8h", issuer: "hozorban-api", audience: "hozorban-web" },
   );
@@ -267,6 +267,54 @@ function publicUser(row) {
     avatarUrl: row.avatar_url,
   };
 }
+
+async function loadFaculty(organizationId) {
+  if (!organizationId) return null;
+  const { rows } = await pool.query(
+    "SELECT id, name, code FROM organizations WHERE id = $1 AND is_active = true",
+    [organizationId],
+  );
+  return rows[0] || null;
+}
+
+async function listUserFaculties(user) {
+  if (user.role !== "teacher") {
+    const faculty = await loadFaculty(user.organization_id);
+    return faculty ? [faculty] : [];
+  }
+  // Teachers may belong to several faculties: home faculty plus explicit memberships.
+  const { rows } = await pool.query(
+    `SELECT o.id, o.name, o.code
+       FROM organizations o
+      WHERE o.is_active = true
+        AND (o.id = $1 OR EXISTS (
+              SELECT 1 FROM user_faculties uf
+               WHERE uf.user_id = $2 AND uf.organization_id = o.id))
+      ORDER BY (o.id = $1) DESC, o.name`,
+    [user.organization_id, user.id],
+  );
+  return rows;
+}
+
+async function canAccessFaculty(user, organizationId) {
+  if (!organizationId) return false;
+  if (user.organization_id === organizationId) return true;
+  if (user.role !== "teacher") return false;
+  const { rowCount } = await pool.query(
+    "SELECT 1 FROM user_faculties WHERE user_id = $1 AND organization_id = $2",
+    [user.id, organizationId],
+  );
+  return rowCount > 0;
+}
+
+async function authPayload(user, organizationId = user.organization_id) {
+  const faculty = await loadFaculty(organizationId);
+  const faculties = await listUserFaculties(user);
+  return {
+    token: tokenFor(user, organizationId),
+    user: { ...publicUser(user), faculty, faculties },
+  };
+}
 const id = z.string().uuid();
 const studentSchema = z.object({
   studentNumber: z.string().trim().min(1).max(40),
@@ -349,16 +397,27 @@ app.get(
     res.json({ status: "ok" });
   }),
 );
+app.get(
+  "/api/faculties",
+  asyncRoute(async (req, res) => {
+    const { rows } = await pool.query(
+      "SELECT id, name, code FROM organizations WHERE is_active = true ORDER BY name",
+    );
+    res.json({ faculties: rows });
+  }),
+);
+
 app.post(
   "/api/auth/login",
   validate(
     z.object({
       email: z.string().trim().email().max(254),
       password: z.string().min(8).max(128),
+      facultyId: z.string().uuid().optional(),
     }),
   ),
   asyncRoute(async (req, res) => {
-    const { email, password } = req.body;
+    const { email, password, facultyId } = req.body;
     // A multi-tenant deployment may legitimately reuse an email in different
     // organizations, so compare the password against every active candidate
     // instead of trusting whichever row PostgreSQL happens to return first.
@@ -377,7 +436,22 @@ app.post(
     }
     if (!user)
       return res.status(401).json({ message: "ایمیل یا رمز عبور نادرست است." });
-    res.json({ token: tokenFor(user), user: publicUser(user) });
+
+    const selectedOrg = facultyId || user.organization_id;
+    const faculty = await loadFaculty(selectedOrg);
+    if (!faculty)
+      return res
+        .status(404)
+        .json({ message: "دانشکدهٔ انتخاب‌شده معتبر یا فعال نیست." });
+    if (!(await canAccessFaculty(user, selectedOrg)))
+      return res.status(403).json({
+        message:
+          user.role === "teacher"
+            ? "شما عضو دانشکدهٔ انتخاب‌شده نیستید."
+            : "این حساب به دانشکدهٔ انتخاب‌شده تعلق ندارد.",
+      });
+
+    res.json(await authPayload(user, selectedOrg));
   }),
 );
 
@@ -388,6 +462,7 @@ app.post(
       fullName: z.string().trim().min(2).max(120),
       username: z.string().trim().min(3).max(120),
       password: z.string().min(8).max(128),
+      facultyId: z.string().uuid().optional(),
       nationalId: z.string().trim().max(20).optional().default(""),
       major: z.string().trim().max(120).optional().default(""),
       term: z.string().trim().max(20).optional().default(""),
@@ -395,15 +470,22 @@ app.post(
     }),
   ),
   asyncRoute(async (req, res) => {
-    const orgRow = await pool.query(
-      "SELECT id FROM organizations WHERE name = $1 ORDER BY created_at LIMIT 1",
-      ["سازمان پیش‌فرض"],
-    );
-    if (!orgRow.rows[0])
-      return res.status(500).json({ message: "سازمان پیش‌فرض یافت نشد." });
-    const orgId = orgRow.rows[0].id;
-    const { fullName, username, password, nationalId, major, term, phone } =
+    const { fullName, username, password, facultyId, nationalId, major, term, phone } =
       req.body;
+    // A registration always belongs to exactly one faculty. The dropdown value is
+    // required in the UI; fall back to the first active faculty for older clients.
+    const faculty = facultyId
+      ? await loadFaculty(facultyId)
+      : (
+          await pool.query(
+            "SELECT id, name, code FROM organizations WHERE is_active = true ORDER BY created_at LIMIT 1",
+          )
+        ).rows[0];
+    if (!faculty)
+      return res
+        .status(400)
+        .json({ message: "دانشکدهٔ انتخاب‌شده معتبر یا فعال نیست." });
+    const orgId = faculty.id;
     const passwordHash = await bcrypt.hash(password, 10);
     const { rows } = await pool.query(
       `INSERT INTO registration_requests
@@ -573,14 +655,41 @@ app.post(
   }),
 );
 
+app.post(
+  "/api/auth/switch-faculty",
+  validate(z.object({ facultyId: id })),
+  asyncRoute(async (req, res) => {
+    const { rows } = await pool.query(
+      "SELECT * FROM users WHERE id = $1 AND is_active = true",
+      [req.user.sub],
+    );
+    const user = rows[0];
+    if (!user)
+      return res.status(401).json({ message: "ورود به سامانه لازم است." });
+    if (!(await canAccessFaculty(user, req.body.facultyId)))
+      return res.status(403).json({
+        message:
+          user.role === "teacher"
+            ? "شما عضو دانشکدهٔ انتخاب‌شده نیستید."
+            : "این حساب به دانشکدهٔ انتخاب‌شده تعلق ندارد.",
+      });
+    res.json(await authPayload(user, req.body.facultyId));
+  }),
+);
+
 app.get(
   "/api/me",
   asyncRoute(async (req, res) => {
+    // Look up by id only: a teacher's active faculty (req.user.org) may differ
+    // from their home faculty, so filtering by organization would hide the row.
     const { rows } = await pool.query(
-      "SELECT * FROM users WHERE id = $1 AND organization_id = $2",
-      [req.user.sub, req.user.org],
+      "SELECT * FROM users WHERE id = $1 AND is_active = true",
+      [req.user.sub],
     );
-    res.json({ user: rows[0] ? publicUser(rows[0]) : null });
+    if (!rows[0]) return res.json({ user: null });
+    const faculty = await loadFaculty(req.user.org);
+    const faculties = await listUserFaculties(rows[0]);
+    res.json({ user: { ...publicUser(rows[0]), faculty, faculties } });
   }),
 );
 app.get(
