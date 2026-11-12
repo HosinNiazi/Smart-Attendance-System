@@ -253,7 +253,7 @@ export function JalaliDateInput({
         aria-label={ariaLabel}
       >
         <span
-          className={`jalali-date-value ${currentIso ? "" : "placeholder"}`}
+          className={`jalali-date-value ${currentIso ? "" : "is-placeholder"}`}
         >
           {currentIso ? formatJalaliNumeric(currentIso) : placeholder}
         </span>

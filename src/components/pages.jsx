@@ -1,5 +1,5 @@
 import React, { useEffect, useRef, useState } from "react";
-import { Badge, EmptyState, Icon, PanelTitle, SkeletonCards, SkeletonTable, StatCard, StudentAvatar } from "./shared.jsx";
+import { Badge, EmptyState, Icon, PanelTitle, SkeletonCards, SkeletonTable, StatCard, StudentAvatar, TablePager } from "./shared.jsx";
 import { JalaliDateInput } from "./JalaliDateInput.jsx";
 import {
   LiveClassBanner,
@@ -298,7 +298,7 @@ export function Dashboard({
         <section className="content-card attendance-overview">
           <div className="card-heading">
             <div>
-              <h3>وضعیت حضور امروز</h3>
+              <h2>وضعیت حضور امروز</h2>
               <p>خلاصه وضعیت ثبت‌های امروز</p>
             </div>
 
@@ -313,7 +313,7 @@ export function Dashboard({
           <div className="attendance-summary">
             <div className="donut-wrap">
               <div
-                className="donut-chart"
+                className={`donut-chart ${todayTotal === 0 ? "is-empty" : ""}`.trim()}
                 style={{
                   "--present": `${presentPercent}%`,
                   "--late": `${latePercent}%`,
@@ -358,7 +358,7 @@ export function Dashboard({
         <section className="content-card quick-actions-card">
           <div className="card-heading">
             <div>
-              <h3>دسترسی سریع</h3>
+              <h2>دسترسی سریع</h2>
               <p>کارهای پرتکرار سامانه</p>
             </div>
 
@@ -441,7 +441,7 @@ export function Dashboard({
       <section className="content-card table-card">
         <div className="card-heading">
           <div>
-            <h3>آخرین وضعیت حضور و غیاب</h3>
+            <h2>آخرین وضعیت حضور و غیاب</h2>
             <p>آخرین رویدادهای ثبت‌شده در سامانه</p>
           </div>
 
@@ -456,7 +456,7 @@ export function Dashboard({
       <section className="content-card courses-strip">
         <div className="card-heading">
           <div>
-            <h3>کلاس‌های فعال</h3>
+            <h2>کلاس‌های فعال</h2>
             <p>برنامه کلاس‌های این نیم‌سال</p>
           </div>
 
@@ -496,6 +496,17 @@ export function Dashboard({
 
 export function Students({ students, query, setQuery, onAdd, onDelete, onSavePhoto, onImportStudents }) {
   const [importOpen, setImportOpen] = useState(false);
+  const [page, setPage] = useState(1);
+  const pageSize = 10;
+  useEffect(() => {
+    setPage(1);
+  }, [query, students.length]);
+  const pageCount = Math.max(1, Math.ceil(students.length / pageSize));
+  const safePage = Math.min(page, pageCount);
+  const visibleStudents = students.slice(
+    (safePage - 1) * pageSize,
+    safePage * pageSize,
+  );
   return (
     <>
       <PanelTitle
@@ -539,89 +550,98 @@ export function Students({ students, query, setQuery, onAdd, onDelete, onSavePho
           </span>
         </div>
         {students.length ? (
-          <div className="table-responsive">
-            <table className="table custom-table align-middle">
-              <thead>
-                <tr>
-                  <th>دانشجو</th>
-                  <th>شماره دانشجویی</th>
-                  <th>رشته تحصیلی</th>
-                  <th>ترم</th>
-                  <th>شماره تماس</th>
-                  <th>وضعیت</th>
-                  <th>عملیات</th>
-                </tr>
-              </thead>
-              <tbody>
-                {students.map((s, i) => (
-                  <tr key={s.id}>
-                    <td>
-                      <div className="student-cell">
-                        <StudentAvatar
-                          name={s.name}
-                          photo={s.faceImage}
-                          index={i}
-                        />
-                        <strong>{s.name}</strong>
-                      </div>
-                    </td>
-                    <td className="id-cell">{s.id}</td>
-                    <td>{s.major}</td>
-                    <td>{s.term}</td>
-                    <td>{s.phone || "—"}</td>
-                    <td>
-                      <Badge tone={s.status === "فعال" ? "success" : "neutral"}>
-                        {s.status}
-                      </Badge>
-                    </td>
-                    <td>
-                      <div className="student-actions-cell">
-                        <label
-                          className="row-action photo-action"
-                          title={
-                            s.faceImage
-                              ? "تغییر عکس پروفایل"
-                              : "ثبت عکس پروفایل"
-                          }
-                        >
-                          <Icon
-                            name={
-                              s.faceImage ? "bi-pencil-square" : "bi-camera"
-                            }
-                          />
-                          <input
-                            type="file"
-                            accept="image/*"
-                            capture="user"
-                            hidden
-                            onChange={(event) => {
-                              onSavePhoto?.(
-                                s.id,
-                                Array.from(event.target.files || []),
-                              );
-                              event.target.value = "";
-                            }}
-                          />
-                        </label>
-                        <button
-                          className="row-action danger-action"
-                          title="حذف دانشجو"
-                          onClick={() => {
-                            if (
-                              window.confirm(`دانشجوی «${s.name}» حذف شود؟`)
-                            )
-                              onDelete(s.id);
-                          }}
-                        >
-                          <Icon name="bi-trash3" />
-                        </button>
-                      </div>
-                    </td>
+          <>
+            <div className="table-responsive">
+              <table className="table custom-table align-middle">
+                <thead>
+                  <tr>
+                    <th>دانشجو</th>
+                    <th>شماره دانشجویی</th>
+                    <th>رشته تحصیلی</th>
+                    <th>ترم</th>
+                    <th>شماره تماس</th>
+                    <th>وضعیت</th>
+                    <th>عملیات</th>
                   </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
+                </thead>
+                <tbody>
+                  {visibleStudents.map((s, i) => (
+                    <tr key={s.id}>
+                      <td>
+                        <div className="student-cell">
+                          <StudentAvatar
+                            name={s.name}
+                            photo={s.faceImage}
+                            index={(safePage - 1) * pageSize + i}
+                          />
+                          <strong>{s.name}</strong>
+                        </div>
+                      </td>
+                      <td className="id-cell">{s.id}</td>
+                      <td>{s.major}</td>
+                      <td>{s.term}</td>
+                      <td>{s.phone || "—"}</td>
+                      <td>
+                        <Badge tone={s.status === "فعال" ? "success" : "neutral"}>
+                          {s.status}
+                        </Badge>
+                      </td>
+                      <td>
+                        <div className="student-actions-cell">
+                          <label
+                            className="row-action photo-action"
+                            title={
+                              s.faceImage
+                                ? "تغییر عکس پروفایل"
+                                : "ثبت عکس پروفایل"
+                            }
+                          >
+                            <Icon
+                              name={
+                                s.faceImage ? "bi-pencil-square" : "bi-camera"
+                              }
+                            />
+                            <input
+                              type="file"
+                              accept="image/*"
+                              capture="user"
+                              hidden
+                              onChange={(event) => {
+                                onSavePhoto?.(
+                                  s.id,
+                                  Array.from(event.target.files || []),
+                                );
+                                event.target.value = "";
+                              }}
+                            />
+                          </label>
+                          <button
+                            className="row-action danger-action"
+                            title="حذف دانشجو"
+                            onClick={() => {
+                              if (
+                                window.confirm(`دانشجوی «${s.name}» حذف شود؟`)
+                              )
+                                onDelete(s.id);
+                            }}
+                          >
+                            <Icon name="bi-trash3" />
+                          </button>
+                        </div>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+            <TablePager
+              page={safePage}
+              pageSize={pageSize}
+              total={students.length}
+              onPageChange={setPage}
+              label="دانشجو"
+            />
+          </>
         ) : (
           <EmptyState
             icon="bi-search"
@@ -652,6 +672,7 @@ export function Courses({
 }) {
   const [showCourseForm, setShowCourseForm] = useState(false);
   const [importOpen, setImportOpen] = useState(false);
+  const [assignTeacherFor, setAssignTeacherFor] = useState("");
   const [courseForm, setCourseForm] = useState({
     id: "",
     title: "",
@@ -970,25 +991,36 @@ export function Courses({
                   <span>{c.teacher}</span>
                 </div>
                 {canAssignTeacher && teachers.length > 0 && c.databaseId && (
-                  <label className="course-teacher-assign">
-                    <span>استاد درس</span>
-                    <select
-                      className="form-select"
-                      value={c.teacherUserId || ""}
-                      onChange={(event) =>
-                        onAssignTeacher?.(c.databaseId, event.target.value || null)
-                      }
+                  c.teacherUserId && assignTeacherFor !== c.id ? (
+                    <button
+                      type="button"
+                      className="course-teacher-edit"
+                      onClick={() => setAssignTeacherFor(c.id)}
                     >
-                      <option value="">— بدون استاد —</option>
-                      {teachers
-                        .filter((teacher) => teacher.isActive)
-                        .map((teacher) => (
-                          <option key={teacher.id} value={teacher.id}>
-                            {teacher.fullName}
-                          </option>
-                        ))}
-                    </select>
-                  </label>
+                      <Icon name="bi-pencil-square" /> تغییر استاد
+                    </button>
+                  ) : (
+                    <label className="course-teacher-assign">
+                      <span>استاد درس</span>
+                      <select
+                        className="form-select"
+                        value={c.teacherUserId || ""}
+                        onChange={(event) => {
+                          onAssignTeacher?.(c.databaseId, event.target.value || null);
+                          setAssignTeacherFor("");
+                        }}
+                      >
+                        <option value="">— بدون استاد —</option>
+                        {teachers
+                          .filter((teacher) => teacher.isActive)
+                          .map((teacher) => (
+                            <option key={teacher.id} value={teacher.id}>
+                              {teacher.fullName}
+                            </option>
+                          ))}
+                      </select>
+                    </label>
+                  )
                 )}
                 <div className="course-detail">
                   <span>
@@ -2756,9 +2788,28 @@ export function Settings({
   onSave,
   onBackup,
   onRestore,
+  onNotify,
 }) {
   const update = (key, value) =>
     setSettings((prev) => ({ ...prev, [key]: value }));
+
+  const resetSettings = () => {
+    if (!confirm("تنظیمات به مقدار پیش‌فرض بازنشانی شود؟"))
+      return;
+    setSettings({
+      name: "سامانه حضوربان",
+      lateAfter: "10",
+      notifications: true,
+      faceRecognition: true,
+    });
+    onNotify?.("تنظیمات به پیش‌فرض‌ها بازنشانی شد.");
+  };
+
+  const [backupOptions, setBackupOptions] = React.useState({
+    includeVoiceProfiles: true,
+    includeImages: true,
+  });
+
   const browserChecks = [
     [
       "اتصال امن برای دوربین و میکروفون",
@@ -2873,6 +2924,11 @@ export function Settings({
             می‌شوند و برای همهٔ کاربران سازمان اعمال می‌شوند.
           </div>
         </section>
+        <div style={{ marginTop: 18, display: "flex", justifyContent: "flex-end" }}>
+          <button className="btn btn-light-outline" onClick={resetSettings}>
+            <Icon name="bi-arrow-counterclockwise" /> بازنشانی تنظیمات به پیش‌فرض‌ها
+          </button>
+        </div>
       </div>
       <section className="content-card backup-card">
         <div className="settings-section-title">
@@ -2883,11 +2939,52 @@ export function Settings({
             <h3>پشتیبان‌گیری و بازیابی</h3>
             <p>
               نسخهٔ پشتیبان JSON از داده‌های این مرورگر بسازید یا بازیابی کنید.
+              <br />
+              <small>
+                برای انتخاب محتوای پشتیبان، گزینه‌های زیر را تنظیم کنید:
+              </small>
             </p>
+            <div className="backup-options" style={{ marginTop: 16 }}>
+              <label className="form-check form-check-inline" style={{ marginRight: 24 }}>
+                <input
+                  className="form-check-input"
+                  type="checkbox"
+                  checked={backupOptions.includeVoiceProfiles}
+                  onChange={(e) => setBackupOptions((prev) => ({ ...prev, includeVoiceProfiles: e.target.checked }))}
+                />
+                <span className="form-check-label">شامل الگوهای صوتی</span>
+              </label>
+              <label className="form-check form-check-inline" style={{ marginRight: 24 }}>
+                <input
+                  className="form-check-input"
+                  type="checkbox"
+                  checked={backupOptions.includeImages}
+                  onChange={(e) => setBackupOptions((prev) => ({ ...prev, includeImages: e.target.checked }))}
+                />
+                <span className="form-check-label">شامل عکس‌های مرجع</span>
+              </label>
+            </div>
+          </div>
+        </div>
+        <div className="backup-info" style={{ marginTop: 16 }}>
+          <div className="backup-privacy-note" style={{ marginBottom: 16 }}>
+            <Icon name="bi-shield-lock" /> 
+            فایل پشتیبان شامل:
+            <ul className="list-unstyled" style={{ margin: "8px 0 0 20px", padding: 0, display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(200px, 1fr))", gap: "4px 16px" }}>
+              <li>اطلاعات دانشجویان (نام، شماره دانشجویی، وضعیت)</li>
+              <li>سوابق حضور و غیاب</li>
+              <li>عکس‌های مرجع دانشجوها</li>
+              <li>الگوهای صوتی (در صورت فعال بودن)</li>
+              <li>تنظیمات کاربر (نام سامانه، حد تأخیر، اعلان‌ها، تشخیص چهره)</li>
+              <li>تنظیمات تم تاریک/روشن</li>
+            </ul>
+            <small style={{ display: "block", marginTop: 8 }}>
+              <strong>نکته:</strong> این پشتیبان تمام داده‌های حساس را شامل می‌شود. برای حفظ امنیت، این فایل را در فضای امن نگهدارید.
+            </small>
           </div>
         </div>
         <div className="backup-actions">
-          <button className="btn btn-primary" onClick={onBackup}>
+          <button className="btn btn-primary" onClick={() => onBackup?.(backupOptions)}>
             <Icon name="bi-download" /> دریافت نسخهٔ پشتیبان
           </button>
           <label className="btn btn-light-outline">
@@ -2903,11 +3000,6 @@ export function Settings({
             />
           </label>
         </div>
-        <p className="backup-privacy-note">
-          <Icon name="bi-shield-lock" /> فایل پشتیبان شامل اطلاعات دانشجویان،
-          سوابق حضور، عکس‌های مرجع و الگوهای صوتی است. آن را در فضای امن نگه
-          دارید. بازیابی، داده‌های فعلی را جایگزین می‌کند.
-        </p>
       </section>
       <section className="content-card browser-check-card">
         <div className="settings-section-title">
@@ -3960,8 +4052,19 @@ export function StudentPortal({
                   </button>
                 </div>
                 <div className="notification-list">
-                  {notifications.length ? (
-                    notifications.map((item) => (
+                  {(() => {
+                    const visibleNotifications = notifications.filter(
+                      (item) => !item.isRead,
+                    );
+                    if (!visibleNotifications.length) {
+                      return (
+                        <div className="notification-empty">
+                          <Icon name="bi-bell-slash" />
+                          <span>اعلان جدیدی ندارید</span>
+                        </div>
+                      );
+                    }
+                    return visibleNotifications.map((item) => (
                       <button
                         key={item.id}
                         type="button"
@@ -3990,13 +4093,8 @@ export function StudentPortal({
                           </small>
                         </span>
                       </button>
-                    ))
-                  ) : (
-                    <div className="notification-empty">
-                      <Icon name="bi-bell-slash" />
-                      <span>اعلان جدیدی ندارید</span>
-                    </div>
-                  )}
+                    ));
+                  })()}
                 </div>
               </div>
             )}
@@ -5115,7 +5213,7 @@ export function Teachers({
           <SkeletonTable rows={4} columns={6} />
         ) : teachers.length ? (
           <div className="table-responsive">
-            <table className="table custom-table align-middle">
+            <table className="table custom-table align-middle teachers-table">
               <thead>
                 <tr>
                   <th>نام و نام خانوادگی</th>
@@ -7047,6 +7145,17 @@ export function AdminActivity({
   onEntityTypeChange,
   onRefresh,
 }) {
+  const [page, setPage] = useState(1);
+  const pageSize = 15;
+  useEffect(() => {
+    setPage(1);
+  }, [entityType, activity.length]);
+  const pageCount = Math.max(1, Math.ceil(activity.length / pageSize));
+  const safePage = Math.min(page, pageCount);
+  const visibleActivity = activity.slice(
+    (safePage - 1) * pageSize,
+    safePage * pageSize,
+  );
   return (
     <>
       <PanelTitle
@@ -7080,53 +7189,62 @@ export function AdminActivity({
         {loading && !activity.length ? (
           <SkeletonTable rows={6} columns={5} />
         ) : activity.length ? (
-          <div className="table-responsive">
-            <table className="table custom-table align-middle">
-              <thead>
-                <tr>
-                  <th>زمان</th>
-                  <th>مدیر</th>
-                  <th>عملیات</th>
-                  <th>موجودیت</th>
-                  <th>جزئیات</th>
-                </tr>
-              </thead>
-              <tbody>
-                {activity.map((item, index) => (
-                  <tr key={item.id || index}>
-                    <td dir="ltr" style={{ textAlign: "right" }}>
-                      {item.createdAt
-                        ? new Date(item.createdAt).toLocaleString("fa-IR")
-                        : "—"}
-                    </td>
-                    <td>
-                      <strong>{item.actorName || "سیستم"}</strong>
-                      {item.actorEmail && (
-                        <span className="student-id-small" dir="ltr">
-                          {item.actorEmail}
-                        </span>
-                      )}
-                    </td>
-                    <td>
-                      <Badge tone={AUDIT_ACTION_TONES[item.action] || "neutral"}>
-                        {AUDIT_ACTION_LABELS[item.action] || item.action}
-                      </Badge>
-                    </td>
-                    <td title={item.entityId || ""}>
-                      {AUDIT_ENTITY_LABELS[item.entityType] || item.entityType}
-                    </td>
-                    <td
-                      className="text-truncate"
-                      style={{ maxWidth: 320 }}
-                      title={activityMetadataSummary(item.metadata)}
-                    >
-                      {activityMetadataSummary(item.metadata)}
-                    </td>
+          <>
+            <div className="table-responsive">
+              <table className="table custom-table align-middle">
+                <thead>
+                  <tr>
+                    <th>زمان</th>
+                    <th>مدیر</th>
+                    <th>عملیات</th>
+                    <th>موجودیت</th>
+                    <th>جزئیات</th>
                   </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
+                </thead>
+                <tbody>
+                  {visibleActivity.map((item, index) => (
+                    <tr key={item.id || index}>
+                      <td dir="ltr" style={{ textAlign: "right" }}>
+                        {item.createdAt
+                          ? new Date(item.createdAt).toLocaleString("fa-IR")
+                          : "—"}
+                      </td>
+                      <td>
+                        <strong>{item.actorName || "سیستم"}</strong>
+                        {item.actorEmail && (
+                          <span className="student-id-small" dir="ltr">
+                            {item.actorEmail}
+                          </span>
+                        )}
+                      </td>
+                      <td>
+                        <Badge tone={AUDIT_ACTION_TONES[item.action] || "neutral"}>
+                          {AUDIT_ACTION_LABELS[item.action] || item.action}
+                        </Badge>
+                      </td>
+                      <td title={item.entityId || ""}>
+                        {AUDIT_ENTITY_LABELS[item.entityType] || item.entityType}
+                      </td>
+                      <td
+                        className="text-truncate"
+                        style={{ maxWidth: 320 }}
+                        title={activityMetadataSummary(item.metadata)}
+                      >
+                        {activityMetadataSummary(item.metadata)}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+            <TablePager
+              page={safePage}
+              pageSize={pageSize}
+              total={activity.length}
+              onPageChange={setPage}
+              label="رکورد"
+            />
+          </>
         ) : (
           <EmptyState
             icon="bi-journal-text"

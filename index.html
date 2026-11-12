@@ -5,6 +5,17 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <meta name="theme-color" content="#f5f7fb" />
     <title>حضوربان | سامانه هوشمند حضور و غیاب</title>
+    <meta
+      name="description"
+      content="حضوربان، سامانهٔ هوشمند حضور و غیاب و مدیریت آموزشی دانشکده: ثبت حضور با چهره، صدا و اثر انگشت، مدیریت دانشجویان، اساتید، کلاس‌ها و گزارش‌های حضور."
+    />
+    <meta property="og:title" content="حضوربان | سامانه هوشمند حضور و غیاب" />
+    <meta
+      property="og:description"
+      content="ثبت و پیگیری هوشمند حضور و غیاب دانشجویان، مدیریت کلاس‌ها و گزارش‌های تحلیلی برای دانشکده."
+    />
+    <meta property="og:type" content="website" />
+    <meta property="og:locale" content="fa_IR" />
     <script>
       // هم‌خوان‌سازی تم قبل از اولین رسم (بدون فلش تم)
       try {
@@ -16,9 +27,16 @@
         document.documentElement.dataset.theme = 'light';
       }
     </script>
-    <link rel="preconnect" href="https://fonts.googleapis.com">
-    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-    <link href="https://fonts.googleapis.com/css2?family=Vazirmatn:wght@300;400;500;600;700;800&display=swap" rel="stylesheet">
+    <link rel="preload" href="/fonts/Vazirmatn-Variable.woff2" as="font" type="font/woff2" crossorigin />
+    <style>
+      @font-face {
+        font-family: "Vazirmatn";
+        font-style: normal;
+        font-weight: 300 800;
+        font-display: swap;
+        src: url("/fonts/Vazirmatn-Variable.woff2") format("woff2");
+      }
+    </style>
     <style>
       /* ============ Hozorban splash screen (paints before any JS/CSS) ============ */
       #splash {

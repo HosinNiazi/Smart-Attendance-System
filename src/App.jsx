@@ -1259,27 +1259,37 @@ export default function App() {
       notify(error.message || "ذخیرهٔ تنظیمات انجام نشد.");
     }
   }
-  async function exportBackup() {
+  async function exportBackup(options = {}) {
     try {
+      const { includeVoiceProfiles = true, includeImages = true } = options;
+      
       let voiceProfiles = [];
       let voiceDataUnavailable = false;
-      try {
-        voiceProfiles = await exportAudioProfiles();
-      } catch {
-        voiceDataUnavailable = true;
+      if (includeVoiceProfiles) {
+        try {
+          voiceProfiles = await exportAudioProfiles();
+        } catch {
+          voiceDataUnavailable = true;
+        }
       }
+      const studentsForBackup = includeImages
+        ? students
+        : students.map((student) => {
+            const { faceImage, ...rest } = student;
+            return rest;
+          });
       const backup = {
         product: "hozorban",
         schemaVersion: 1,
         createdAt: new Date().toISOString(),
         data: {
-          students,
+          students: studentsForBackup,
           courses,
           attendance,
           sessionHistory,
           settings,
           theme,
-          voiceProfiles,
+          voiceProfiles: includeVoiceProfiles ? voiceProfiles : [],
         },
       };
       const url = URL.createObjectURL(
@@ -1291,7 +1301,7 @@ export default function App() {
       link.click();
       URL.revokeObjectURL(url);
       notify(
-        voiceDataUnavailable
+        includeVoiceProfiles && voiceDataUnavailable
           ? "پشتیبان ساخته شد، اما ذخیره‌ساز صوت در دسترس نبود و نمونه‌های صوتی داخل فایل نیستند."
           : "نسخهٔ پشتیبان اطلاعات آماده شد.",
       );
@@ -2401,12 +2411,12 @@ export default function App() {
                   <i className="bi bi-check-circle" /> ۲۶ حاضر
                 </span>
               </div>
-            </div>
-            <div className="floating-chip chip-a">
-              <Icon name="bi-shield-check" /> حضور امن و دقیق
-            </div>
-            <div className="floating-chip chip-b">
-              <Icon name="bi-camera" /> تشخیص چهره
+              <div className="floating-chip chip-a">
+                <Icon name="bi-shield-check" /> حضور امن و دقیق
+              </div>
+              <div className="floating-chip chip-b">
+                <Icon name="bi-camera" /> تشخیص چهره
+              </div>
             </div>
           </div>
           <div className="login-art-bottom">
@@ -2722,6 +2732,7 @@ export default function App() {
           </div>
           <button
             className="sidebar-close"
+            aria-label="بستن منو"
             onClick={() => setMobileMenu(false)}
           >
             <Icon name="bi-x-lg" />
@@ -2822,6 +2833,8 @@ export default function App() {
           <div className="topbar-right">
             <button
               className="mobile-menu-btn"
+              aria-label="باز کردن منو"
+              aria-expanded={mobileMenu}
               onClick={() => setMobileMenu(true)}
             >
               <Icon name="bi-list" />
@@ -2863,8 +2876,19 @@ export default function App() {
                     </button>
                   </div>
                   <div className="notification-list">
-                    {notifications.length ? (
-                      notifications.map((item) => (
+                    {(() => {
+                      const visibleNotifications = notifications.filter(
+                        (item) => !item.isRead,
+                      );
+                      if (!visibleNotifications.length) {
+                        return (
+                          <div className="notification-empty">
+                            <Icon name="bi-bell-slash" />
+                            <span>اعلان جدیدی ندارید</span>
+                          </div>
+                        );
+                      }
+                      return visibleNotifications.map((item) => (
                         <button
                           key={item.id}
                           type="button"
@@ -2893,14 +2917,9 @@ export default function App() {
                               {new Date(item.createdAt).toLocaleString("fa-IR")}
                             </small>
                           </span>
-                        </button>
-                      ))
-                    ) : (
-                      <div className="notification-empty">
-                        <Icon name="bi-bell-slash" />
-                        <span>اعلان جدیدی ندارید</span>
-                      </div>
-                    )}
+                          </button>
+                      ));
+                    })()}
                   </div>
                 </div>
               )}
@@ -3180,6 +3199,7 @@ export default function App() {
               onSave={saveSettings}
               onBackup={exportBackup}
               onRestore={restoreBackup}
+              onNotify={notify}
             />
           )}
           {active === "profile" && (

@@ -43,6 +43,60 @@ export function StatCard({ icon, label, value, detail, trend, color = "blue" }) 
     </div>
   );
 }
+/**
+ * صفحه‌بندی سبک جدول‌ها. اگر همهٔ ردیف‌ها در یک صفحه جا شوند، چیزی رندر نمی‌شود.
+ */
+export function TablePager({ page = 1, pageSize = 10, total = 0, onPageChange, label = "مورد" }) {
+  const pageCount = Math.max(1, Math.ceil(total / pageSize));
+  if (pageCount <= 1) return null;
+  const current = Math.min(Math.max(1, page), pageCount);
+  const from = (current - 1) * pageSize + 1;
+  const to = Math.min(total, current * pageSize);
+  const start = Math.max(1, Math.min(current - 2, pageCount - 4));
+  const numbers = [];
+  for (let i = start; i <= Math.min(pageCount, start + 4); i += 1) numbers.push(i);
+
+  return (
+    <nav className="table-pager" aria-label="صفحه‌بندی جدول">
+      <span className="table-pager-info">
+        نمایش {from.toLocaleString("fa-IR")} تا {to.toLocaleString("fa-IR")} از{" "}
+        {total.toLocaleString("fa-IR")} {label}
+      </span>
+      <div className="table-pager-actions">
+        <button
+          type="button"
+          className="pager-btn"
+          onClick={() => onPageChange?.(current - 1)}
+          disabled={current <= 1}
+          aria-label="صفحهٔ قبل"
+        >
+          <Icon name="bi-chevron-right" />
+        </button>
+        {numbers.map((number) => (
+          <button
+            key={number}
+            type="button"
+            className={`pager-btn ${number === current ? "active" : ""}`}
+            onClick={() => onPageChange?.(number)}
+            aria-current={number === current ? "page" : undefined}
+            aria-label={`صفحهٔ ${number.toLocaleString("fa-IR")}`}
+          >
+            {number.toLocaleString("fa-IR")}
+          </button>
+        ))}
+        <button
+          type="button"
+          className="pager-btn"
+          onClick={() => onPageChange?.(current + 1)}
+          disabled={current >= pageCount}
+          aria-label="صفحهٔ بعد"
+        >
+          <Icon name="bi-chevron-left" />
+        </button>
+      </div>
+    </nav>
+  );
+}
 export function EmptyState({ icon = "bi-inbox", title, text }) {
   return (
     <div className="empty-state">
