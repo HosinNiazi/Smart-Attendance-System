@@ -51,6 +51,7 @@ import {
   saveVoiceSample,
   signIn,
   updateStudent,
+  updateCourse,
   uploadStudentPhoto,
   uploadMyPhoto,
   upsertAttendance,
@@ -1469,6 +1470,7 @@ export default function App() {
         code: normalizedId,
         title: String(course.title || "").trim(),
         teacherName: String(course.teacher || "").trim(),
+        teacherId: course.teacherId || null,
         room: course.room || "",
         weekday: course.day || "",
         startTime: course.startTime || null,
@@ -2937,7 +2939,23 @@ export default function App() {
             <Courses
               courses={courses}
               students={students}
+              teachers={teachers}
+              canAssignTeacher={loginRole === "admin"}
+              defaultTeacher={loginName}
               onAddCourse={addCourse}
+              onAssignTeacher={async (courseId, teacherId) => {
+                try {
+                  await updateCourse(courseId, { teacherId });
+                  await loadFromServer({ silent: true });
+                  notify(
+                    teacherId
+                      ? "استاد درس به‌روزرسانی شد و دسترسی درس تعیین گردید."
+                      : "تخصیص استاد از این درس برداشته شد.",
+                  );
+                } catch (error) {
+                  notify(error.message || "تغییر استاد درس انجام نشد.");
+                }
+              }}
               onNavigate={go}
               onImportCourses={importCoursesHandler}
             />

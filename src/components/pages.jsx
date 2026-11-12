@@ -555,8 +555,12 @@ export function Students({ students, query, setQuery, onAdd, onDelete, onSavePho
 export function Courses({
   courses,
   students = [],
+  teachers = [],
+  canAssignTeacher = true,
+  defaultTeacher = "",
   onNavigate,
   onAddCourse,
+  onAssignTeacher,
   onPlanCourse,
   onImportCourses,
 }) {
@@ -565,7 +569,8 @@ export function Courses({
   const [courseForm, setCourseForm] = useState({
     id: "",
     title: "",
-    teacher: "",
+    teacher: defaultTeacher,
+    teacherId: "",
     day: "شنبه",
     startTime: "10:00",
     endTime: "12:00",
@@ -599,7 +604,8 @@ export function Courses({
     setCourseForm({
       id: "",
       title: "",
-      teacher: "",
+      teacher: defaultTeacher,
+      teacherId: "",
       day: "شنبه",
       startTime: "10:00",
       endTime: "12:00",
@@ -693,18 +699,48 @@ export function Courses({
                 placeholder="نام درس"
               />
             </label>
-            <label className="form-label">
-              استاد
-              <input
-                className="form-control"
-                value={courseForm.teacher}
-                maxLength={80}
-                onChange={(event) =>
-                  updateCourseForm("teacher", event.target.value)
-                }
-                placeholder="نام استاد"
-              />
-            </label>
+            {canAssignTeacher && teachers.length > 0 ? (
+              <label className="form-label">
+                استاد
+                <select
+                  className="form-select"
+                  value={courseForm.teacherId}
+                  onChange={(event) => {
+                    const teacher = teachers.find(
+                      (item) => item.id === event.target.value,
+                    );
+                    setCourseForm((current) => ({
+                      ...current,
+                      teacherId: event.target.value,
+                      teacher: teacher?.fullName || "",
+                    }));
+                  }}
+                >
+                  <option value="">— انتخاب استاد —</option>
+                  {teachers
+                    .filter((teacher) => teacher.isActive)
+                    .map((teacher) => (
+                      <option key={teacher.id} value={teacher.id}>
+                        {teacher.fullName}
+                      </option>
+                    ))}
+                </select>
+              </label>
+            ) : (
+              <label className="form-label">
+                استاد
+                <input
+                  className="form-control"
+                  value={courseForm.teacher}
+                  maxLength={80}
+                  readOnly={!canAssignTeacher}
+                  onChange={(event) =>
+                    updateCourseForm("teacher", event.target.value)
+                  }
+                  placeholder="نام استاد"
+                />
+              </label>
+            )}
             <label className="form-label">
               کلاس / مکان
               <input
@@ -847,6 +883,27 @@ export function Courses({
                   <span className="teacher-avatar">{c.teacher.charAt(0)}</span>
                   <span>{c.teacher}</span>
                 </div>
+                {canAssignTeacher && teachers.length > 0 && c.databaseId && (
+                  <label className="course-teacher-assign">
+                    <span>استاد درس</span>
+                    <select
+                      className="form-select"
+                      value={c.teacherUserId || ""}
+                      onChange={(event) =>
+                        onAssignTeacher?.(c.databaseId, event.target.value || null)
+                      }
+                    >
+                      <option value="">— بدون استاد —</option>
+                      {teachers
+                        .filter((teacher) => teacher.isActive)
+                        .map((teacher) => (
+                          <option key={teacher.id} value={teacher.id}>
+                            {teacher.fullName}
+                          </option>
+                        ))}
+                    </select>
+                  </label>
+                )}
                 <div className="course-detail">
                   <span>
                     <Icon name="bi-clock" />

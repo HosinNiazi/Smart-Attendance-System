@@ -978,3 +978,7 @@ html[lang="en"] body,html[lang="en"] button,html[lang="en"] input,html[lang="en"
 .forced-password-backdrop{z-index:95}
 .forced-password-lock{width:38px;height:38px;border-radius:11px;background:#eef3ff;color:var(--primary);display:inline-flex;align-items:center;justify-content:center;font-size:18px}
 :root[data-theme="dark"] .forced-password-lock{background:#1b2a48;color:#8fa7ff}
+
+/* Course teacher assignment (admin) */
+.course-teacher-assign{display:grid;gap:6px;margin:10px 0 4px;font-size:11px;color:var(--muted)}
+.course-teacher-assign .form-select{padding:8px 10px;font-size:12px}

@@ -74,6 +74,7 @@ export function adaptBootstrap(data) {
     id: course.code,
     title: course.title,
     teacher: course.teacherName || "",
+    teacherUserId: course.teacherUserId || "",
     weekday: course.weekday || "",
     startTime: course.startTime || "",
     endTime: course.endTime || "",

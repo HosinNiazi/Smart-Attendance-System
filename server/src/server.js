@@ -248,7 +248,7 @@ async function safeVerifyAuthentication(options) {
   }
 }
 
-async function listFingerprintCredentials(organizationId, studentId = null) {
+async function listFingerprintCredentials(organizationId, studentId = null, teacherUserId = null) {
   const conditions = [
     "fc.organization_id = $1",
     "fc.revoked_at IS NULL",
@@ -257,6 +257,24 @@ async function listFingerprintCredentials(organizationId, studentId = null) {
   if (studentId) {
     params.push(studentId);
     conditions.push(`fc.student_id = $${params.length}`);
+  }
+  if (teacherUserId) {
+    params.push(teacherUserId);
+    conditions.push(`(
+      EXISTS (
+        SELECT 1 FROM course_students cs
+          JOIN courses c ON c.id = cs.course_id
+         WHERE cs.student_id = fc.student_id
+           AND c.organization_id = $1 AND c.teacher_user_id = $${params.length}
+      )
+      OR EXISTS (
+        SELECT 1 FROM session_students ss
+          JOIN class_sessions s ON s.id = ss.session_id
+          JOIN courses c ON c.id = s.course_id
+         WHERE ss.student_id = fc.student_id
+           AND s.organization_id = $1 AND c.teacher_user_id = $${params.length}
+      )
+    )`);
   }
   const { rows } = await pool.query(
     `SELECT fc.id, fc.student_id AS "studentId", fc.user_id AS "userId",
@@ -339,6 +357,83 @@ async function canAccessFaculty(user, organizationId) {
   return rowCount > 0;
 }
 
+/* ----------------------- teacher course ownership ----------------------- */
+// A teacher may only touch courses they own. Admins keep faculty-wide access.
+function isTeacher(req) {
+  return req.user.role === "teacher";
+}
+
+async function teacherOwnsSession(req, sessionId) {
+  if (!isTeacher(req)) return true;
+  const { rowCount } = await pool.query(
+    `SELECT 1
+       FROM class_sessions s
+       JOIN courses c ON c.id = s.course_id
+      WHERE s.id = $1 AND s.organization_id = $2 AND c.teacher_user_id = $3`,
+    [sessionId, req.user.org, req.user.sub],
+  );
+  return rowCount > 0;
+}
+
+// Students a teacher may see/act on: enrolled in one of their courses or in one
+// of their sessions. Admins keep faculty-wide access.
+async function teacherOwnsStudent(req, studentId) {
+  if (!isTeacher(req)) return true;
+  const { rowCount } = await pool.query(
+    `SELECT 1
+       FROM students st
+      WHERE st.id = $1 AND st.organization_id = $2
+        AND (
+          EXISTS (
+            SELECT 1 FROM course_students cs
+              JOIN courses c ON c.id = cs.course_id
+             WHERE cs.student_id = st.id
+               AND c.organization_id = $2 AND c.teacher_user_id = $3
+          )
+          OR EXISTS (
+            SELECT 1 FROM session_students ss
+              JOIN class_sessions s ON s.id = ss.session_id
+              JOIN courses c ON c.id = s.course_id
+             WHERE ss.student_id = st.id
+               AND s.organization_id = $2 AND c.teacher_user_id = $3
+          )
+        )`,
+    [studentId, req.user.org, req.user.sub],
+  );
+  return rowCount > 0;
+}
+
+// Resolve the teacher a course belongs to. Teachers always own what they create;
+// admins may pick any active teacher of the faculty (or leave it unassigned).
+async function resolveCourseTeacher(req, teacherId, teacherName) {
+  if (isTeacher(req)) {
+    const { rows } = await pool.query(
+      "SELECT id, display_name FROM users WHERE id = $1",
+      [req.user.sub],
+    );
+    return {
+      id: req.user.sub,
+      name: rows[0]?.display_name || teacherName || "",
+    };
+  }
+  if (!teacherId) return { id: null, name: teacherName || "" };
+  const { rows } = await pool.query(
+    `SELECT u.id, u.display_name AS name
+       FROM users u
+      WHERE u.id = $1 AND u.role = 'teacher' AND u.is_active = true
+        AND (u.organization_id = $2 OR EXISTS (
+              SELECT 1 FROM user_faculties uf
+               WHERE uf.user_id = u.id AND uf.organization_id = $2))`,
+    [teacherId, req.user.org],
+  );
+  if (!rows[0])
+    throw Object.assign(
+      new Error("استاد انتخاب‌شده در این دانشکده فعال نیست."),
+      { status: 422 },
+    );
+  return { id: rows[0].id, name: rows[0].name };
+}
+
 async function authPayload(user, organizationId = user.organization_id) {
   const faculty = await loadFaculty(organizationId);
   const faculties = await listUserFaculties(user);
@@ -372,6 +467,7 @@ const courseSchema = z.object({
   code: z.string().trim().min(1).max(30),
   title: z.string().trim().min(2).max(160),
   teacherName: z.string().trim().min(2).max(120),
+  teacherId: z.string().uuid().nullable().optional(),
   room: z.string().trim().max(80).optional().default(""),
   weekday: z.string().trim().max(20).optional().default(""),
   startTime: z
@@ -1025,33 +1121,55 @@ app.get(
   "/api/bootstrap",
   asyncRoute(async (req, res) => {
     const params = [req.user.org];
+    const teacher = req.user.role === "teacher";
+    if (teacher) params.push(req.user.sub);
+    // Teachers only receive their own courses, sessions, attendance and the
+    // students enrolled in them. Admins keep the whole faculty.
+    const courseScope = teacher ? " AND c.teacher_user_id=$2" : "";
+    const sessionScope = teacher
+      ? " AND s.course_id IN (SELECT id FROM courses WHERE organization_id=$1 AND teacher_user_id=$2)"
+      : "";
+    const studentScope = teacher
+      ? ` AND st.id IN (
+            SELECT cs.student_id
+              FROM course_students cs
+              JOIN courses c ON c.id = cs.course_id
+             WHERE c.organization_id = $1 AND c.teacher_user_id = $2
+            UNION
+            SELECT ss.student_id
+              FROM session_students ss
+              JOIN class_sessions s ON s.id = ss.session_id
+              JOIN courses c ON c.id = s.course_id
+             WHERE s.organization_id = $1 AND c.teacher_user_id = $2
+          )`
+      : "";
     const [students, courses, sessions, attendance, settings, faceImages, voiceSamples] =
       await Promise.all([
         pool.query(
-          `SELECT id, student_number AS "studentNumber", full_name AS "fullName", major, term, phone, status FROM students WHERE organization_id=$1 ORDER BY full_name`,
+          `SELECT st.id, st.student_number AS "studentNumber", st.full_name AS "fullName", st.major, st.term, st.phone, st.status FROM students st WHERE st.organization_id=$1${studentScope} ORDER BY st.full_name`,
           params,
         ),
         pool.query(
-          `SELECT c.id, c.code, c.title, c.teacher_name AS "teacherName", c.room, c.weekday, to_char(c.start_time,'HH24:MI') AS "startTime", to_char(c.end_time,'HH24:MI') AS "endTime", COALESCE(array_agg(cs.student_id) FILTER (WHERE cs.student_id IS NOT NULL), '{}') AS "studentIds" FROM courses c LEFT JOIN course_students cs ON cs.course_id=c.id WHERE c.organization_id=$1 GROUP BY c.id ORDER BY c.title`,
+          `SELECT c.id, c.code, c.title, c.teacher_name AS "teacherName", c.teacher_user_id AS "teacherUserId", c.room, c.weekday, to_char(c.start_time,'HH24:MI') AS "startTime", to_char(c.end_time,'HH24:MI') AS "endTime", COALESCE(array_agg(cs.student_id) FILTER (WHERE cs.student_id IS NOT NULL), '{}') AS "studentIds" FROM courses c LEFT JOIN course_students cs ON cs.course_id=c.id WHERE c.organization_id=$1${courseScope} GROUP BY c.id ORDER BY c.title`,
           params,
         ),
         pool.query(
-          `SELECT s.id, s.course_id AS "courseId", to_char(s.session_date,'YYYY-MM-DD') AS date, s.teacher_name AS "teacherName", to_char(s.start_time,'HH24:MI') AS "startTime", to_char(s.end_time,'HH24:MI') AS "endTime", s.grace_minutes AS "graceMinutes", s.open_before_minutes AS "openBeforeMinutes", s.close_after_minutes AS "closeAfterMinutes", s.status, s.live_status AS "liveStatus", s.started_at AS "startedAt", s.ended_at AS "endedAt", COALESCE(array_agg(ss.student_id) FILTER (WHERE ss.student_id IS NOT NULL), '{}') AS "studentIds" FROM class_sessions s LEFT JOIN session_students ss ON ss.session_id=s.id WHERE s.organization_id=$1 GROUP BY s.id ORDER BY s.session_date DESC, s.start_time DESC`,
+          `SELECT s.id, s.course_id AS "courseId", to_char(s.session_date,'YYYY-MM-DD') AS date, s.teacher_name AS "teacherName", to_char(s.start_time,'HH24:MI') AS "startTime", to_char(s.end_time,'HH24:MI') AS "endTime", s.grace_minutes AS "graceMinutes", s.open_before_minutes AS "openBeforeMinutes", s.close_after_minutes AS "closeAfterMinutes", s.status, s.live_status AS "liveStatus", s.started_at AS "startedAt", s.ended_at AS "endedAt", COALESCE(array_agg(ss.student_id) FILTER (WHERE ss.student_id IS NOT NULL), '{}') AS "studentIds" FROM class_sessions s LEFT JOIN session_students ss ON ss.session_id=s.id WHERE s.organization_id=$1${sessionScope} GROUP BY s.id ORDER BY s.session_date DESC, s.start_time DESC`,
           params,
         ),
         pool.query(
-          `SELECT a.id, a.session_id AS "sessionId", a.student_id AS "studentId", a.status, a.method, a.checked_at AS "checkedAt", a.updated_at AS "updatedAt" FROM attendance_records a JOIN class_sessions s ON s.id=a.session_id WHERE s.organization_id=$1`,
+          `SELECT a.id, a.session_id AS "sessionId", a.student_id AS "studentId", a.status, a.method, a.checked_at AS "checkedAt", a.updated_at AS "updatedAt" FROM attendance_records a JOIN class_sessions s ON s.id=a.session_id WHERE s.organization_id=$1${sessionScope}`,
           params,
         ),
         pool.query(
           `SELECT system_name AS "systemName", late_after_minutes AS "lateAfterMinutes", notifications_enabled AS "notificationsEnabled", face_recognition_enabled AS "faceRecognitionEnabled" FROM organization_settings WHERE organization_id=$1`,
-          params,
+          [req.user.org],
         ),
         pool.query(
           `SELECT br.student_id AS "studentId", br.object_key AS "objectKey", br.created_at AS "createdAt"
              FROM biometric_references br
              JOIN students st ON st.id = br.student_id
-            WHERE br.kind='face_image' AND st.organization_id=$1
+            WHERE br.kind='face_image' AND st.organization_id=$1${studentScope}
             ORDER BY br.created_at`,
           params,
         ),
@@ -1059,7 +1177,7 @@ app.get(
           `SELECT br.student_id AS "studentId", br.features, br.feature_version AS "featureVersion", br.created_at AS "createdAt"
              FROM biometric_references br
              JOIN students st ON st.id = br.student_id
-            WHERE br.kind='voice_sample' AND st.organization_id=$1 AND br.features IS NOT NULL
+            WHERE br.kind='voice_sample' AND st.organization_id=$1 AND br.features IS NOT NULL${studentScope}
             ORDER BY br.created_at`,
           params,
         ),
@@ -1080,9 +1198,24 @@ app.get(
   "/api/students",
   authorize("admin", "teacher"),
   asyncRoute(async (req, res) => {
+    const params = [req.user.org];
+    let scope = "";
+    if (isTeacher(req)) {
+      params.push(req.user.sub);
+      scope = ` AND st.id IN (
+        SELECT cs.student_id FROM course_students cs
+          JOIN courses c ON c.id = cs.course_id
+         WHERE c.organization_id = $1 AND c.teacher_user_id = $2
+        UNION
+        SELECT ss.student_id FROM session_students ss
+          JOIN class_sessions s ON s.id = ss.session_id
+          JOIN courses c ON c.id = s.course_id
+         WHERE s.organization_id = $1 AND c.teacher_user_id = $2
+      )`;
+    }
     const { rows } = await pool.query(
-      `SELECT id, student_number AS "studentNumber", full_name AS "fullName", major, term, phone, status FROM students WHERE organization_id=$1 ORDER BY full_name`,
-      [req.user.org],
+      `SELECT st.id, st.student_number AS "studentNumber", st.full_name AS "fullName", st.major, st.term, st.phone, st.status FROM students st WHERE st.organization_id=$1${scope} ORDER BY st.full_name`,
+      params,
     );
     res.json(rows);
   }),
@@ -1208,6 +1341,12 @@ app.post(
         message: "لطفاً یک تصویر انتخاب کنید.",
       });
     }
+    if (!(await teacherOwnsStudent(req, req.params.studentId))) {
+      await fs.promises.unlink(req.file.path).catch(() => {});
+      return res
+        .status(403)
+        .json({ message: "این دانشجو در درس‌های شما ثبت نشده است." });
+    }
 
     const record = await replaceStudentFacePhoto(
       req.params.studentId,
@@ -1274,14 +1413,16 @@ app.post(
   validate(courseSchema),
   asyncRoute(async (req, res) => {
     const c = req.body;
+    const teacher = await resolveCourseTeacher(req, c.teacherId, c.teacherName);
     const course = await withTransaction(async (client) => {
       const { rows } = await client.query(
-        `INSERT INTO courses (organization_id,code,title,teacher_name,room,weekday,start_time,end_time) VALUES ($1,$2,$3,$4,$5,$6,$7,$8) RETURNING id, code, title`,
+        `INSERT INTO courses (organization_id,code,title,teacher_name,teacher_user_id,room,weekday,start_time,end_time) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9) RETURNING id, code, title`,
         [
           req.user.org,
           c.code,
           c.title,
-          c.teacherName,
+          teacher.name,
+          teacher.id,
           c.room || null,
           c.weekday || null,
           c.startTime || null,
@@ -1312,11 +1453,23 @@ app.patch(
   authorize("admin", "teacher"),
   validate(courseSchema.partial()),
   asyncRoute(async (req, res) => {
-    const c = req.body;
+    const c = { ...req.body };
+    // Teachers can only edit their own courses and cannot reassign them. Admins
+    // may pick the owning teacher from the faculty's teacher list.
+    if (isTeacher(req)) {
+      const teacher = await resolveCourseTeacher(req, null, c.teacherName);
+      c.teacherId = teacher.id;
+      c.teacherName = teacher.name;
+    } else if (c.teacherId !== undefined && c.teacherId !== null) {
+      const teacher = await resolveCourseTeacher(req, c.teacherId, c.teacherName);
+      c.teacherName = teacher.name;
+      c.teacherId = teacher.id;
+    }
     const fields = {
       code: "code",
       title: "title",
       teacherName: "teacher_name",
+      teacherId: "teacher_user_id",
       room: "room",
       weekday: "weekday",
       startTime: "start_time",
@@ -1333,14 +1486,26 @@ app.patch(
         throw Object.assign(new Error("تغییری ارسال نشده است."), {
           status: 422,
         });
+      let ownership = "";
+      if (isTeacher(req)) {
+        values.push(req.user.sub);
+        ownership = ` AND teacher_user_id=$${values.length}`;
+      }
       const { rows } = await client.query(
         `UPDATE courses SET ${assignments.join(", ")}, updated_at=now()
-          WHERE organization_id=$1 AND id=$2
+          WHERE organization_id=$1 AND id=$2${ownership}
           RETURNING id, code, title`,
         values,
       );
       if (!rows[0])
-        throw Object.assign(new Error("درس پیدا نشد."), { status: 404 });
+        throw Object.assign(
+          new Error(
+            isTeacher(req)
+              ? "این درس به شما تخصیص نیافته است."
+              : "درس پیدا نشد.",
+          ),
+          { status: isTeacher(req) ? 403 : 404 },
+        );
       if (Array.isArray(c.studentIds)) {
         await client.query("DELETE FROM course_students WHERE course_id=$1", [
           req.params.courseId,
@@ -1397,6 +1562,10 @@ app.post(
   authorize("admin", "teacher"),
   validate(voiceSampleSchema),
   asyncRoute(async (req, res) => {
+    if (!(await teacherOwnsStudent(req, req.params.studentId)))
+      return res
+        .status(403)
+        .json({ message: "این دانشجو در درس‌های شما ثبت نشده است." });
     const student = await pool.query(
       "SELECT id FROM students WHERE id=$1 AND organization_id=$2",
       [req.params.studentId, req.user.org],
@@ -1474,11 +1643,22 @@ app.post(
     const s = req.body;
     const session = await withTransaction(async (client) => {
       const ownership = await client.query(
-        "SELECT id FROM courses WHERE id=$1 AND organization_id=$2",
-        [s.courseId, req.user.org],
+        isTeacher(req)
+          ? "SELECT id FROM courses WHERE id=$1 AND organization_id=$2 AND teacher_user_id=$3"
+          : "SELECT id FROM courses WHERE id=$1 AND organization_id=$2",
+        isTeacher(req)
+          ? [s.courseId, req.user.org, req.user.sub]
+          : [s.courseId, req.user.org],
       );
       if (!ownership.rows[0])
-        throw Object.assign(new Error("درس پیدا نشد."), { status: 404 });
+        throw Object.assign(
+          new Error(
+            isTeacher(req)
+              ? "این درس به شما تخصیص نیافته است."
+              : "درس پیدا نشد.",
+          ),
+          { status: isTeacher(req) ? 403 : 404 },
+        );
       const { rows } = await client.query(
         `INSERT INTO class_sessions (organization_id,course_id,session_date,teacher_name,start_time,end_time,grace_minutes,open_before_minutes,close_after_minutes,status)
          VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,'started')
@@ -1539,12 +1719,21 @@ app.patch(
     }),
   ),
   asyncRoute(async (req, res) => {
+    const params = [req.body.status, req.user.org, req.params.sessionId];
+    let scope = "";
+    if (isTeacher(req)) {
+      params.push(req.user.sub);
+      scope = ` AND EXISTS (
+        SELECT 1 FROM courses c
+         WHERE c.id = class_sessions.course_id AND c.teacher_user_id = $4
+      )`;
+    }
     const { rows } = await pool.query(
       `UPDATE class_sessions SET status=$1, updated_at=now()
-        WHERE organization_id=$2 AND id=$3 RETURNING id, status`,
-      [req.body.status, req.user.org, req.params.sessionId],
+        WHERE organization_id=$2 AND id=$3${scope} RETURNING id, status`,
+      params,
     );
-    if (!rows[0]) return res.sendStatus(404);
+    if (!rows[0]) return res.sendStatus(isTeacher(req) ? 403 : 404);
     res.json(rows[0]);
   }),
 );
@@ -1555,11 +1744,26 @@ app.post(
   asyncRoute(async (req, res) => {
     const result = await withTransaction(async (client) => {
       const session = await client.query(
-        "SELECT id, status FROM class_sessions WHERE id=$1 AND organization_id=$2 FOR UPDATE",
-        [req.params.sessionId, req.user.org],
+        isTeacher(req)
+          ? `SELECT s.id, s.status
+               FROM class_sessions s
+               JOIN courses c ON c.id = s.course_id
+              WHERE s.id=$1 AND s.organization_id=$2 AND c.teacher_user_id=$3
+              FOR UPDATE OF s`
+          : "SELECT id, status FROM class_sessions WHERE id=$1 AND organization_id=$2 FOR UPDATE",
+        isTeacher(req)
+          ? [req.params.sessionId, req.user.org, req.user.sub]
+          : [req.params.sessionId, req.user.org],
       );
       if (!session.rows[0])
-        throw Object.assign(new Error("جلسه پیدا نشد."), { status: 404 });
+        throw Object.assign(
+          new Error(
+            isTeacher(req)
+              ? "این جلسه به شما تخصیص نیافته است."
+              : "جلسه پیدا نشد.",
+          ),
+          { status: isTeacher(req) ? 403 : 404 },
+        );
 
       const unmarked = await client.query(
         `SELECT id, status FROM attendance_records
@@ -1607,17 +1811,36 @@ app.put(
     const { sessionId, studentId, status, method, reason } = req.body;
     const record = await withTransaction(async (client) => {
       const session = await client.query(
-        "SELECT id FROM class_sessions WHERE id=$1 AND organization_id=$2",
-        [sessionId, req.user.org],
+        isTeacher(req)
+          ? `SELECT s.id
+               FROM class_sessions s
+               JOIN courses c ON c.id = s.course_id
+              WHERE s.id=$1 AND s.organization_id=$2 AND c.teacher_user_id=$3`
+          : "SELECT id FROM class_sessions WHERE id=$1 AND organization_id=$2",
+        isTeacher(req)
+          ? [sessionId, req.user.org, req.user.sub]
+          : [sessionId, req.user.org],
       );
       if (!session.rows[0])
-        throw Object.assign(new Error("جلسه پیدا نشد."), { status: 404 });
+        throw Object.assign(
+          new Error(
+            isTeacher(req)
+              ? "این جلسه به شما تخصیص نیافته است."
+              : "جلسه پیدا نشد.",
+          ),
+          { status: isTeacher(req) ? 403 : 404 },
+        );
       const student = await client.query(
         "SELECT id FROM students WHERE id=$1 AND organization_id=$2",
         [studentId, req.user.org],
       );
       if (!student.rows[0])
         throw Object.assign(new Error("دانشجو پیدا نشد."), { status: 404 });
+      if (!(await teacherOwnsStudent(req, studentId)))
+        throw Object.assign(
+          new Error("این دانشجو در درس‌های شما ثبت نشده است."),
+          { status: 403 },
+        );
 
       const existing = await client.query(
         "SELECT id, status FROM attendance_records WHERE session_id=$1 AND student_id=$2 FOR UPDATE",
@@ -1697,6 +1920,11 @@ app.post(
       studentId = rows[0]?.studentId;
     }
     const resolvedStudentId = String(studentId || "");
+    if (!(await teacherOwnsStudent(req, resolvedStudentId))) {
+      return res
+        .status(403)
+        .json({ message: "این دانشجو در درس‌های شما ثبت نشده است." });
+    }
     const studentCheck = await pool.query(
       `SELECT id, student_number AS "studentNumber", full_name AS "fullName"
          FROM students WHERE id = $1 AND organization_id = $2`,
@@ -1788,6 +2016,10 @@ app.post(
       [organizationId, ownerStudentId],
     );
     const studentRef = ownerCheck.rows[0]?.id;
+    if (!(await teacherOwnsStudent(req, ownerStudentId)))
+      return res
+        .status(403)
+        .json({ message: "این دانشجو در درس‌های شما ثبت نشده است." });
     await pool.query(
       `INSERT INTO fingerprint_credentials
          (organization_id, student_id, user_id, credential_id, public_key, counter, transports, device_type, backed_up, aaguid)
@@ -1814,7 +2046,15 @@ app.get(
   "/api/fingerprint/credentials",
   authorize("admin", "teacher"),
   asyncRoute(async (req, res) => {
-    const credentials = await listFingerprintCredentials(req.user.org, req.query.studentId);
+    if (req.query.studentId && !(await teacherOwnsStudent(req, req.query.studentId)))
+      return res
+        .status(403)
+        .json({ message: "این دانشجو در درس‌های شما ثبت نشده است." });
+    const credentials = await listFingerprintCredentials(
+      req.user.org,
+      req.query.studentId,
+      isTeacher(req) ? req.user.sub : null,
+    );
     res.json({ credentials });
   }),
 );
@@ -1977,12 +2217,27 @@ app.post(
   authorize("admin", "teacher"),
   asyncRoute(async (req, res) => {
     const organizationId = req.user.org;
+    const params = [organizationId];
+    let scope = "";
+    if (isTeacher(req)) {
+      params.push(req.user.sub);
+      scope = ` AND fc.student_id IN (
+        SELECT cs.student_id FROM course_students cs
+          JOIN courses c ON c.id = cs.course_id
+         WHERE c.organization_id = $1 AND c.teacher_user_id = $2
+        UNION
+        SELECT ss.student_id FROM session_students ss
+          JOIN class_sessions s ON s.id = ss.session_id
+          JOIN courses c ON c.id = s.course_id
+         WHERE s.organization_id = $1 AND c.teacher_user_id = $2
+      )`;
+    }
     const { rows } = await pool.query(
       `SELECT fc.credential_id AS "credentialId", fc.student_id AS "studentId", fc.transports
          FROM fingerprint_credentials fc
-        WHERE fc.organization_id = $1 AND fc.revoked_at IS NULL
+        WHERE fc.organization_id = $1 AND fc.revoked_at IS NULL${scope}
         ORDER BY fc.created_at`,
-      [organizationId],
+      params,
     );
     const options = await generateAuthenticationOptions({
       rpID: webauthnRelyingParty.id,
@@ -2038,6 +2293,11 @@ app.post(
         .status(401)
         .json({ message: "اثر انگشت ثبت‌شدهٔ این سامانه برای تأیید حضور یافت نشد." });
     }
+    if (!(await teacherOwnsStudent(req, credentialRow.studentId))) {
+      return res
+        .status(403)
+        .json({ message: "این دانشجو در درس‌های شما ثبت نشده است." });
+    }
     const verification = await safeVerifyAuthentication({
       response,
       expectedChallenge: challenge,
@@ -2072,10 +2332,19 @@ app.delete(
   authorize("admin", "teacher"),
   asyncRoute(async (req, res) => {
     const { rows } = await pool.query(
-      `UPDATE fingerprint_credentials SET revoked_at = now() WHERE credential_id = $1 AND organization_id = $2 AND revoked_at IS NULL RETURNING id`,
+      `SELECT id, student_id AS "studentId" FROM fingerprint_credentials
+        WHERE credential_id = $1 AND organization_id = $2 AND revoked_at IS NULL`,
       [req.params.credentialId, req.user.org],
     );
     if (!rows[0]) return res.sendStatus(404);
+    if (!(await teacherOwnsStudent(req, rows[0].studentId)))
+      return res
+        .status(403)
+        .json({ message: "این دانشجو در درس‌های شما ثبت نشده است." });
+    await pool.query(
+      `UPDATE fingerprint_credentials SET revoked_at = now() WHERE id = $1`,
+      [rows[0].id],
+    );
     return res.json({ revoked: true });
   }),
 );
@@ -2109,11 +2378,27 @@ app.patch(
   asyncRoute(async (req, res) => {
     const result = await withTransaction(async (client) => {
       const existing = await client.query(
-        `SELECT a.status FROM attendance_records a JOIN class_sessions s ON s.id=a.session_id WHERE a.id=$1 AND s.organization_id=$2 FOR UPDATE`,
-        [req.params.attendanceId, req.user.org],
+        isTeacher(req)
+          ? `SELECT a.status
+               FROM attendance_records a
+               JOIN class_sessions s ON s.id = a.session_id
+               JOIN courses c ON c.id = s.course_id
+              WHERE a.id=$1 AND s.organization_id=$2 AND c.teacher_user_id=$3
+              FOR UPDATE OF a`
+          : `SELECT a.status FROM attendance_records a JOIN class_sessions s ON s.id=a.session_id WHERE a.id=$1 AND s.organization_id=$2 FOR UPDATE`,
+        isTeacher(req)
+          ? [req.params.attendanceId, req.user.org, req.user.sub]
+          : [req.params.attendanceId, req.user.org],
       );
       if (!existing.rows[0])
-        throw Object.assign(new Error("رکورد حضور پیدا نشد."), { status: 404 });
+        throw Object.assign(
+          new Error(
+            isTeacher(req)
+              ? "این رکورد حضور مربوط به درس‌های شما نیست."
+              : "رکورد حضور پیدا نشد.",
+          ),
+          { status: isTeacher(req) ? 403 : 404 },
+        );
       const { status, method, reason } = req.body;
       const { rows } = await client.query(
         `UPDATE attendance_records SET status=$1, method=$2, checked_at=CASE WHEN $1='unmarked' THEN NULL ELSE now() END, created_by=$3, updated_at=now() WHERE id=$4 RETURNING *`,
@@ -3275,14 +3560,24 @@ app.post(
         }
         const data = parsed.data;
         try {
+          const owner = await client.query(
+            `SELECT u.id
+               FROM users u
+              WHERE u.role = 'teacher' AND u.organization_id = $1
+                AND lower(btrim(u.display_name)) = lower(btrim($2))
+              LIMIT 2`,
+            [req.user.org, data.teacherName],
+          );
+          const teacherUserId = owner.rows.length === 1 ? owner.rows[0].id : null;
           await client.query(
-            `INSERT INTO courses (organization_id, code, title, teacher_name, room, weekday, start_time, end_time)
-             VALUES ($1,$2,$3,$4,$5,$6,$7,$8)`,
+            `INSERT INTO courses (organization_id, code, title, teacher_name, teacher_user_id, room, weekday, start_time, end_time)
+             VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)`,
             [
               req.user.org,
               data.code,
               data.title,
               data.teacherName,
+              teacherUserId,
               data.room || null,
               data.weekday || null,
               data.startTime || null,
@@ -3326,9 +3621,13 @@ function analyticsRange(input) {
 }
 
 async function analyticsScope(req) {
-  if (req.user.role !== "student") return { studentId: null };
+  if (req.user.role === "teacher") return { studentId: null, teacherUserId: req.user.sub };
+  if (req.user.role !== "student") return { studentId: null, teacherUserId: null };
   const student = await findStudentByUserId(req.user.sub, req.user.org);
-  return { studentId: student?.id || "00000000-0000-0000-0000-000000000000" };
+  return {
+    studentId: student?.id || "00000000-0000-0000-0000-000000000000",
+    teacherUserId: null,
+  };
 }
 
 app.get(
@@ -3336,13 +3635,17 @@ app.get(
   validate(analyticsSchema, "query"),
   asyncRoute(async (req, res) => {
     const { from, to } = analyticsRange(req.query);
-    const { studentId } = await analyticsScope(req);
+    const { studentId, teacherUserId } = await analyticsScope(req);
     const granularity = req.query.granularity || "day";
     const params = [req.user.org, from, to];
     let scope = "";
     if (studentId) {
       params.push(studentId);
       scope += ` AND ar.student_id=$${params.length}`;
+    }
+    if (teacherUserId) {
+      params.push(teacherUserId);
+      scope += ` AND c.teacher_user_id=$${params.length}`;
     }
     if (req.query.courseId) {
       params.push(req.query.courseId);
@@ -3358,6 +3661,7 @@ app.get(
               count(*) FILTER (WHERE ar.status='left_early')::int AS "leftEarly"
          FROM attendance_records ar
          JOIN class_sessions cs ON cs.id=ar.session_id
+         JOIN courses c ON c.id=cs.course_id
         WHERE cs.organization_id=$1 AND cs.session_date BETWEEN $2 AND $3${scope}
         GROUP BY 1 ORDER BY 1`,
       params,
@@ -3377,12 +3681,16 @@ app.get(
   ),
   asyncRoute(async (req, res) => {
     const { from, to } = analyticsRange(req.query);
-    const { studentId } = await analyticsScope(req);
+    const { studentId, teacherUserId } = await analyticsScope(req);
     const params = [req.user.org, from, to];
     let scope = "";
     if (studentId) {
       params.push(studentId);
       scope += ` AND ar.student_id=$${params.length}`;
+    }
+    if (teacherUserId) {
+      params.push(teacherUserId);
+      scope += ` AND c.teacher_user_id=$${params.length}`;
     }
     const { rows } = await pool.query(
       `SELECT c.id, c.title,
@@ -3411,6 +3719,12 @@ app.get(
     const date = /^\d{4}-\d{2}-\d{2}$/.test(req.query.date || "")
       ? req.query.date
       : new Date().toISOString().slice(0, 10);
+    const params = [req.user.org, date];
+    let scope = "";
+    if (isTeacher(req)) {
+      params.push(req.user.sub);
+      scope = " AND c.teacher_user_id=$3";
+    }
     const { rows } = await pool.query(
       `SELECT s.id, c.title AS "courseTitle", c.code AS "courseCode",
               to_char(s.session_date,'YYYY-MM-DD') AS date,
@@ -3428,10 +3742,10 @@ app.get(
          FROM class_sessions s
          JOIN courses c ON c.id=s.course_id
          LEFT JOIN attendance_records ar ON ar.session_id=s.id
-        WHERE s.organization_id=$1 AND s.session_date=$2
+        WHERE s.organization_id=$1 AND s.session_date=$2${scope}
         GROUP BY s.id, c.id
         ORDER BY s.start_time`,
-      [req.user.org, date],
+      params,
     );
     res.json(rows);
   }),
@@ -3456,6 +3770,10 @@ app.get(
     );
     const session = sessionRows[0];
     if (!session) return res.status(404).json({ message: "جلسه یافت نشد." });
+    if (isTeacher(req) && !(await teacherOwnsSession(req, req.params.sessionId)))
+      return res
+        .status(403)
+        .json({ message: "این جلسه به شما تخصیص نیافته است." });
 
     const params = [req.params.sessionId];
     let scope = "";
@@ -3484,6 +3802,10 @@ app.post(
   "/api/sessions/:sessionId/live/start",
   authorize("admin", "teacher"),
   asyncRoute(async (req, res) => {
+    if (!(await teacherOwnsSession(req, req.params.sessionId)))
+      return res
+        .status(403)
+        .json({ message: "این جلسه به شما تخصیص نیافته است." });
     const { rows } = await pool.query(
       `UPDATE class_sessions
           SET live_status='live', started_at=COALESCE(started_at, now()),
@@ -3503,6 +3825,10 @@ app.post(
   "/api/sessions/:sessionId/live/end",
   authorize("admin", "teacher"),
   asyncRoute(async (req, res) => {
+    if (!(await teacherOwnsSession(req, req.params.sessionId)))
+      return res
+        .status(403)
+        .json({ message: "این جلسه به شما تخصیص نیافته است." });
     const { rows } = await pool.query(
       `UPDATE class_sessions
           SET live_status='ended', ended_at=now(), updated_at=now()
