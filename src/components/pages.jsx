@@ -4740,6 +4740,483 @@ export function StudentPortal({
   );
 }
 
+export function Teachers({
+  teachers = [],
+  loading = false,
+  onRefresh,
+  onCreate,
+  onAddExisting,
+  onLookup,
+  onRemove,
+  onToggleActive,
+}) {
+  const [modalOpen, setModalOpen] = useState(false);
+  const [mode, setMode] = useState("new");
+  const [form, setForm] = useState({ fullName: "", email: "" });
+  const [lookup, setLookup] = useState(null);
+  const [lookupPending, setLookupPending] = useState(false);
+  const [pending, setPending] = useState(false);
+  const [formError, setFormError] = useState("");
+  const [created, setCreated] = useState(null);
+  const [copied, setCopied] = useState(false);
+
+  const homeCount = teachers.filter((teacher) => teacher.isHome).length;
+  const guestCount = teachers.length - homeCount;
+
+  function openModal(nextMode) {
+    setMode(nextMode);
+    setForm({ fullName: "", email: "" });
+    setLookup(null);
+    setFormError("");
+    setModalOpen(true);
+  }
+
+  function closeModal() {
+    if (pending || lookupPending) return;
+    setModalOpen(false);
+    setLookup(null);
+    setFormError("");
+  }
+
+  function switchMode(nextMode) {
+    setMode(nextMode);
+    setLookup(null);
+    setFormError("");
+  }
+
+  function validEmail(value) {
+    return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(value);
+  }
+
+  async function runLookup() {
+    const email = form.email.trim();
+    if (!validEmail(email)) {
+      setFormError("ایمیل معتبر وارد کنید.");
+      return;
+    }
+    setFormError("");
+    setLookupPending(true);
+    try {
+      const result = await onLookup(email);
+      setLookup(result?.teacher || null);
+    } catch (error) {
+      setLookup(null);
+      setFormError(error.message || "بررسی ایمیل انجام نشد.");
+    } finally {
+      setLookupPending(false);
+    }
+  }
+
+  async function submit() {
+    const email = form.email.trim();
+    if (!validEmail(email)) {
+      setFormError("ایمیل معتبر وارد کنید.");
+      return;
+    }
+    setFormError("");
+    setPending(true);
+    try {
+      if (mode === "new") {
+        if (form.fullName.trim().length < 2) {
+          setFormError("نام و نام خانوادگی استاد را وارد کنید.");
+          return;
+        }
+        const result = await onCreate({
+          fullName: form.fullName.trim(),
+          email,
+        });
+        setModalOpen(false);
+        setForm({ fullName: "", email: "" });
+        setCreated(result);
+      } else {
+        if (!lookup) {
+          setFormError("ابتدا ایمیل را بررسی کنید.");
+          return;
+        }
+        if (lookup.isHome || lookup.isMember) {
+          setFormError("این استاد از قبل عضو دانشکدهٔ شماست.");
+          return;
+        }
+        if (!lookup.isActive) {
+          setFormError("حساب این استاد غیرفعال است.");
+          return;
+        }
+        await onAddExisting(lookup.email);
+        setModalOpen(false);
+        setLookup(null);
+        setForm({ fullName: "", email: "" });
+      }
+    } catch (error) {
+      setFormError(error.message || "عملیات انجام نشد.");
+    } finally {
+      setPending(false);
+    }
+  }
+
+  async function copyCredentials() {
+    if (!created) return;
+    const text = `ایمیل: ${created.teacher.email}\nرمز موقت: ${created.temporaryPassword}`;
+    try {
+      await navigator.clipboard.writeText(text);
+      setCopied(true);
+    } catch {
+      setCopied(false);
+    }
+  }
+
+  return (
+    <>
+      <PanelTitle
+        eyebrow="مدیریت کاربران"
+        title="اساتید دانشکده"
+        description="استاد جدید بسازید یا استاد موجود در دانشکده‌های دیگر را به این دانشکده اضافه کنید."
+        action={
+          <div className="student-actions-cell">
+            <button className="btn btn-primary" onClick={() => openModal("new")}>
+              <Icon name="bi-plus-lg" /> افزودن استاد
+            </button>
+            <button className="btn btn-light-outline" onClick={onRefresh}>
+              <Icon name="bi-arrow-clockwise" /> بروزرسانی
+            </button>
+          </div>
+        }
+      />
+
+      <div className="stat-grid">
+        <StatCard
+          icon="bi-person-workspace"
+          label="کل اساتید دانشکده"
+          value={teachers.length.toLocaleString("fa-IR")}
+          detail="استاد فعال و غیرفعال"
+          color="blue"
+        />
+        <StatCard
+          icon="bi-house-check"
+          label="دانشکدهٔ اصلی"
+          value={homeCount.toLocaleString("fa-IR")}
+          detail="حساب متعلق به این دانشکده"
+          color="green"
+        />
+        <StatCard
+          icon="bi-people"
+          label="عضو مهمان"
+          value={guestCount.toLocaleString("fa-IR")}
+          detail="افزوده‌شده از دانشکده‌های دیگر"
+          color="orange"
+        />
+      </div>
+
+      <div className="content-card data-card">
+        {loading && !teachers.length ? (
+          <SkeletonTable rows={4} columns={4} />
+        ) : teachers.length ? (
+          <div className="table-responsive">
+            <table className="table custom-table align-middle">
+              <thead>
+                <tr>
+                  <th>نام و نام خانوادگی</th>
+                  <th>ایمیل (نام کاربری)</th>
+                  <th>نوع عضویت</th>
+                  <th>وضعیت</th>
+                  <th>عملیات</th>
+                </tr>
+              </thead>
+              <tbody>
+                {teachers.map((teacher) => (
+                  <tr key={teacher.id}>
+                    <td>
+                      <strong>{teacher.fullName}</strong>
+                    </td>
+                    <td dir="ltr" style={{ textAlign: "right" }}>
+                      {teacher.email}
+                    </td>
+                    <td>
+                      <Badge tone={teacher.isHome ? "success" : "warning"}>
+                        {teacher.isHome ? "دانشکدهٔ اصلی" : "عضو مهمان"}
+                      </Badge>
+                    </td>
+                    <td>
+                      <Badge tone={teacher.isActive ? "success" : "danger"}>
+                        {teacher.isActive ? "فعال" : "غیرفعال"}
+                      </Badge>
+                    </td>
+                    <td>
+                      <div className="student-actions-cell">
+                        {!teacher.isHome && (
+                          <button
+                            className="btn btn-light-outline"
+                            onClick={() => {
+                              if (
+                                window.confirm(
+                                  `استاد «${teacher.fullName}» از این دانشکده حذف شود؟`,
+                                )
+                              )
+                                onRemove(teacher.id);
+                            }}
+                          >
+                            <Icon name="bi-person-dash" /> حذف عضویت
+                          </button>
+                        )}
+                        {teacher.isHome && teacher.otherFaculties === 0 && (
+                          <button
+                            className="btn btn-light-outline"
+                            onClick={() => {
+                              if (
+                                teacher.isActive &&
+                                !window.confirm(
+                                  `حساب استاد «${teacher.fullName}» غیرفعال شود؟ ورود او به سامانه مسدود می‌شود.`,
+                                )
+                              )
+                                return;
+                              onToggleActive(teacher.id, !teacher.isActive);
+                            }}
+                          >
+                            <Icon
+                              name={
+                                teacher.isActive
+                                  ? "bi-person-slash"
+                                  : "bi-person-check"
+                              }
+                            />
+                            {teacher.isActive ? "غیرفعال‌سازی" : "فعال‌سازی"}
+                          </button>
+                        )}
+                        {teacher.isHome && teacher.otherFaculties > 0 && (
+                          <span className="page-note">
+                            عضو {teacher.otherFaculties.toLocaleString("fa-IR")}{" "}
+                            دانشکدهٔ دیگر
+                          </span>
+                        )}
+                      </div>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        ) : (
+          <EmptyState
+            icon="bi-person-workspace"
+            title="استادی ثبت نشده است"
+            text="با دکمهٔ «افزودن استاد» اولین استاد این دانشکده را بسازید."
+          />
+        )}
+      </div>
+
+      {modalOpen && (
+        <div
+          className="modal-backdrop-custom"
+          role="presentation"
+          onMouseDown={(event) => {
+            if (event.target === event.currentTarget) closeModal();
+          }}
+        >
+          <section
+            className="custom-modal"
+            role="dialog"
+            aria-modal="true"
+            style={{ maxWidth: 520 }}
+          >
+            <div className="modal-head">
+              <div>
+                <div className="eyebrow">مدیریت اساتید</div>
+                <h3>افزودن استاد به دانشکده</h3>
+              </div>
+              <button
+                className="icon-button"
+                type="button"
+                disabled={pending || lookupPending}
+                onClick={closeModal}
+              >
+                <Icon name="bi-x-lg" />
+              </button>
+            </div>
+
+            <div className="student-actions-cell" style={{ marginBottom: 14 }}>
+              <button
+                type="button"
+                className={`btn ${mode === "new" ? "btn-primary" : "btn-light-outline"}`}
+                onClick={() => switchMode("new")}
+              >
+                <Icon name="bi-person-plus" /> استاد جدید
+              </button>
+              <button
+                type="button"
+                className={`btn ${mode === "existing" ? "btn-primary" : "btn-light-outline"}`}
+                onClick={() => switchMode("existing")}
+              >
+                <Icon name="bi-person-check" /> افزودن استاد موجود
+              </button>
+            </div>
+
+            {mode === "new" ? (
+              <p className="page-note">
+                رمز عبور توسط سامانه ساخته می‌شود و فقط یک‌بار به شما نمایش داده
+                می‌شود؛ آن را به استاد تحویل دهید.
+              </p>
+            ) : (
+              <p className="page-note">
+                ایمیل استاد را بررسی کنید؛ اگر در دانشکدهٔ دیگری حساب داشته باشد،
+                همان حساب و رمز قبلی به این دانشکده اضافه می‌شود.
+              </p>
+            )}
+
+            <div className="course-form-grid" style={{ marginTop: 10 }}>
+              {mode === "new" && (
+                <label className="form-label">
+                  نام و نام خانوادگی
+                  <input
+                    className="form-control"
+                    value={form.fullName}
+                    disabled={pending}
+                    onChange={(event) =>
+                      setForm((current) => ({
+                        ...current,
+                        fullName: event.target.value,
+                      }))
+                    }
+                    placeholder="مثلاً محمد رضایی"
+                  />
+                </label>
+              )}
+              <label className="form-label">
+                ایمیل (نام کاربری)
+                <input
+                  className="form-control"
+                  type="email"
+                  dir="ltr"
+                  value={form.email}
+                  disabled={pending || lookupPending}
+                  onChange={(event) => {
+                    setForm((current) => ({
+                      ...current,
+                      email: event.target.value,
+                    }));
+                    setLookup(null);
+                  }}
+                  placeholder="teacher@example.com"
+                />
+              </label>
+            </div>
+
+            {mode === "existing" && (
+              <div style={{ marginTop: 8 }}>
+                <button
+                  type="button"
+                  className="btn btn-light-outline"
+                  disabled={lookupPending || pending || !form.email.trim()}
+                  onClick={runLookup}
+                >
+                  <Icon name="bi-search" />{" "}
+                  {lookupPending ? "در حال بررسی…" : "بررسی ایمیل"}
+                </button>
+                {lookup && (
+                  <div className="page-note" style={{ marginTop: 10 }}>
+                    <strong>{lookup.fullName}</strong> · دانشکدهٔ اصلی:{" "}
+                    {lookup.homeFaculty}
+                    {lookup.isHome || lookup.isMember ? (
+                      <span> · از قبل عضو این دانشکده است</span>
+                    ) : null}
+                    {!lookup.isActive ? <span> · حساب غیرفعال است</span> : null}
+                  </div>
+                )}
+                {lookup === null && !lookupPending && formError === "" && (
+                  <span className="page-note">برای ادامه، ایمیل را بررسی کنید.</span>
+                )}
+              </div>
+            )}
+
+            {formError && (
+              <p className="login-error" role="alert" style={{ marginTop: 10 }}>
+                {formError}
+              </p>
+            )}
+
+            <div className="modal-actions" style={{ marginTop: 14 }}>
+              <button
+                className="btn btn-primary"
+                disabled={
+                  pending ||
+                  lookupPending ||
+                  (mode === "existing" &&
+                    (!lookup || lookup.isHome || lookup.isMember || !lookup.isActive))
+                }
+                onClick={submit}
+              >
+                {pending
+                  ? "در حال ذخیره…"
+                  : mode === "new"
+                    ? "ساخت استاد"
+                    : "افزودن به دانشکده"}
+              </button>
+              <button
+                className="btn btn-light"
+                disabled={pending || lookupPending}
+                onClick={closeModal}
+              >
+                انصراف
+              </button>
+            </div>
+          </section>
+        </div>
+      )}
+
+      {created && (
+        <div
+          className="modal-backdrop-custom"
+          role="presentation"
+          onMouseDown={(event) => {
+            if (event.target === event.currentTarget) setCreated(null);
+          }}
+        >
+          <section
+            className="custom-modal"
+            role="dialog"
+            aria-modal="true"
+            style={{ maxWidth: 480 }}
+          >
+            <div className="modal-head">
+              <div>
+                <div className="eyebrow">استاد ساخته شد</div>
+                <h3>اطلاعات ورود استاد</h3>
+              </div>
+              <button
+                className="icon-button"
+                type="button"
+                onClick={() => setCreated(null)}
+              >
+                <Icon name="bi-x-lg" />
+              </button>
+            </div>
+            <p className="page-note">
+              این رمز فقط یک‌بار نمایش داده می‌شود. آن را به استاد تحویل دهید تا از
+              صفحهٔ ورود، دانشکدهٔ مربوطه را انتخاب کند.
+            </p>
+            <div className="teacher-credential">
+              <div>
+                <span>نام کاربری</span>
+                <strong dir="ltr">{created.teacher.email}</strong>
+              </div>
+              <div>
+                <span>رمز موقت</span>
+                <strong dir="ltr">{created.temporaryPassword}</strong>
+              </div>
+            </div>
+            <div className="modal-actions" style={{ marginTop: 14 }}>
+              <button className="btn btn-primary" onClick={copyCredentials}>
+                <Icon name="bi-clipboard" /> {copied ? "کپی شد" : "کپی اطلاعات"}
+              </button>
+              <button className="btn btn-light" onClick={() => setCreated(null)}>
+                بستن
+              </button>
+            </div>
+          </section>
+        </div>
+      )}
+    </>
+  );
+}
+
 export function Registrations({ registrations = [], onApprove, onReject, onRefresh }) {
   return (
     <>

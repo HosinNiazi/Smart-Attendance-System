@@ -132,7 +132,7 @@ function authorize(...allowed) {
       ? next()
       : res.status(403).json({ message: "دسترسی کافی نیست." });
 }
-function authenticate(req, res, next) {
+async function authenticate(req, res, next) {
   const token = req.get("authorization")?.replace(/^Bearer\s+/i, "");
   if (!token)
     return res.status(401).json({ message: "ورود به سامانه لازم است." });
@@ -141,10 +141,41 @@ function authenticate(req, res, next) {
       issuer: "hozorban-api",
       audience: "hozorban-web",
     });
-    return next();
   } catch {
     return res.status(401).json({ message: "نشست معتبر نیست." });
   }
+  // Teachers can be removed from a faculty or deactivated while an old token is
+  // still valid. Re-check membership on every request so revocation is immediate.
+  if (req.user.role === "teacher") {
+    try {
+      const { rows } = await pool.query(
+        `SELECT u.must_change_password
+           FROM users u
+          WHERE u.id = $1 AND u.is_active = true
+            AND (u.organization_id = $2 OR EXISTS (
+                  SELECT 1 FROM user_faculties uf
+                   WHERE uf.user_id = u.id AND uf.organization_id = $2))`,
+        [req.user.sub, req.user.org],
+      );
+      if (!rows[0])
+        return res
+          .status(401)
+          .json({ message: "دسترسی شما به این دانشکده معتبر نیست." });
+      // A temporary password may only be used to reach the change-password
+      // endpoint. Everything else stays blocked until a new password is set.
+      const currentPath = req.originalUrl.split("?")[0];
+      if (
+        rows[0].must_change_password &&
+        currentPath !== "/api/auth/change-password"
+      )
+        return res.status(403).json({
+          message: "برای ادامه ابتدا رمز عبور اولیه را تغییر دهید.",
+        });
+    } catch (error) {
+      return next(error);
+    }
+  }
+  return next();
 }
 function validate(schema, source = "body") {
   return (req, res, next) => {
@@ -265,6 +296,7 @@ function publicUser(row) {
     role: row.role,
     studentId: row.student_id,
     avatarUrl: row.avatar_url,
+    mustChangePassword: row.must_change_password === true,
   };
 }
 
@@ -314,6 +346,18 @@ async function authPayload(user, organizationId = user.organization_id) {
     token: tokenFor(user, organizationId),
     user: { ...publicUser(user), faculty, faculties },
   };
+}
+
+// Readable one-time password for a teacher created by a faculty admin. The
+// admin never chooses it; it is shown once in the UI and only the hash is stored.
+function generateTemporaryPassword(length = 12) {
+  const alphabet = "ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz23456789";
+  const bytes = crypto.randomBytes(length);
+  let value = "";
+  for (let index = 0; index < length; index += 1) {
+    value += alphabet[bytes[index] % alphabet.length];
+  }
+  return value;
 }
 const id = z.string().uuid();
 const studentSchema = z.object({
@@ -674,6 +718,291 @@ app.post(
             : "این حساب به دانشکدهٔ انتخاب‌شده تعلق ندارد.",
       });
     res.json(await authPayload(user, req.body.facultyId));
+  }),
+);
+
+app.post(
+  "/api/auth/change-password",
+  validate(
+    z.object({
+      currentPassword: z.string().min(1).max(128),
+      newPassword: z
+        .string()
+        .min(8, "رمز عبور جدید باید حداقل ۸ کاراکتر باشد.")
+        .max(128),
+    }),
+  ),
+  asyncRoute(async (req, res) => {
+    const { currentPassword, newPassword } = req.body;
+    const { rows } = await pool.query(
+      "SELECT * FROM users WHERE id = $1 AND is_active = true",
+      [req.user.sub],
+    );
+    const user = rows[0];
+    if (!user)
+      return res.status(401).json({ message: "ورود به سامانه لازم است." });
+    const valid = await bcrypt.compare(currentPassword, user.password_hash);
+    if (!valid)
+      return res.status(400).json({ message: "رمز عبور فعلی درست نیست." });
+    const reused = await bcrypt.compare(newPassword, user.password_hash);
+    if (reused)
+      return res
+        .status(400)
+        .json({ message: "رمز عبور جدید باید با رمز فعلی متفاوت باشد." });
+
+    const passwordHash = await bcrypt.hash(newPassword, 10);
+    const updated = await pool.query(
+      `UPDATE users
+          SET password_hash = $1, must_change_password = false, updated_at = now()
+        WHERE id = $2
+        RETURNING *`,
+      [passwordHash, user.id],
+    );
+    res.json({ ok: true, user: publicUser(updated.rows[0]) });
+  }),
+);
+
+app.get(
+  "/api/teachers",
+  authorize("admin"),
+  asyncRoute(async (req, res) => {
+    const { rows } = await pool.query(
+      `SELECT u.id,
+              u.display_name AS "fullName",
+              u.email,
+              u.is_active AS "isActive",
+              (u.organization_id = $1) AS "isHome",
+              (SELECT count(*)::int
+                 FROM user_faculties uf2
+                WHERE uf2.user_id = u.id AND uf2.organization_id <> $1) AS "otherFaculties",
+              u.created_at AS "createdAt"
+         FROM users u
+        WHERE u.role = 'teacher'
+          AND (u.organization_id = $1 OR EXISTS (
+                SELECT 1 FROM user_faculties uf
+                 WHERE uf.user_id = u.id AND uf.organization_id = $1))
+        ORDER BY (u.organization_id = $1) DESC, u.display_name`,
+      [req.user.org],
+    );
+    res.json(rows);
+  }),
+);
+
+app.get(
+  "/api/teachers/lookup",
+  authorize("admin"),
+  validate(
+    z.object({ email: z.string().trim().email().max(254) }),
+    "query",
+  ),
+  asyncRoute(async (req, res) => {
+    const { rows } = await pool.query(
+      `SELECT u.id,
+              u.display_name AS "fullName",
+              u.email,
+              u.is_active AS "isActive",
+              (u.organization_id = $2) AS "isHome",
+              EXISTS (
+                SELECT 1 FROM user_faculties uf
+                 WHERE uf.user_id = u.id AND uf.organization_id = $2
+              ) AS "isMember",
+              o.name AS "homeFaculty"
+         FROM users u
+         JOIN organizations o ON o.id = u.organization_id
+        WHERE lower(u.email) = lower($1) AND u.role = 'teacher'
+        ORDER BY u.created_at
+        LIMIT 1`,
+      [req.query.email, req.user.org],
+    );
+    res.json({ teacher: rows[0] || null });
+  }),
+);
+
+app.post(
+  "/api/teachers",
+  authorize("admin"),
+  validate(
+    z.object({
+      fullName: z.string().trim().min(2).max(120),
+      email: z.string().trim().email().max(254),
+    }),
+  ),
+  asyncRoute(async (req, res) => {
+    const { fullName, email } = req.body;
+    const existing = await pool.query(
+      "SELECT role FROM users WHERE lower(email) = lower($1) LIMIT 1",
+      [email],
+    );
+    if (existing.rows[0]) {
+      return res.status(409).json({
+        message:
+          existing.rows[0].role === "teacher"
+            ? "این ایمیل قبلاً برای یک استاد ثبت شده است؛ از «افزودن استاد موجود» استفاده کنید."
+            : "این ایمیل قبلاً برای حساب دیگری در سامانه ثبت شده است.",
+      });
+    }
+
+    const temporaryPassword = generateTemporaryPassword();
+    const passwordHash = await bcrypt.hash(temporaryPassword, 10);
+    const client = await pool.connect();
+    try {
+      await client.query("BEGIN");
+      const created = await client.query(
+        `INSERT INTO users (organization_id, email, password_hash, display_name, role, is_active, must_change_password)
+         VALUES ($1,$2,$3,$4,'teacher',true,true)
+         RETURNING id, display_name AS "fullName", email, is_active AS "isActive", created_at AS "createdAt"`,
+        [req.user.org, email, passwordHash, fullName],
+      );
+      await client.query(
+        `INSERT INTO user_faculties (user_id, organization_id, added_by)
+         VALUES ($1,$2,$3)
+         ON CONFLICT DO NOTHING`,
+        [created.rows[0].id, req.user.org, req.user.sub],
+      );
+      await client.query("COMMIT");
+      res.status(201).json({
+        teacher: {
+          ...created.rows[0],
+          isHome: true,
+          otherFaculties: 0,
+        },
+        temporaryPassword,
+      });
+    } catch (error) {
+      await client.query("ROLLBACK");
+      if (error.code === "23505") {
+        return res.status(409).json({
+          message: "این ایمیل هم‌زمان توسط مدیر دیگری ثبت شده است؛ صفحه را بروزرسانی کنید.",
+        });
+      }
+      throw error;
+    } finally {
+      client.release();
+    }
+  }),
+);
+
+app.post(
+  "/api/teachers/add-existing",
+  authorize("admin"),
+  validate(z.object({ email: z.string().trim().email().max(254) })),
+  asyncRoute(async (req, res) => {
+    const { rows } = await pool.query(
+      `SELECT id, display_name AS "fullName", email, organization_id, is_active
+         FROM users
+        WHERE lower(email) = lower($1) AND role = 'teacher'
+        ORDER BY created_at
+        LIMIT 1`,
+      [req.body.email],
+    );
+    const teacher = rows[0];
+    if (!teacher)
+      return res.status(404).json({
+        message: "استادی با این ایمیل یافت نشد؛ از گزینهٔ «استاد جدید» استفاده کنید.",
+      });
+    if (!teacher.is_active)
+      return res.status(409).json({ message: "حساب این استاد غیرفعال است." });
+    if (teacher.organization_id === req.user.org)
+      return res.status(409).json({ message: "این استاد از قبل در دانشکدهٔ شماست." });
+
+    const inserted = await pool.query(
+      `INSERT INTO user_faculties (user_id, organization_id, added_by)
+       VALUES ($1,$2,$3)
+       ON CONFLICT DO NOTHING
+       RETURNING user_id`,
+      [teacher.id, req.user.org, req.user.sub],
+    );
+    if (!inserted.rowCount)
+      return res
+        .status(409)
+        .json({ message: "این استاد از قبل عضو این دانشکده است." });
+
+    res.status(201).json({
+      teacher: {
+        id: teacher.id,
+        fullName: teacher.fullName,
+        email: teacher.email,
+        isActive: true,
+        isHome: false,
+        otherFaculties: 0,
+      },
+    });
+  }),
+);
+
+app.delete(
+  "/api/teachers/:userId",
+  authorize("admin"),
+  asyncRoute(async (req, res) => {
+    const parsed = id.safeParse(req.params.userId);
+    if (!parsed.success)
+      return res.status(400).json({ message: "شناسهٔ استاد معتبر نیست." });
+    const { rows } = await pool.query(
+      "SELECT id, organization_id FROM users WHERE id = $1 AND role = 'teacher'",
+      [parsed.data],
+    );
+    const teacher = rows[0];
+    if (!teacher)
+      return res.status(404).json({ message: "استاد یافت نشد." });
+    if (teacher.organization_id === req.user.org)
+      return res.status(409).json({
+        message:
+          "این استاد دانشکدهٔ اصلی شماست و حذف عضویت آن مجاز نیست؛ در صورت نیاز حساب را غیرفعال کنید.",
+      });
+
+    const removed = await pool.query(
+      `DELETE FROM user_faculties
+        WHERE user_id = $1 AND organization_id = $2`,
+      [teacher.id, req.user.org],
+    );
+    if (!removed.rowCount)
+      return res
+        .status(404)
+        .json({ message: "این استاد عضو دانشکدهٔ شما نیست." });
+    res.status(204).end();
+  }),
+);
+
+app.patch(
+  "/api/teachers/:userId/status",
+  authorize("admin"),
+  validate(z.object({ isActive: z.boolean() })),
+  asyncRoute(async (req, res) => {
+    const parsed = id.safeParse(req.params.userId);
+    if (!parsed.success)
+      return res.status(400).json({ message: "شناسهٔ استاد معتبر نیست." });
+    const { rows } = await pool.query(
+      "SELECT id, organization_id FROM users WHERE id = $1 AND role = 'teacher'",
+      [parsed.data],
+    );
+    const teacher = rows[0];
+    if (!teacher)
+      return res.status(404).json({ message: "استاد یافت نشد." });
+    if (teacher.organization_id !== req.user.org)
+      return res.status(403).json({
+        message:
+          "فقط مدیر دانشکدهٔ اصلی استاد می‌تواند وضعیت حساب او را تغییر دهد.",
+      });
+
+    if (!req.body.isActive) {
+      const others = await pool.query(
+        `SELECT count(*)::int AS count
+           FROM user_faculties
+          WHERE user_id = $1 AND organization_id <> $2`,
+        [teacher.id, req.user.org],
+      );
+      if (others.rows[0].count > 0)
+        return res.status(409).json({
+          message:
+            "این استاد در دانشکده‌های دیگر عضو است؛ ابتدا عضویت‌های دیگر حذف شوند.",
+        });
+    }
+
+    await pool.query(
+      "UPDATE users SET is_active = $1, updated_at = now() WHERE id = $2",
+      [req.body.isActive, teacher.id],
+    );
+    res.json({ ok: true, isActive: req.body.isActive });
   }),
 );
 

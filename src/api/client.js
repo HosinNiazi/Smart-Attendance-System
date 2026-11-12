@@ -56,6 +56,41 @@ export async function switchFaculty(facultyId) {
   return result;
 }
 
+export async function changePassword(currentPassword, newPassword) {
+  const result = await api('/auth/change-password', {
+    method: 'POST',
+    body: JSON.stringify({ currentPassword, newPassword }),
+  });
+  setApiUser(result.user);
+  return result;
+}
+
+/* ---- Teacher management (faculty admin only) ---- */
+export function fetchTeachers() {
+  return api('/teachers');
+}
+export function lookupTeacher(email) {
+  return api(withQuery('/teachers/lookup', { email }));
+}
+export function createTeacher(payload) {
+  return api('/teachers', { method: 'POST', body: JSON.stringify(payload) });
+}
+export function addExistingTeacher(email) {
+  return api('/teachers/add-existing', {
+    method: 'POST',
+    body: JSON.stringify({ email }),
+  });
+}
+export function removeTeacherFromFaculty(userId) {
+  return api(`/teachers/${encodeURIComponent(userId)}`, { method: 'DELETE' });
+}
+export function setTeacherActive(userId, isActive) {
+  return api(`/teachers/${encodeURIComponent(userId)}/status`, {
+    method: 'PATCH',
+    body: JSON.stringify({ isActive }),
+  });
+}
+
 export function browserSnapshot() {
   const read = (key, fallback) => {
     try { const value = localStorage.getItem(key); return value ? JSON.parse(value) : fallback; }

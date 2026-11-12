@@ -966,3 +966,15 @@ html[lang="en"] body,html[lang="en"] button,html[lang="en"] input,html[lang="en"
 :root[data-theme="dark"] .workspace-option{color:#cbd5e1}
 :root[data-theme="dark"] .workspace-option:hover:not(:disabled),:root[data-theme="dark"] .workspace-option:focus-visible,:root[data-theme="dark"] .workspace-option.is-current{background:#202d48;color:#aebaff}
 :root[data-theme="dark"] .workspace-toggle:hover:not(:disabled){background:#202d48;color:#aebaff}
+
+/* Teacher management: one-time credentials box */
+.teacher-credential{display:grid;gap:10px;margin:14px 0 4px;padding:14px;border:1px dashed #dbe3f5;border-radius:12px;background:#f8faff}
+.teacher-credential>div{display:flex;align-items:center;justify-content:space-between;gap:12px}
+.teacher-credential span{color:var(--muted);font-size:11px}
+.teacher-credential strong{font-family:ui-monospace,Consolas,monospace;font-size:12px;letter-spacing:.4px}
+:root[data-theme="dark"] .teacher-credential{background:#141f2f;border-color:#33415a}
+
+/* Forced initial password change (admin-created teachers) */
+.forced-password-backdrop{z-index:95}
+.forced-password-lock{width:38px;height:38px;border-radius:11px;background:#eef3ff;color:var(--primary);display:inline-flex;align-items:center;justify-content:center;font-size:18px}
+:root[data-theme="dark"] .forced-password-lock{background:#1b2a48;color:#8fa7ff}

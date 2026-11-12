@@ -16,6 +16,7 @@ import {
   Settings,
   StudentPortal,
   Students,
+  Teachers,
   Tickets,
 } from "./components/pages.jsx";
 import { VoiceAttendance } from "./voice/VoiceAttendance.jsx";
@@ -32,11 +33,19 @@ import {
   fetchRegistrations,
   fetchFaculties,
   switchFaculty,
+  fetchTeachers,
+  lookupTeacher,
+  createTeacher,
+  addExistingTeacher,
+  removeTeacherFromFaculty,
+  setTeacherActive,
   approveRegistration,
   rejectRegistration,
   fetchBootstrap,
   finalizeSession as finalizeSessionApi,
   getApiUser,
+  changePassword,
+  clearApiToken,
   migrateBrowserSnapshot,
   saveSettingsPayload,
   saveVoiceSample,
@@ -121,6 +130,7 @@ const navGroups = [
     items: [
       { id: "profile", label: "پروفایل من", icon: "bi-person-circle" },
       { id: "registrations", label: "پذیرش درخواست‌ها", icon: "bi-person-check" },
+      { id: "teachers", label: "اساتید", icon: "bi-person-workspace" },
       { id: "tickets", label: "تیکت‌ها", icon: "bi-ticket" },
       { id: "settings", label: "تنظیمات", icon: "bi-gear" },
     ],
@@ -360,6 +370,135 @@ function FacultySelect({ id, value, onChange, options = [], disabled = false }) 
   );
 }
 
+// Non-dismissible dialog shown when an admin-created teacher signs in with the
+// temporary password. The teacher must set a new password before using the panel.
+function ForcedPasswordChange({ user, currentPassword = "", onDone, onLogout }) {
+  const [newPassword, setNewPassword] = useState("");
+  const [confirmPassword, setConfirmPassword] = useState("");
+  const [oldPassword, setOldPassword] = useState(currentPassword);
+  const [error, setError] = useState("");
+  const [pending, setPending] = useState(false);
+
+  const needsCurrentPassword = !currentPassword;
+
+  async function submit(event) {
+    event.preventDefault();
+    if (newPassword.length < 8) {
+      setError("رمز عبور جدید باید حداقل ۸ کاراکتر باشد.");
+      return;
+    }
+    if (newPassword !== confirmPassword) {
+      setError("تکرار رمز عبور با رمز جدید یکسان نیست.");
+      return;
+    }
+    if (needsCurrentPassword && !oldPassword) {
+      setError("رمز عبور فعلی (موقت) را وارد کنید.");
+      return;
+    }
+    setError("");
+    setPending(true);
+    try {
+      const result = await changePassword(oldPassword, newPassword);
+      onDone(result);
+    } catch (apiError) {
+      setError(apiError.message || "تغییر رمز عبور انجام نشد.");
+    } finally {
+      setPending(false);
+    }
+  }
+
+  return (
+    <div className="modal-backdrop-custom forced-password-backdrop" role="presentation">
+      <section
+        className="custom-modal"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="forced-password-title"
+        style={{ maxWidth: 460 }}
+      >
+        <div className="modal-head">
+          <div>
+            <div className="eyebrow">ورود اولیه</div>
+            <h3 id="forced-password-title">تعیین رمز عبور جدید</h3>
+          </div>
+          <span className="forced-password-lock" aria-hidden="true">
+            <Icon name="bi-shield-lock" />
+          </span>
+        </div>
+        <p className="page-note">
+          شما با رمز موقت وارد شده‌اید. برای ادامه، یک رمز عبور شخصی تعیین کنید.
+          این مرحله اجباری است و تا تکمیل آن دسترسی به پنل امکان‌پذیر نیست.
+        </p>
+        <form onSubmit={submit} style={{ marginTop: 12 }}>
+          {needsCurrentPassword && (
+            <label className="form-label">
+              رمز عبور فعلی (موقت)
+              <input
+                className="form-control"
+                type="password"
+                dir="ltr"
+                autoComplete="current-password"
+                value={oldPassword}
+                disabled={pending}
+                onChange={(event) => setOldPassword(event.target.value)}
+              />
+            </label>
+          )}
+          <label className="form-label">
+            رمز عبور جدید
+            <input
+              className="form-control"
+              type="password"
+              dir="ltr"
+              autoComplete="new-password"
+              value={newPassword}
+              disabled={pending}
+              onChange={(event) => setNewPassword(event.target.value)}
+              placeholder="حداقل ۸ کاراکتر"
+            />
+          </label>
+          <label className="form-label">
+            تکرار رمز عبور جدید
+            <input
+              className="form-control"
+              type="password"
+              dir="ltr"
+              autoComplete="new-password"
+              value={confirmPassword}
+              disabled={pending}
+              onChange={(event) => setConfirmPassword(event.target.value)}
+            />
+          </label>
+          {error && (
+            <p className="login-error" role="alert">
+              {error}
+            </p>
+          )}
+          <div className="modal-actions" style={{ marginTop: 14 }}>
+            <button className="btn btn-primary" type="submit" disabled={pending}>
+              {pending ? "در حال ذخیره…" : "ذخیرهٔ رمز و ورود"}
+            </button>
+            <button
+              className="btn btn-light"
+              type="button"
+              disabled={pending}
+              onClick={onLogout}
+            >
+              خروج
+            </button>
+          </div>
+        </form>
+        {user?.email && (
+          <p className="page-note" style={{ marginTop: 12 }}>
+            حساب:{" "}
+            <strong dir="ltr">{user.email}</strong>
+          </p>
+        )}
+      </section>
+    </div>
+  );
+}
+
 function readStoredValue(key, fallback) {
   try {
     const value = localStorage.getItem(key);
@@ -441,6 +580,8 @@ export default function App() {
       });
   });
   const [registrations, setRegistrations] = useState([]);
+  const [teachers, setTeachers] = useState([]);
+  const [teachersLoading, setTeachersLoading] = useState(false);
   const [attendance, setAttendance] = useState(() => {
     const saved = readStoredValue("smart-attendance:attendance", null);
     return Array.isArray(saved)
@@ -509,6 +650,7 @@ export default function App() {
   const [loginPassword, setLoginPassword] = useState("");
   const [loginError, setLoginError] = useState("");
   const [loginPending, setLoginPending] = useState(false);
+  const [forcedPasswordChange, setForcedPasswordChange] = useState(null);
   const [faculties, setFaculties] = useState([]);
   const [authUser, setAuthUser] = useState(() => getApiUser());
   const [facultyId, setFacultyId] = useState(
@@ -642,6 +784,11 @@ export default function App() {
     return () => clearInterval(timer);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [login]);
+  useEffect(() => {
+    if (login || loginRole !== "admin") return;
+    refreshTeachers();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [login, loginRole]);
   const filteredStudents = useMemo(
     () =>
       students.filter(
@@ -750,6 +897,18 @@ export default function App() {
       notify(error.message || "دریافت درخواست‌ها انجام نشد.");
     } finally {
       setTicketsLoading(false);
+    }
+  }
+
+  async function refreshTeachers() {
+    setTeachersLoading(true);
+    try {
+      const data = await fetchTeachers();
+      setTeachers(Array.isArray(data) ? data : []);
+    } catch (error) {
+      notify(error.message || "دریافت اساتید انجام نشد.");
+    } finally {
+      setTeachersLoading(false);
     }
   }
 
@@ -2078,9 +2237,75 @@ export default function App() {
     notify("فایل گزارش آماده شد.");
   }
 
+  async function finishLogin(result, email) {
+    setAuthUser(result.user);
+    try {
+      await loadFromServer({ silent: true });
+      notify("اتصال به PostgreSQL برقرار شد و اطلاعات از دیتابیس بارگذاری شد.");
+    } catch (apiError) {
+      console.error("Bootstrap error:", apiError);
+      notify("ورود موفق بود، اما دریافت اطلاعات دیتابیس با مشکل مواجه شد.");
+    }
+    const signedInName = result.user.name;
+    const signedInStudentId = result.user.studentId || "";
+    setLoginName(signedInName);
+    setLoginRole(result.user.role);
+    setStudentNumber(signedInStudentId);
+    setProfilePhoto(result.user.avatarUrl || "");
+    sessionStorage.setItem(
+      "smart-attendance:profile",
+      JSON.stringify({
+        name: signedInName,
+        role: result.user.role,
+        userId: result.user.id,
+        email: String(email || "").toLowerCase(),
+        studentId: signedInStudentId,
+      }),
+    );
+    setLoginPassword("");
+    setLogin(false);
+    refreshTickets().catch(() => {});
+    refreshNotifications().catch(() => {});
+    refreshLeaveRequests().catch(() => {});
+    refreshObjections().catch(() => {});
+  }
+
+  // A teacher may reload the page while a temporary password is still pending.
+  // Keep them on the login screen with the forced dialog instead of the panel.
+  useEffect(() => {
+    if (login) return;
+    if (authUser?.mustChangePassword) {
+      setForcedPasswordChange(
+        (current) => current || { user: authUser, currentPassword: "" },
+      );
+      setLogin(true);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [login, authUser]);
+
   if (login)
     return (
       <div className="login-screen">
+        {forcedPasswordChange && (
+          <ForcedPasswordChange
+            user={forcedPasswordChange.user}
+            currentPassword={forcedPasswordChange.currentPassword}
+            onDone={async (result) => {
+              setForcedPasswordChange(null);
+              await finishLogin(
+                result,
+                result.user?.email || loginName.trim(),
+              );
+            }}
+            onLogout={() => {
+              clearApiToken();
+              setAuthUser(null);
+              setForcedPasswordChange(null);
+              setLoginPassword("");
+              setLoginError("");
+            }}
+          />
+        )}
         <button
           className="icon-button theme-toggle login-theme-toggle"
           type="button"
@@ -2151,41 +2376,17 @@ export default function App() {
                   loginPassword,
                   facultyId,
                 );
-                setAuthUser(result.user);
-
-                try {
-                  await loadFromServer({ silent: true });
-                  notify(
-                    "اتصال به PostgreSQL برقرار شد و اطلاعات از دیتابیس بارگذاری شد.",
-                  );
-                } catch (apiError) {
-                  console.error("Bootstrap error:", apiError);
-                  notify(
-                    "ورود موفق بود، اما دریافت اطلاعات دیتابیس با مشکل مواجه شد.",
-                  );
+                // Admin-created teachers sign in with a one-time password and
+                // must choose a personal password before entering the panel.
+                if (result.user?.mustChangePassword) {
+                  setAuthUser(result.user);
+                  setForcedPasswordChange({
+                    user: result.user,
+                    currentPassword: loginPassword,
+                  });
+                  return;
                 }
-                const signedInName = result.user.name;
-                const signedInStudentId = result.user.studentId || "";
-                setLoginName(signedInName);
-                setLoginRole(result.user.role);
-                setStudentNumber(signedInStudentId);
-                setProfilePhoto(result.user.avatarUrl || "");
-                sessionStorage.setItem(
-                  "smart-attendance:profile",
-                  JSON.stringify({
-                    name: signedInName,
-                    role: result.user.role,
-                    userId: result.user.id,
-                    email: loginName.trim().toLowerCase(),
-                    studentId: signedInStudentId,
-                  }),
-                );
-                setLoginPassword("");
-                setLogin(false);
-                refreshTickets().catch(() => {});
-                refreshNotifications().catch(() => {});
-                refreshLeaveRequests().catch(() => {});
-                refreshObjections().catch(() => {});
+                await finishLogin(result, loginName.trim());
               } catch (error) {
                 setLoginError(error.message || "ورود به سامانه انجام نشد.");
               } finally {
@@ -2940,6 +3141,47 @@ export default function App() {
                 }
               }}
               onRefresh={() => loadFromServer({ silent: true })}
+            />
+          )}
+          {active === "teachers" && (
+            <Teachers
+              teachers={teachers}
+              loading={teachersLoading}
+              onRefresh={refreshTeachers}
+              onLookup={lookupTeacher}
+              onCreate={async (payload) => {
+                const result = await createTeacher(payload);
+                await refreshTeachers();
+                notify("استاد جدید ایجاد شد؛ اطلاعات ورود را به او تحویل دهید.");
+                return result;
+              }}
+              onAddExisting={async (email) => {
+                await addExistingTeacher(email);
+                await refreshTeachers();
+                notify("استاد به دانشکدهٔ شما اضافه شد.");
+              }}
+              onRemove={async (id) => {
+                try {
+                  await removeTeacherFromFaculty(id);
+                  await refreshTeachers();
+                  notify("عضویت استاد از این دانشکده حذف شد.");
+                } catch (error) {
+                  notify(error.message || "حذف عضویت استاد انجام نشد.");
+                }
+              }}
+              onToggleActive={async (id, isActive) => {
+                try {
+                  await setTeacherActive(id, isActive);
+                  await refreshTeachers();
+                  notify(
+                    isActive
+                      ? "حساب استاد فعال شد."
+                      : "حساب استاد غیرفعال شد و ورود او مسدود است.",
+                  );
+                } catch (error) {
+                  notify(error.message || "تغییر وضعیت استاد انجام نشد.");
+                }
+              }}
             />
           )}
           {active === "tickets" && (
