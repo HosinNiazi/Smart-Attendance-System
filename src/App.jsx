@@ -97,6 +97,7 @@ import {
 } from "./api/client.js";
 import { adaptBootstrap, toEnStatus } from "./api/adapter.js";
 import { HelpChat } from "./help/HelpChat.jsx";
+import { Landing } from "./components/Landing.jsx";
 
 const navGroups = [
   {
@@ -642,6 +643,11 @@ export default function App() {
     faceRecognition: true,
   });
   const [login, setLogin] = useState(true);
+  const [showHome, setShowHome] = useState(() => {
+    if (typeof window === "undefined") return true;
+    const hash = window.location.hash;
+    return hash === "" || hash === "#/" || hash === "#/home";
+  });
   const [loginRole, setLoginRole] = useState(() => {
     const savedRole = readSessionProfile().role;
     return ACCESS_ROLE_LABELS[savedRole] ? savedRole : "admin";
@@ -710,6 +716,16 @@ export default function App() {
         "فضای ذخیره‌سازی مرورگر کافی نیست؛ از اطلاعات پشتیبان بگیرید.",
       );
   }, [theme]);
+  // مسیریابی سبک با هش: #/ (یا خالی) صفحهٔ اصلی و #/login صفحهٔ ورود.
+  useEffect(() => {
+    const syncHomeFromHash = () => {
+      const hash = window.location.hash;
+      setShowHome(hash === "" || hash === "#/" || hash === "#/home");
+    };
+    syncHomeFromHash();
+    window.addEventListener("hashchange", syncHomeFromHash);
+    return () => window.removeEventListener("hashchange", syncHomeFromHash);
+  }, []);
   useEffect(
     () => () => streamRef.current?.getTracks().forEach((track) => track.stop()),
     [],
@@ -2351,6 +2367,23 @@ export default function App() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [login, authUser]);
 
+  if (login && showHome)
+    return (
+      <Landing
+        theme={theme}
+        onToggleTheme={() =>
+          setTheme((current) => (current === "dark" ? "light" : "dark"))
+        }
+        onEnter={() => {
+          setShowHome(false);
+          if (window.location.hash !== "#/login") {
+            window.location.hash = "#/login";
+          }
+          window.scrollTo({ top: 0, behavior: "smooth" });
+        }}
+      />
+    );
+
   if (login)
     return (
       <div className="login-screen">
@@ -2553,6 +2586,18 @@ export default function App() {
               onClick={() => setRegModal(true)}
             >
               <Icon name="bi-person-plus" /> ثبت‌نام دانشجوی جدید
+            </button>
+            <button
+              className="login-home-link"
+              type="button"
+              onClick={() => {
+                setShowHome(true);
+                if (window.location.hash !== "#/" && window.location.hash !== "") {
+                  window.location.hash = "#/";
+                }
+              }}
+            >
+              <Icon name="bi-arrow-right" /> بازگشت به صفحهٔ اصلی
             </button>
             <div className="login-footer">
               © ۱۴۰۵ حضوربان · سامانه مدیریت حضور و غیاب
