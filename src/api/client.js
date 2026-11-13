@@ -294,3 +294,66 @@ export function respondTicket(id, payload) {
 export function closeTicket(id) {
   return api(`/tickets/${id}/close`, { method: 'POST' });
 }
+// ---- exams (teacher / admin) ----
+export function fetchExams(params = {}) {
+  return api(withQuery('/exams', params));
+}
+export function fetchExamDetail(id) {
+  return api(`/exams/${id}`);
+}
+export function createExam(payload) {
+  return api('/exams', { method: 'POST', body: JSON.stringify(payload) });
+}
+export function updateExam(id, payload) {
+  return api(`/exams/${id}`, { method: 'PUT', body: JSON.stringify(payload) });
+}
+export function patchExamSchedule(id, payload) {
+  return api(`/exams/${id}/schedule`, { method: 'PATCH', body: JSON.stringify(payload) });
+}
+export function publishExam(id) {
+  return api(`/exams/${id}/publish`, { method: 'POST' });
+}
+export function closeExam(id) {
+  return api(`/exams/${id}/close`, { method: 'POST' });
+}
+export function cancelExam(id) {
+  return api(`/exams/${id}/cancel`, { method: 'POST' });
+}
+export function deleteExam(id) {
+  return api(`/exams/${id}`, { method: 'DELETE' });
+}
+export function fetchExamResults(id) {
+  return api(`/exams/${id}/results`);
+}
+export function fetchExamAttemptDetail(examId, attemptId) {
+  return api(`/exams/${examId}/attempts/${attemptId}`);
+}
+export function voidExamAttempt(examId, attemptId, reason) {
+  return api(`/exams/${examId}/attempts/${attemptId}/void`, {
+    method: 'POST',
+    body: JSON.stringify({ reason }),
+  });
+}
+// ---- exams (student) ----
+export function fetchMyExams() {
+  return api('/exams/mine');
+}
+export function startExam(id) {
+  return api(`/exams/${id}/start`, { method: 'POST' });
+}
+export function saveExamAnswers(attemptId, answers, integrity) {
+  return api(`/exams/attempts/${attemptId}/answers`, {
+    method: 'PUT',
+    body: JSON.stringify({ answers, integrity }),
+  });
+}
+export function submitExam(attemptId, answers, integrity) {
+  return api(`/exams/attempts/${attemptId}/submit`, {
+    method: 'POST',
+    body: JSON.stringify({ answers, integrity }),
+  });
+}
+export function fetchExamAttempt(attemptId) {
+  return api(`/exams/attempts/${attemptId}`);
+}
+

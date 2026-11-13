@@ -22,6 +22,7 @@ import {
   Tickets,
 } from "./components/pages.jsx";
 import { VoiceAttendance } from "./voice/VoiceAttendance.jsx";
+import { Exams } from "./components/Exams.jsx";
 import { LiveClass, TrendAnalysis } from "./components/phase2.jsx";
 import {
   exportAudioProfiles,
@@ -110,6 +111,7 @@ const navGroups = [
       { id: "students", label: "دانشجویان", icon: "bi-people" },
       { id: "courses", label: "درس‌ها و کلاس‌ها", icon: "bi-journal-bookmark" },
       { id: "sessions", label: "جلسات کلاس", icon: "bi-calendar3" },
+      { id: "exams", label: "آزمون‌ها", icon: "bi-journal-check" },
     ],
   },
   {
@@ -153,6 +155,7 @@ const ROLE_PERMISSIONS = {
     "dashboard",
     "courses",
     "sessions",
+    "exams",
     "manual",
     "voice",
     "face",
@@ -3126,6 +3129,13 @@ export default function App() {
               onOpenSession={openSession}
               onFinalizeSession={finalizeSession}
               onNavigate={go}
+            />
+          )}
+          {active === "exams" && (
+            <Exams
+              courses={courses}
+              accessRole={loginRole}
+              notify={notify}
             />
           )}
           {active === "manual" && (

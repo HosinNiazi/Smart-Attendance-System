@@ -5,6 +5,7 @@ import {
   LiveClassBanner,
   StudentCalendar,
 } from "./phase2.jsx";
+import { StudentExams } from "./StudentExams.jsx";
 import { HelpChat } from "../help/HelpChat.jsx";
 import {
   CLASSROOM_SCAN_INTERVAL_MS,
@@ -3926,6 +3927,7 @@ export function StudentPortal({
 
   const tabs = [
     { id: "overview", label: "نمای کلی", icon: "bi-grid-1x2" },
+    { id: "exams", label: "آزمون‌ها", icon: "bi-journal-check" },
     { id: "fingerprint", label: "اثر انگشت", icon: "bi-fingerprint" },
     { id: "profile", label: "پروفایل من", icon: "bi-person-circle" },
     { id: "tickets", label: "تیکت‌ها", icon: "bi-ticket" },
@@ -4762,6 +4764,9 @@ export function StudentPortal({
             leaveRequests={leaveRequests}
             onLoadTrend={onLoadTrend}
           />
+        )}
+        {tab === "exams" && (
+          <StudentExams notify={setPortalToast} />
         )}
         {tab === "leave" && (
           <section className="student-help-section">

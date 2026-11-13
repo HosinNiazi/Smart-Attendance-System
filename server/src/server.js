@@ -8,6 +8,14 @@ import bcrypt from "bcryptjs";
 import jwt from "jsonwebtoken";
 import { z } from "zod";
 import { pool, withTransaction, audit } from "./db.js";
+import {
+  examAnswersSchema,
+  examInputSchema,
+  examScheduleSchema,
+  gradeAnswers,
+  orderByAttempt,
+  scoreVisible,
+} from "./examGrading.js";
 import multer from "multer";
 import path from "node:path";
 import fs from "node:fs";
@@ -302,11 +310,23 @@ async function listFingerprintCredentials(organizationId, studentId = null, teac
 }
 
 async function findStudentByUserId(userId, organizationId) {
+  // users.student_id is normally the students.id UUID, but older demo accounts
+  // stored the student number there. Support both formats so student-scoped
+  // features (exams, live sessions, profile photo) work for every account.
   const { rows } = await pool.query(
     `SELECT st.id, st.student_number AS "studentNumber", st.full_name AS "fullName"
        FROM users u
-       JOIN students st ON st.id = u.student_id::uuid
-      WHERE u.id = $1 AND u.organization_id = $2 AND u.is_active = true`,
+       JOIN students st
+         ON st.organization_id = u.organization_id
+        AND (
+          st.student_number = u.student_id
+          OR (
+            u.student_id ~* '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'
+            AND st.id = u.student_id::uuid
+          )
+        )
+      WHERE u.id = $1 AND u.organization_id = $2 AND u.is_active = true
+      LIMIT 1`,
     [userId, organizationId],
   );
   return rows[0] || null;
@@ -4090,6 +4110,1441 @@ app.post(
     );
     if (!rows[0]) return res.status(404).json({ message: "جلسه یافت نشد." });
     res.json(rows[0]);
+  }),
+);
+
+/* ============================== exams ============================== */
+
+function examError(status, message) {
+  return Object.assign(new Error(message), { status });
+}
+
+async function loadExamForManagement(req, examId, client = pool) {
+  const { rows } = await client.query(
+    `SELECT e.*, c.title AS "courseTitle", c.code AS "courseCode",
+            c.teacher_user_id AS "courseTeacherId",
+            COALESCE(u.display_name, c.teacher_name) AS "teacherName"
+       FROM exams e
+       JOIN courses c ON c.id = e.course_id
+       LEFT JOIN users u ON u.id = COALESCE(e.created_by, c.teacher_user_id)
+      WHERE e.id = $1 AND e.organization_id = $2`,
+    [examId, req.user.org],
+  );
+  const exam = rows[0];
+  if (!exam) throw examError(404, "آزمون پیدا نشد.");
+  if (
+    isTeacher(req) &&
+    String(exam.courseTeacherId) !== String(req.user.sub)
+  ) {
+    throw examError(403, "این آزمون به شما تخصیص نیافته است.");
+  }
+  return exam;
+}
+
+function normalizeExam(exam) {
+  if (!exam) return null;
+  return {
+    id: exam.exam_id ?? exam.id,
+    title: exam.title,
+    description: exam.description,
+    courseId: exam.course_id ?? exam.courseId,
+    courseTitle: exam.courseTitle ?? exam.course_title,
+    courseCode: exam.courseCode ?? exam.course_code,
+    teacherName: exam.teacherName ?? exam.teacher_name,
+    status: exam.exam_status ?? exam.status,
+    availableFrom: exam.available_from ?? exam.availableFrom,
+    availableUntil: exam.available_until ?? exam.availableUntil,
+    durationMinutes: Number(exam.duration_minutes ?? exam.durationMinutes),
+    passPercent: Number(exam.pass_percent ?? exam.passPercent ?? 50),
+    shuffleQuestions:
+      exam.shuffle_questions ?? exam.shuffleQuestions ?? true,
+    shuffleOptions: exam.shuffle_options ?? exam.shuffleOptions ?? true,
+    resultsVisibility:
+      exam.results_visibility ?? exam.resultsVisibility ?? "after_close",
+    maxAttempts: Number(exam.max_attempts ?? exam.maxAttempts ?? 1),
+    questionCount:
+      exam.questionCount != null ? Number(exam.questionCount) : undefined,
+    studentCount:
+      exam.studentCount != null ? Number(exam.studentCount) : undefined,
+  };
+}
+
+async function loadExamQuestions(examId, client = pool) {
+  const { rows } = await client.query(
+    `SELECT q.id, q.position, q.prompt, q.points,
+            COALESCE(
+              json_agg(
+                json_build_object(
+                  'id', o.id,
+                  'position', o.position,
+                  'text', o.text,
+                  'isCorrect', o.is_correct
+                ) ORDER BY o.position
+              ) FILTER (WHERE o.id IS NOT NULL),
+              '[]'::json
+            ) AS options
+       FROM exam_questions q
+       LEFT JOIN exam_options o ON o.question_id = q.id
+      WHERE q.exam_id = $1
+      GROUP BY q.id
+      ORDER BY q.position`,
+    [examId],
+  );
+  return rows.map((question) => ({
+    ...question,
+    position: Number(question.position),
+    points: Number(question.points),
+    options: (question.options || []).map((option) => ({
+      ...option,
+      position: Number(option.position),
+    })),
+  }));
+}
+
+async function insertExamQuestions(client, examId, questions) {
+  for (const [index, question] of questions.entries()) {
+    const { rows } = await client.query(
+      `INSERT INTO exam_questions (exam_id, position, prompt, points)
+       VALUES ($1, $2, $3, $4)
+       RETURNING id`,
+      [examId, index + 1, question.prompt, question.points],
+    );
+    const questionId = rows[0].id;
+    for (const [optionIndex, option] of question.options.entries()) {
+      await client.query(
+        `INSERT INTO exam_options (question_id, position, text, is_correct)
+         VALUES ($1, $2, $3, $4)`,
+        [questionId, optionIndex + 1, option.text, option.isCorrect],
+      );
+    }
+  }
+}
+
+async function saveExamAnswers(client, questions, attemptId, answers) {
+  if (!answers?.length) return;
+  const questionMap = new Map(
+    questions.map((question) => [String(question.id), question]),
+  );
+  for (const answer of answers) {
+    const question = questionMap.get(String(answer.questionId));
+    if (!question) {
+      throw examError(422, "سوال ارسالی متعلق به این آزمون نیست.");
+    }
+    const optionId = answer.selectedOptionId
+      ? String(answer.selectedOptionId)
+      : null;
+    if (
+      optionId &&
+      !question.options.some((option) => String(option.id) === optionId)
+    ) {
+      throw examError(422, "گزینهٔ انتخاب‌شده معتبر نیست.");
+    }
+  }
+  for (const answer of answers) {
+    await client.query(
+      `INSERT INTO exam_answers (attempt_id, question_id, selected_option_id)
+       VALUES ($1, $2, $3)
+       ON CONFLICT (attempt_id, question_id)
+       DO UPDATE SET selected_option_id = EXCLUDED.selected_option_id,
+                     answered_at = now()`,
+      [
+        attemptId,
+        answer.questionId,
+        answer.selectedOptionId ? answer.selectedOptionId : null,
+      ],
+    );
+  }
+}
+
+async function finalizeExamAttempt({
+  attemptId,
+  answers = null,
+  integrity = {},
+  mode = "submitted",
+}) {
+  return withTransaction(async (client) => {
+    const { rows } = await client.query(
+      `SELECT a.*, e.organization_id, e.course_id, e.title, e.pass_percent,
+              e.results_visibility, e.available_until, e.status AS exam_status
+         FROM exam_attempts a
+         JOIN exams e ON e.id = a.exam_id
+        WHERE a.id = $1
+        FOR UPDATE`,
+      [attemptId],
+    );
+    const attempt = rows[0];
+    if (!attempt) return { notFound: true };
+    if (["submitted", "expired", "voided"].includes(attempt.status)) {
+      return { attempt, alreadyFinal: true };
+    }
+
+    const questions = await loadExamQuestions(attempt.exam_id, client);
+    await saveExamAnswers(client, questions, attempt.id, answers);
+
+    const { rows: savedAnswers } = await client.query(
+      `SELECT question_id AS "questionId",
+              selected_option_id AS "selectedOptionId"
+         FROM exam_answers
+        WHERE attempt_id = $1`,
+      [attempt.id],
+    );
+    const graded = gradeAnswers(questions, savedAnswers);
+    const status = mode === "expired" ? "expired" : "submitted";
+    const submittedAt =
+      status === "expired" ? attempt.expires_at : new Date();
+    const tabSwitches = Math.max(
+      0,
+      Math.min(10_000, Number(integrity.tabSwitches) || 0),
+    );
+    const fullscreenExits = Math.max(
+      0,
+      Math.min(10_000, Number(integrity.fullscreenExits) || 0),
+    );
+
+    const { rows: updated } = await client.query(
+      `UPDATE exam_attempts
+          SET status = $2,
+              submitted_at = $3,
+              correct_count = $4,
+              earned_points = $5,
+              total_points = $6,
+              percent = $7,
+              score_out_of_20 = $8,
+              passed = $9,
+              graded_at = now(),
+              tab_switch_count = GREATEST(tab_switch_count, $10),
+              integrity_flags = integrity_flags || $11::jsonb,
+              updated_at = now()
+        WHERE id = $1
+        RETURNING *`,
+      [
+        attempt.id,
+        status,
+        submittedAt,
+        graded.correctCount,
+        graded.earnedPoints,
+        graded.totalPoints,
+        graded.percent,
+        graded.scoreOutOf20,
+        graded.percent >= Number(attempt.pass_percent),
+        tabSwitches,
+        JSON.stringify({ tabSwitches, fullscreenExits }),
+      ],
+    );
+
+    for (const question of questions) {
+      const entry = graded.perAnswer.get(String(question.id));
+      if (!entry) continue;
+      await client.query(
+        `UPDATE exam_answers
+            SET is_correct = $2, earned_points = $3
+          WHERE attempt_id = $1 AND question_id = $4`,
+        [attempt.id, entry.isCorrect, entry.earnedPoints, question.id],
+      );
+    }
+
+    return { attempt: updated[0], questions, graded };
+  });
+}
+
+async function finalizeExpiredExamAttempts({
+  organizationId,
+  examId = null,
+  studentId = null,
+}) {
+  const params = [organizationId];
+  const where = [
+    "a.status = 'in_progress'",
+    "a.expires_at < now()",
+    "e.organization_id = $1",
+  ];
+  if (examId) {
+    params.push(examId);
+    where.push(`a.exam_id = $${params.length}`);
+  }
+  if (studentId) {
+    params.push(studentId);
+    where.push(`a.student_id = $${params.length}`);
+  }
+  const { rows } = await pool.query(
+    `SELECT a.id
+       FROM exam_attempts a
+       JOIN exams e ON e.id = a.exam_id
+      WHERE ${where.join(" AND ")}`,
+    params,
+  );
+  for (const row of rows) {
+    await finalizeExamAttempt({ attemptId: row.id, mode: "expired" }).catch(
+      (error) => console.error("finalize expired exam attempt", error),
+    );
+  }
+}
+
+function examAttemptPayload(attempt) {
+  return {
+    id: attempt.id,
+    status: attempt.status,
+    attemptNo: Number(attempt.attempt_no ?? 1),
+    startedAt: attempt.started_at ?? attempt.startedAt,
+    expiresAt: attempt.expires_at ?? attempt.expiresAt,
+    submittedAt: attempt.submitted_at ?? attempt.submittedAt,
+    correctCount: Number(attempt.correct_count ?? 0),
+    earnedPoints: Number(attempt.earned_points ?? 0),
+    totalPoints: Number(attempt.total_points ?? 0),
+    percent:
+      attempt.percent == null ? null : Number(attempt.percent),
+    scoreOutOf20:
+      attempt.score_out_of_20 == null
+        ? null
+        : Number(attempt.score_out_of_20),
+    passed: attempt.passed,
+    tabSwitchCount: Number(attempt.tab_switch_count ?? 0),
+  };
+}
+
+async function loadStudentExamAttempt(attemptId, studentId) {
+  const { rows } = await pool.query(
+    `SELECT a.*, e.id AS exam_id, e.organization_id, e.title, e.description,
+            e.available_from, e.available_until, e.duration_minutes,
+            e.pass_percent, e.shuffle_questions, e.shuffle_options,
+            e.results_visibility, e.status AS exam_status,
+            c.title AS course_title, c.code AS course_code,
+            c.teacher_name AS teacher_name
+       FROM exam_attempts a
+       JOIN exams e ON e.id = a.exam_id
+       JOIN courses c ON c.id = e.course_id
+      WHERE a.id = $1 AND a.student_id = $2`,
+    [attemptId, studentId],
+  );
+  return rows[0] || null;
+}
+
+async function buildStudentAttemptPayload(attempt) {
+  const questions = await loadExamQuestions(attempt.exam_id);
+  const ordered = orderByAttempt(
+    questions,
+    attempt.id,
+    attempt.shuffle_questions,
+  ).map((question) => ({
+    id: question.id,
+    position: question.position,
+    prompt: question.prompt,
+    points: question.points,
+    options: orderByAttempt(
+      question.options,
+      attempt.id,
+      attempt.shuffle_options,
+    ).map((option) => ({
+      id: option.id,
+      position: option.position,
+      text: option.text,
+    })),
+  }));
+  const { rows: answers } = await pool.query(
+    `SELECT question_id AS "questionId",
+            selected_option_id AS "selectedOptionId"
+       FROM exam_answers
+      WHERE attempt_id = $1`,
+    [attempt.id],
+  );
+  return {
+    attempt: examAttemptPayload(attempt),
+    exam: {
+      id: attempt.exam_id,
+      title: attempt.title,
+      description: attempt.description,
+      courseTitle: attempt.course_title,
+      courseCode: attempt.course_code,
+      teacherName: attempt.teacher_name,
+      durationMinutes: Number(attempt.duration_minutes),
+      questionCount: ordered.length,
+      passPercent: Number(attempt.pass_percent),
+      resultsVisibility: attempt.results_visibility,
+      availableUntil: attempt.available_until,
+      status: attempt.exam_status,
+    },
+    questions: ordered,
+    answers,
+    serverNow: new Date().toISOString(),
+  };
+}
+
+async function buildStudentResultPayload(attempt, exam, questions = null) {
+  const normalizedExam = normalizeExam(exam || attempt);
+  const visible = scoreVisible(normalizedExam, attempt);
+  const base = {
+    attempt: examAttemptPayload(attempt),
+    exam: {
+      id: normalizedExam.id,
+      title: normalizedExam.title,
+      courseTitle: normalizedExam.courseTitle,
+      courseCode: normalizedExam.courseCode,
+      teacherName: normalizedExam.teacherName,
+      resultsVisibility: normalizedExam.resultsVisibility,
+      status: normalizedExam.status,
+      availableUntil: normalizedExam.availableUntil,
+    },
+    scoreVisible: visible,
+    serverNow: new Date().toISOString(),
+  };
+  if (!visible) return base;
+
+  const allQuestions = questions || (await loadExamQuestions(attempt.exam_id));
+  const { rows: answers } = await pool.query(
+    `SELECT question_id AS "questionId",
+            selected_option_id AS "selectedOptionId"
+       FROM exam_answers
+      WHERE attempt_id = $1`,
+    [attempt.id],
+  );
+  const answerMap = new Map(
+    answers.map((answer) => [
+      String(answer.questionId),
+      answer.selectedOptionId ? String(answer.selectedOptionId) : null,
+    ]),
+  );
+  base.questions = allQuestions.map((question) => ({
+    id: question.id,
+    position: question.position,
+    prompt: question.prompt,
+    points: question.points,
+    selectedOptionId: answerMap.get(String(question.id)) || null,
+    options: question.options.map((option) => ({
+      id: option.id,
+      text: option.text,
+      isCorrect: option.isCorrect === true,
+    })),
+  }));
+  return base;
+}
+
+async function refreshExamStudents(client, examId, courseId) {
+  await client.query(`DELETE FROM exam_students WHERE exam_id = $1`, [examId]);
+  await client.query(
+    `INSERT INTO exam_students (exam_id, student_id)
+     SELECT $1, cs.student_id
+       FROM course_students cs
+       JOIN students st ON st.id = cs.student_id
+      WHERE cs.course_id = $2 AND st.status = 'active'
+     ON CONFLICT DO NOTHING`,
+    [examId, courseId],
+  );
+}
+
+app.get(
+  "/api/exams",
+  authorize("admin", "teacher"),
+  asyncRoute(async (req, res) => {
+    await finalizeExpiredExamAttempts({ organizationId: req.user.org });
+    const params = [req.user.org];
+    let scope = "";
+    if (isTeacher(req)) {
+      params.push(req.user.sub);
+      scope = ` AND c.teacher_user_id = $${params.length}`;
+    }
+    let filters = "";
+    if (req.query.courseId) {
+      params.push(req.query.courseId);
+      filters += ` AND e.course_id = $${params.length}`;
+    }
+    if (req.query.teacherId && !isTeacher(req)) {
+      params.push(req.query.teacherId);
+      filters += ` AND c.teacher_user_id = $${params.length}`;
+    }
+    const allowedStatuses = ["draft", "published", "closed", "cancelled"];
+    if (allowedStatuses.includes(String(req.query.status || ""))) {
+      params.push(req.query.status);
+      filters += ` AND e.status = $${params.length}`;
+    }
+    const { rows } = await pool.query(
+      `SELECT e.id, e.title, e.description, e.status,
+              e.available_from AS "availableFrom",
+              e.available_until AS "availableUntil",
+              e.duration_minutes AS "durationMinutes",
+              e.pass_percent AS "passPercent",
+              e.shuffle_questions AS "shuffleQuestions",
+              e.shuffle_options AS "shuffleOptions",
+              e.results_visibility AS "resultsVisibility",
+              e.max_attempts AS "maxAttempts",
+              e.published_at AS "publishedAt",
+              e.closed_at AS "closedAt",
+              e.created_at AS "createdAt",
+              c.id AS "courseId", c.code AS "courseCode",
+              c.title AS "courseTitle",
+              COALESCE(u.display_name, c.teacher_name) AS "teacherName",
+              (SELECT count(*)::int FROM exam_questions q
+                WHERE q.exam_id = e.id) AS "questionCount",
+              (SELECT count(*)::int FROM exam_students es
+                WHERE es.exam_id = e.id) AS "studentCount",
+              (SELECT count(*)::int FROM exam_attempts a
+                WHERE a.exam_id = e.id
+                  AND a.status IN ('submitted','expired')) AS "submittedCount",
+              (SELECT count(*)::int FROM exam_attempts a
+                WHERE a.exam_id = e.id
+                  AND a.status IN ('submitted','expired')
+                  AND a.passed) AS "passedCount",
+              (SELECT round(avg(a.percent)::numeric, 2)
+                 FROM exam_attempts a
+                WHERE a.exam_id = e.id
+                  AND a.status IN ('submitted','expired')) AS "averagePercent"
+         FROM exams e
+         JOIN courses c ON c.id = e.course_id
+         LEFT JOIN users u ON u.id = COALESCE(e.created_by, c.teacher_user_id)
+        WHERE e.organization_id = $1${scope}${filters}
+        ORDER BY e.available_from DESC, e.created_at DESC`,
+      params,
+    );
+    const now = Date.now();
+    res.json({
+      exams: rows.map((exam) => ({
+        ...exam,
+        effectiveStatus:
+          exam.status === "published"
+            ? new Date(exam.availableUntil).getTime() <= now
+              ? "closed"
+              : new Date(exam.availableFrom).getTime() > now
+                ? "upcoming"
+                : "open"
+            : exam.status,
+      })),
+      serverNow: new Date().toISOString(),
+    });
+  }),
+);
+
+app.get(
+  "/api/exams/:id",
+  // "mine" belongs to the student route registered below; skip this route for it
+  // before the teacher/admin guard rejects students with 403.
+  (req, res, next) =>
+    req.params.id === "mine"
+      ? next()
+      : authorize("admin", "teacher")(req, res, next),
+  asyncRoute(async (req, res, next) => {
+    if (req.params.id === "mine") return next();
+    const exam = await loadExamForManagement(req, req.params.id);
+    const questions = await loadExamQuestions(exam.id);
+    res.json({
+      exam: normalizeExam(exam),
+      questions: questions.map((question) => ({
+        id: question.id,
+        position: question.position,
+        prompt: question.prompt,
+        points: question.points,
+        options: question.options,
+      })),
+      serverNow: new Date().toISOString(),
+    });
+  }),
+);
+
+app.post(
+  "/api/exams",
+  authorize("teacher"),
+  validate(examInputSchema),
+  asyncRoute(async (req, res) => {
+    const input = req.body;
+    const course = await pool.query(
+      `SELECT id, title, teacher_user_id
+         FROM courses
+        WHERE id = $1 AND organization_id = $2 AND teacher_user_id = $3`,
+      [input.courseId, req.user.org, req.user.sub],
+    );
+    if (!course.rows[0]) {
+      return res
+        .status(403)
+        .json({ message: "این درس به شما تخصیص نیافته است." });
+    }
+    const exam = await withTransaction(async (client) => {
+      const { rows } = await client.query(
+        `INSERT INTO exams
+           (organization_id, course_id, created_by, title, description,
+            available_from, available_until, duration_minutes, pass_percent,
+            shuffle_questions, shuffle_options, results_visibility, max_attempts)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)
+         RETURNING *`,
+        [
+          req.user.org,
+          input.courseId,
+          req.user.sub,
+          input.title,
+          input.description || "",
+          input.availableFrom,
+          input.availableUntil,
+          input.durationMinutes,
+          input.passPercent,
+          input.shuffleQuestions,
+          input.shuffleOptions,
+          input.resultsVisibility,
+          input.maxAttempts,
+        ],
+      );
+      await insertExamQuestions(client, rows[0].id, input.questions);
+      await audit(
+        client,
+        req.user.org,
+        req.user.sub,
+        "create",
+        "exam",
+        rows[0].id,
+        { title: input.title, courseId: input.courseId },
+      );
+      return rows[0];
+    });
+    res.status(201).json({ exam: normalizeExam(exam) });
+  }),
+);
+
+app.put(
+  "/api/exams/:id",
+  authorize("teacher"),
+  validate(examInputSchema),
+  asyncRoute(async (req, res) => {
+    const input = req.body;
+    const exam = await loadExamForManagement(req, req.params.id);
+    if (!["draft", "published"].includes(exam.status)) {
+      return res
+        .status(409)
+        .json({ message: "آزمون بسته یا لغو‌شده قابل ویرایش نیست." });
+    }
+    const { rows: attempts } = await pool.query(
+      `SELECT count(*)::int AS count FROM exam_attempts WHERE exam_id = $1`,
+      [exam.id],
+    );
+    if (attempts[0].count > 0) {
+      return res.status(409).json({
+        message:
+          "پس از شروع آزمون، سوالات قفل می‌شوند. فقط پایان بازه یا نمایش نتیجه قابل تغییر است.",
+      });
+    }
+    const course = await pool.query(
+      `SELECT id, title FROM courses
+        WHERE id = $1 AND organization_id = $2 AND teacher_user_id = $3`,
+      [input.courseId, req.user.org, req.user.sub],
+    );
+    if (!course.rows[0]) {
+      return res
+        .status(403)
+        .json({ message: "این درس به شما تخصیص نیافته است." });
+    }
+    const updated = await withTransaction(async (client) => {
+      const { rows } = await client.query(
+        `UPDATE exams
+            SET course_id = $2, title = $3, description = $4,
+                available_from = $5, available_until = $6,
+                duration_minutes = $7, pass_percent = $8,
+                shuffle_questions = $9, shuffle_options = $10,
+                results_visibility = $11, max_attempts = $12,
+                updated_at = now()
+          WHERE id = $1
+          RETURNING *`,
+        [
+          exam.id,
+          input.courseId,
+          input.title,
+          input.description || "",
+          input.availableFrom,
+          input.availableUntil,
+          input.durationMinutes,
+          input.passPercent,
+          input.shuffleQuestions,
+          input.shuffleOptions,
+          input.resultsVisibility,
+          input.maxAttempts,
+        ],
+      );
+      await client.query(`DELETE FROM exam_questions WHERE exam_id = $1`, [
+        exam.id,
+      ]);
+      await insertExamQuestions(client, exam.id, input.questions);
+      if (updated[0].status === "published") {
+        await refreshExamStudents(client, exam.id, input.courseId);
+      }
+      await audit(
+        client,
+        req.user.org,
+        req.user.sub,
+        "update",
+        "exam",
+        exam.id,
+        { title: input.title },
+      );
+      return rows[0];
+    });
+    res.json({ exam: normalizeExam(updated) });
+  }),
+);
+
+app.patch(
+  "/api/exams/:id/schedule",
+  authorize("admin", "teacher"),
+  validate(examScheduleSchema),
+  asyncRoute(async (req, res) => {
+    const exam = await loadExamForManagement(req, req.params.id);
+    if (!["draft", "published"].includes(exam.status)) {
+      return res
+        .status(409)
+        .json({ message: "فقط آزمون پیش‌نویس یا منتشرشده قابل تنظیم است." });
+    }
+    const updates = [];
+    const params = [exam.id];
+    if (req.body.availableUntil) {
+      const until = new Date(req.body.availableUntil);
+      if (until.getTime() <= Date.now()) {
+        return res
+          .status(422)
+          .json({ message: "پایان بازه باید در آینده باشد." });
+      }
+      if (
+        until.getTime() - new Date(exam.available_from).getTime() <
+        Number(exam.duration_minutes) * 60_000
+      ) {
+        return res.status(422).json({
+          message: "پایان بازه با مدت پاسخ‌دهی آزمون سازگار نیست.",
+        });
+      }
+      params.push(req.body.availableUntil);
+      updates.push(`available_until = $${params.length}`);
+    }
+    if (req.body.resultsVisibility) {
+      params.push(req.body.resultsVisibility);
+      updates.push(`results_visibility = $${params.length}`);
+    }
+    if (!updates.length) {
+      return res.status(422).json({ message: "تغییری ارسال نشده است." });
+    }
+    updates.push("updated_at = now()");
+    const { rows } = await pool.query(
+      `UPDATE exams SET ${updates.join(", ")} WHERE id = $1 RETURNING *`,
+      params,
+    );
+    await withTransaction(async (client) => {
+      await audit(
+        client,
+        req.user.org,
+        req.user.sub,
+        "schedule",
+        "exam",
+        exam.id,
+        req.body,
+      );
+    });
+    res.json({ exam: normalizeExam(rows[0]) });
+  }),
+);
+
+app.post(
+  "/api/exams/:id/publish",
+  authorize("teacher"),
+  asyncRoute(async (req, res) => {
+    const exam = await loadExamForManagement(req, req.params.id);
+    if (exam.status !== "draft") {
+      return res.status(409).json({ message: "این آزمون قبلاً منتشر شده است." });
+    }
+    if (new Date(exam.available_until).getTime() <= Date.now()) {
+      return res
+        .status(422)
+        .json({ message: "بازهٔ آزمون به پایان رسیده است؛ زمان را تمدید کنید." });
+    }
+    const questions = await loadExamQuestions(exam.id);
+    if (!questions.length || questions.length > 20) {
+      return res
+        .status(422)
+        .json({ message: "آزمون باید بین ۱ تا ۲۰ سوال داشته باشد." });
+    }
+    const invalid = questions.find(
+      (question) =>
+        question.options.length < 3 ||
+        question.options.length > 5 ||
+        question.options.filter((option) => option.isCorrect).length !== 1,
+    );
+    if (invalid) {
+      return res.status(422).json({
+        message: "هر سوال باید ۳ تا ۵ گزینه و دقیقاً یک پاسخ صحیح داشته باشد.",
+      });
+    }
+    const { rows: studentCount } = await pool.query(
+      `SELECT count(*)::int AS count
+         FROM course_students cs
+         JOIN students st ON st.id = cs.student_id
+        WHERE cs.course_id = $1 AND st.status = 'active'`,
+      [exam.course_id],
+    );
+    if (!studentCount[0].count) {
+      return res.status(422).json({
+        message: "در این درس دانشجوی فعالی ثبت نشده است.",
+      });
+    }
+    const published = await withTransaction(async (client) => {
+      await refreshExamStudents(client, exam.id, exam.course_id);
+      const { rows } = await client.query(
+        `UPDATE exams
+            SET status = 'published', published_at = now(), updated_at = now()
+          WHERE id = $1
+          RETURNING *`,
+        [exam.id],
+      );
+      // Notify every student account linked to an eligible student.
+      await client.query(
+        `INSERT INTO notifications (organization_id, user_id, type, title, message, link)
+         SELECT DISTINCT $1::uuid, u.id, 'exam', $2, $3, 'portal'
+           FROM users u
+           JOIN students st
+             ON st.organization_id = u.organization_id
+            AND (
+              st.student_number = u.student_id
+              OR (
+                u.student_id ~* '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'
+                AND st.id = u.student_id::uuid
+              )
+            )
+           JOIN exam_students es ON es.student_id = st.id
+          WHERE u.role = 'student' AND u.is_active = true AND es.exam_id = $4::uuid`,
+        [
+          req.user.org,
+          `آزمون جدید: ${exam.title}`,
+          `آزمون «${exam.title}» برای درس ${exam.courseTitle} منتشر شد.`,
+          exam.id,
+        ],
+      );
+      await audit(
+        client,
+        req.user.org,
+        req.user.sub,
+        "publish",
+        "exam",
+        exam.id,
+        { title: exam.title },
+      );
+      return rows[0];
+    });
+    res.json({ exam: normalizeExam(published) });
+  }),
+);
+
+app.post(
+  "/api/exams/:id/close",
+  authorize("admin", "teacher"),
+  asyncRoute(async (req, res) => {
+    const exam = await loadExamForManagement(req, req.params.id);
+    if (exam.status === "draft") {
+      return res
+        .status(409)
+        .json({ message: "آزمون پیش‌نویس قابل بستن نیست؛ آن را لغو کنید." });
+    }
+    if (exam.status === "closed") {
+      return res.json({ exam: normalizeExam(exam) });
+    }
+    await withTransaction(async (client) => {
+      await client.query(
+        `UPDATE exams
+            SET status = 'closed', closed_at = now(), updated_at = now()
+          WHERE id = $1`,
+        [exam.id],
+      );
+      await audit(
+        client,
+        req.user.org,
+        req.user.sub,
+        "close",
+        "exam",
+        exam.id,
+        { title: exam.title },
+      );
+    });
+    // Closing an exam early must finalize every open attempt, not only attempts
+    // that already passed their per-student expiry.
+    const { rows: openAttempts } = await pool.query(
+      `SELECT id FROM exam_attempts
+        WHERE exam_id = $1 AND status = 'in_progress'`,
+      [exam.id],
+    );
+    for (const attempt of openAttempts) {
+      await finalizeExamAttempt({ attemptId: attempt.id, mode: "expired" }).catch(
+        (error) => console.error("finalize attempt on exam close", error),
+      );
+    }
+    await finalizeExpiredExamAttempts({
+      organizationId: req.user.org,
+      examId: exam.id,
+    });
+    const { rows } = await pool.query(`SELECT * FROM exams WHERE id = $1`, [
+      exam.id,
+    ]);
+    res.json({ exam: normalizeExam(rows[0]) });
+  }),
+);
+
+app.post(
+  "/api/exams/:id/cancel",
+  authorize("admin", "teacher"),
+  asyncRoute(async (req, res) => {
+    const exam = await loadExamForManagement(req, req.params.id);
+    const { rows: attempts } = await pool.query(
+      `SELECT count(*)::int AS count FROM exam_attempts
+        WHERE exam_id = $1 AND status <> 'voided'`,
+      [exam.id],
+    );
+    if (attempts[0].count > 0) {
+      return res.status(409).json({
+        message: "آزمون دارای شرکت‌کننده قابل لغو نیست؛ آن را ببندید.",
+      });
+    }
+    const { rows } = await pool.query(
+      `UPDATE exams
+          SET status = 'cancelled', closed_at = now(), updated_at = now()
+        WHERE id = $1
+        RETURNING *`,
+      [exam.id],
+    );
+    await withTransaction(async (client) => {
+      await audit(
+        client,
+        req.user.org,
+        req.user.sub,
+        "cancel",
+        "exam",
+        exam.id,
+        { title: exam.title },
+      );
+    });
+    res.json({ exam: normalizeExam(rows[0]) });
+  }),
+);
+
+app.delete(
+  "/api/exams/:id",
+  authorize("admin", "teacher"),
+  asyncRoute(async (req, res) => {
+    const exam = await loadExamForManagement(req, req.params.id);
+    const { rows: attempts } = await pool.query(
+      `SELECT count(*)::int AS count FROM exam_attempts WHERE exam_id = $1`,
+      [exam.id],
+    );
+    if (attempts[0].count > 0) {
+      return res.status(409).json({
+        message: "آزمون دارای سابقهٔ شرکت‌کننده قابل حذف نیست؛ آن را ببندید.",
+      });
+    }
+    if (!["draft", "cancelled"].includes(exam.status)) {
+      return res.status(409).json({
+        message: "فقط آزمون پیش‌نویس یا لغو‌شده قابل حذف است.",
+      });
+    }
+    await withTransaction(async (client) => {
+      await client.query(`DELETE FROM exams WHERE id = $1`, [exam.id]);
+      await audit(
+        client,
+        req.user.org,
+        req.user.sub,
+        "delete",
+        "exam",
+        exam.id,
+        { title: exam.title },
+      );
+    });
+    res.sendStatus(204);
+  }),
+);
+
+app.get(
+  "/api/exams/:id/results",
+  authorize("admin", "teacher"),
+  asyncRoute(async (req, res) => {
+    const exam = await loadExamForManagement(req, req.params.id);
+    await finalizeExpiredExamAttempts({
+      organizationId: req.user.org,
+      examId: exam.id,
+    });
+    const { rows } = await pool.query(
+      `SELECT st.id AS "studentId", st.student_number AS "studentNumber",
+              st.full_name AS "fullName",
+              a.id AS "attemptId", a.status AS "attemptStatus",
+              a.started_at AS "startedAt", a.submitted_at AS "submittedAt",
+              a.percent, a.score_out_of_20 AS "scoreOutOf20", a.passed,
+              a.correct_count AS "correctCount", a.total_points AS "totalPoints",
+              a.tab_switch_count AS "tabSwitchCount",
+              a.ip_address AS "ipAddress", a.user_agent AS "userAgent",
+              a.void_reason AS "voidReason"
+         FROM exam_students es
+         JOIN students st ON st.id = es.student_id
+         LEFT JOIN LATERAL (
+           SELECT x.*
+             FROM exam_attempts x
+            WHERE x.exam_id = es.exam_id AND x.student_id = es.student_id
+            ORDER BY x.attempt_no DESC
+            LIMIT 1
+         ) a ON true
+        WHERE es.exam_id = $1
+        ORDER BY st.full_name`,
+      [exam.id],
+    );
+    const finished = rows.filter((row) =>
+      ["submitted", "expired"].includes(row.attemptStatus),
+    );
+    const summary = {
+      studentCount: rows.length,
+      startedCount: rows.filter((row) => row.attemptStatus).length,
+      submittedCount: finished.length,
+      passedCount: finished.filter((row) => row.passed).length,
+      averagePercent: finished.length
+        ? Math.round(
+            (finished.reduce((sum, row) => sum + Number(row.percent || 0), 0) /
+              finished.length) *
+              100,
+          ) / 100
+        : null,
+    };
+    res.json({
+      exam: normalizeExam(exam),
+      results: rows,
+      summary,
+      serverNow: new Date().toISOString(),
+    });
+  }),
+);
+
+app.get(
+  "/api/exams/:id/attempts/:attemptId",
+  authorize("admin", "teacher"),
+  asyncRoute(async (req, res) => {
+    const exam = await loadExamForManagement(req, req.params.id);
+    const { rows } = await pool.query(
+      `SELECT a.*, st.student_number AS "studentNumber",
+              st.full_name AS "fullName"
+         FROM exam_attempts a
+         JOIN students st ON st.id = a.student_id
+        WHERE a.id = $1 AND a.exam_id = $2`,
+      [req.params.attemptId, exam.id],
+    );
+    const attempt = rows[0];
+    if (!attempt) return res.status(404).json({ message: "برگهٔ آزمون پیدا نشد." });
+    const questions = await loadExamQuestions(exam.id);
+    const { rows: answers } = await pool.query(
+      `SELECT question_id AS "questionId",
+              selected_option_id AS "selectedOptionId",
+              is_correct AS "isCorrect", earned_points AS "earnedPoints"
+         FROM exam_answers WHERE attempt_id = $1`,
+      [attempt.id],
+    );
+    const answerMap = new Map(
+      answers.map((answer) => [String(answer.questionId), answer]),
+    );
+    res.json({
+      exam: normalizeExam(exam),
+      attempt: examAttemptPayload(attempt),
+      student: {
+        id: attempt.student_id,
+        number: attempt.studentNumber,
+        name: attempt.fullName,
+      },
+      questions: questions.map((question) => ({
+        ...question,
+        answer: answerMap.get(String(question.id)) || null,
+      })),
+      serverNow: new Date().toISOString(),
+    });
+  }),
+);
+
+app.post(
+  "/api/exams/:id/attempts/:attemptId/void",
+  authorize("admin", "teacher"),
+  asyncRoute(async (req, res) => {
+    const exam = await loadExamForManagement(req, req.params.id);
+    const reason = String(req.body?.reason || "").trim();
+    if (reason.length < 3) {
+      return res
+        .status(422)
+        .json({ message: "دلیل ابطال را وارد کنید (حداقل ۳ کاراکتر)." });
+    }
+    const { rows } = await pool.query(
+      `UPDATE exam_attempts
+          SET status = 'voided', voided_at = now(), void_reason = $3,
+              updated_at = now()
+        WHERE id = $1 AND exam_id = $2 AND status <> 'voided'
+        RETURNING *`,
+      [req.params.attemptId, exam.id, reason],
+    );
+    if (!rows[0]) {
+      return res.status(404).json({ message: "برگهٔ آزمون پیدا نشد." });
+    }
+    await withTransaction(async (client) => {
+      await audit(
+        client,
+        req.user.org,
+        req.user.sub,
+        "void",
+        "exam_attempt",
+        rows[0].id,
+        { examId: exam.id, reason },
+      );
+    });
+    res.json({ attempt: examAttemptPayload(rows[0]) });
+  }),
+);
+
+app.get(
+  "/api/exams/mine",
+  authorize("student"),
+  asyncRoute(async (req, res) => {
+    const student = await findStudentByUserId(req.user.sub, req.user.org);
+    if (!student) {
+      return res.status(404).json({
+        message: "حساب شما به دانشجویی معتبر در سامانه متصل نیست.",
+      });
+    }
+    await finalizeExpiredExamAttempts({
+      organizationId: req.user.org,
+      studentId: student.id,
+    });
+    const { rows } = await pool.query(
+      `SELECT e.id, e.title, e.description,
+              e.available_from AS "availableFrom",
+              e.available_until AS "availableUntil",
+              e.duration_minutes AS "durationMinutes",
+              e.pass_percent AS "passPercent",
+              e.results_visibility AS "resultsVisibility",
+              e.status,
+              c.title AS "courseTitle", c.code AS "courseCode",
+              c.teacher_name AS "teacherName",
+              (SELECT count(*)::int FROM exam_questions q
+                WHERE q.exam_id = e.id) AS "questionCount",
+              a.id AS "attemptId", a.status AS "attemptStatus",
+              a.started_at AS "startedAt", a.expires_at AS "attemptExpiresAt",
+              a.submitted_at AS "submittedAt", a.percent,
+              a.score_out_of_20 AS "scoreOutOf20", a.passed,
+              a.correct_count AS "correctCount",
+              a.total_points AS "totalPoints"
+         FROM exams e
+         JOIN courses c ON c.id = e.course_id
+         JOIN exam_students es
+           ON es.exam_id = e.id AND es.student_id = $2
+         LEFT JOIN LATERAL (
+           SELECT x.*
+             FROM exam_attempts x
+            WHERE x.exam_id = e.id AND x.student_id = $2
+              AND x.status <> 'voided'
+            ORDER BY x.attempt_no DESC
+            LIMIT 1
+         ) a ON true
+        WHERE e.organization_id = $1
+          AND e.status IN ('published', 'closed')
+        ORDER BY e.available_from DESC`,
+      [req.user.org, student.id],
+    );
+    const now = Date.now();
+    res.json({
+      exams: rows.map((exam) => {
+        const normalized = normalizeExam({
+          ...exam,
+          resultsVisibility: exam.resultsVisibility,
+          availableUntil: exam.availableUntil,
+        });
+        const attempt = exam.attemptId
+          ? {
+              status: exam.attemptStatus,
+              percent: exam.percent,
+              passed: exam.passed,
+            }
+          : null;
+        const visible = scoreVisible(normalized, attempt);
+        const inWindow =
+          new Date(exam.availableFrom).getTime() <= now &&
+          new Date(exam.availableUntil).getTime() > now;
+        return {
+          ...exam,
+          scoreVisible: visible,
+          percent: visible ? exam.percent : null,
+          scoreOutOf20: visible ? exam.scoreOutOf20 : null,
+          passed: visible ? exam.passed : null,
+          correctCount: visible ? exam.correctCount : null,
+          totalPoints: visible ? exam.totalPoints : null,
+          canStart:
+            exam.status === "published" &&
+            inWindow &&
+            !exam.attemptId,
+          canResume:
+            exam.attemptStatus === "in_progress" &&
+            new Date(exam.attemptExpiresAt).getTime() > now,
+        };
+      }),
+      student: { id: student.id, number: student.studentNumber },
+      serverNow: new Date().toISOString(),
+    });
+  }),
+);
+
+app.post(
+  "/api/exams/:id/start",
+  authorize("student"),
+  asyncRoute(async (req, res) => {
+    const student = await findStudentByUserId(req.user.sub, req.user.org);
+    if (!student) {
+      return res.status(404).json({
+        message: "حساب شما به دانشجویی معتبر در سامانه متصل نیست.",
+      });
+    }
+    const { rows: examRows } = await pool.query(
+      `SELECT e.*, c.title AS "courseTitle", c.code AS "courseCode",
+              c.teacher_name AS "teacherName"
+         FROM exams e
+         JOIN courses c ON c.id = e.course_id
+        WHERE e.id = $1 AND e.organization_id = $2`,
+      [req.params.id, req.user.org],
+    );
+    const exam = examRows[0];
+    if (!exam) return res.status(404).json({ message: "آزمون پیدا نشد." });
+    if (exam.status !== "published") {
+      return res.status(409).json({
+        message:
+          exam.status === "draft"
+            ? "این آزمون هنوز منتشر نشده است."
+            : "این آزمون بسته شده است.",
+      });
+    }
+    const now = Date.now();
+    if (now < new Date(exam.available_from).getTime()) {
+      return res
+        .status(409)
+        .json({ message: "زمان شروع آزمون هنوز فرا نرسیده است." });
+    }
+    if (now >= new Date(exam.available_until).getTime()) {
+      return res
+        .status(409)
+        .json({ message: "زمان این آزمون به پایان رسیده است." });
+    }
+    const { rowCount: eligible } = await pool.query(
+      `SELECT 1 FROM exam_students WHERE exam_id = $1 AND student_id = $2`,
+      [exam.id, student.id],
+    );
+    if (!eligible) {
+      return res
+        .status(403)
+        .json({ message: "شما در فهرست دانشجویان مجاز این آزمون نیستید." });
+    }
+    await finalizeExpiredExamAttempts({
+      organizationId: req.user.org,
+      examId: exam.id,
+      studentId: student.id,
+    });
+    const { rows: existing } = await pool.query(
+      `SELECT * FROM exam_attempts
+        WHERE exam_id = $1 AND student_id = $2
+        ORDER BY attempt_no`,
+      [exam.id, student.id],
+    );
+    const active = existing.filter((attempt) => attempt.status !== "voided");
+    // Resume an open attempt before checking the attempt limit, otherwise a
+    // student with max_attempts=1 could never return to an in-progress exam.
+    const inProgress = active.find(
+      (attempt) => attempt.status === "in_progress",
+    );
+    if (inProgress) {
+      if (new Date(inProgress.expires_at).getTime() > now) {
+        return res.json(await buildStudentAttemptPayload({
+          ...exam,
+          ...inProgress,
+          exam_id: exam.id,
+          title: exam.title,
+          description: exam.description,
+          course_title: exam.courseTitle,
+          course_code: exam.courseCode,
+          teacher_name: exam.teacherName,
+          duration_minutes: exam.duration_minutes,
+          pass_percent: exam.pass_percent,
+          results_visibility: exam.results_visibility,
+          shuffle_questions: exam.shuffle_questions,
+          shuffle_options: exam.shuffle_options,
+          available_until: exam.available_until,
+          exam_status: exam.status,
+        }));
+      }
+      await finalizeExamAttempt({ attemptId: inProgress.id, mode: "expired" });
+      return res.status(409).json({
+        message: "زمان آزمون شما به پایان رسیده است.",
+        attemptId: inProgress.id,
+      });
+    }
+    if (active.length >= Number(exam.max_attempts)) {
+      const last = active[active.length - 1];
+      return res.status(409).json({
+        message: "شما قبلاً در این آزمون شرکت کرده‌اید.",
+        attemptId: last?.id || null,
+      });
+    }
+    let attempt;
+    try {
+      const { rows } = await pool.query(
+        `INSERT INTO exam_attempts
+           (exam_id, student_id, attempt_no, started_at, expires_at,
+            ip_address, user_agent)
+         VALUES ($1, $2, $3, now(),
+                 LEAST(now() + make_interval(mins => $4), $5),
+                 $6, $7)
+         RETURNING *`,
+        [
+          exam.id,
+          student.id,
+          existing.length ? Math.max(...existing.map((row) => row.attempt_no)) + 1 : 1,
+          Number(exam.duration_minutes),
+          exam.available_until,
+          req.ip,
+          req.get("user-agent") || null,
+        ],
+      );
+      attempt = rows[0];
+    } catch (error) {
+      if (error.code === "23505") {
+        const { rows } = await pool.query(
+          `SELECT * FROM exam_attempts
+            WHERE exam_id = $1 AND student_id = $2 AND status = 'in_progress'
+            LIMIT 1`,
+          [exam.id, student.id],
+        );
+        if (rows[0]) {
+          attempt = rows[0];
+        } else {
+          throw error;
+        }
+      } else {
+        throw error;
+      }
+    }
+    res.status(201).json(await buildStudentAttemptPayload({
+      ...exam,
+      exam_id: exam.id,
+      ...attempt,
+      title: exam.title,
+      description: exam.description,
+      course_title: exam.courseTitle,
+      course_code: exam.courseCode,
+      teacher_name: exam.teacherName,
+      duration_minutes: exam.duration_minutes,
+      pass_percent: exam.pass_percent,
+      results_visibility: exam.results_visibility,
+      shuffle_questions: exam.shuffle_questions,
+      shuffle_options: exam.shuffle_options,
+      available_until: exam.available_until,
+      exam_status: exam.status,
+    }));
+  }),
+);
+
+app.put(
+  "/api/exams/attempts/:attemptId/answers",
+  authorize("student"),
+  validate(examAnswersSchema),
+  asyncRoute(async (req, res) => {
+    const student = await findStudentByUserId(req.user.sub, req.user.org);
+    if (!student) {
+      return res.status(404).json({
+        message: "حساب شما به دانشجویی معتبر در سامانه متصل نیست.",
+      });
+    }
+    const attempt = await loadStudentExamAttempt(
+      req.params.attemptId,
+      student.id,
+    );
+    if (!attempt) {
+      return res.status(404).json({ message: "آزمون در حال اجرا پیدا نشد." });
+    }
+    if (attempt.status !== "in_progress") {
+      return res.status(409).json({ message: "این آزمون قبلاً ثبت شده است." });
+    }
+    if (Date.now() > new Date(attempt.expires_at).getTime()) {
+      await finalizeExamAttempt({ attemptId: attempt.id, mode: "expired" });
+      return res.status(409).json({
+        message: "زمان آزمون به پایان رسیده است؛ پاسخ‌های ذخیره‌شده ثبت شدند.",
+        attemptId: attempt.id,
+      });
+    }
+    await withTransaction(async (client) => {
+      const questions = await loadExamQuestions(attempt.exam_id, client);
+      await saveExamAnswers(
+        client,
+        questions,
+        attempt.id,
+        req.body.answers,
+      );
+    });
+    res.json({
+      savedAt: new Date().toISOString(),
+      serverNow: new Date().toISOString(),
+      expiresAt: attempt.expires_at,
+    });
+  }),
+);
+
+app.post(
+  "/api/exams/attempts/:attemptId/submit",
+  authorize("student"),
+  validate(examAnswersSchema),
+  asyncRoute(async (req, res) => {
+    const student = await findStudentByUserId(req.user.sub, req.user.org);
+    if (!student) {
+      return res.status(404).json({
+        message: "حساب شما به دانشجویی معتبر در سامانه متصل نیست.",
+      });
+    }
+    const attempt = await loadStudentExamAttempt(
+      req.params.attemptId,
+      student.id,
+    );
+    if (!attempt) {
+      return res.status(404).json({ message: "آزمون پیدا نشد." });
+    }
+    if (["submitted", "expired"].includes(attempt.status)) {
+      return res.json(await buildStudentResultPayload(attempt, attempt));
+    }
+    if (attempt.status === "voided") {
+      return res.status(409).json({ message: "این آزمون ابطال شده است." });
+    }
+    const expires = new Date(attempt.expires_at).getTime();
+    const late = Date.now() > expires + 30_000;
+    const result = await finalizeExamAttempt({
+      attemptId: attempt.id,
+      answers: late ? null : req.body.answers,
+      integrity: req.body.integrity || {},
+      mode: late ? "expired" : "submitted",
+    });
+    if (result.notFound) {
+      return res.status(404).json({ message: "آزمون پیدا نشد." });
+    }
+    res.json(
+      await buildStudentResultPayload(result.attempt, attempt, result.questions),
+    );
+  }),
+);
+
+app.get(
+  "/api/exams/attempts/:attemptId",
+  authorize("student"),
+  asyncRoute(async (req, res) => {
+    const student = await findStudentByUserId(req.user.sub, req.user.org);
+    if (!student) {
+      return res.status(404).json({
+        message: "حساب شما به دانشجویی معتبر در سامانه متصل نیست.",
+      });
+    }
+    let attempt = await loadStudentExamAttempt(
+      req.params.attemptId,
+      student.id,
+    );
+    if (!attempt) {
+      return res.status(404).json({ message: "آزمون پیدا نشد." });
+    }
+    if (
+      attempt.status === "in_progress" &&
+      Date.now() > new Date(attempt.expires_at).getTime()
+    ) {
+      await finalizeExamAttempt({ attemptId: attempt.id, mode: "expired" });
+      attempt = await loadStudentExamAttempt(attempt.id, student.id);
+    }
+    if (attempt.status === "in_progress") {
+      return res.json(await buildStudentAttemptPayload(attempt));
+    }
+    res.json(await buildStudentResultPayload(attempt, attempt));
   }),
 );
 
