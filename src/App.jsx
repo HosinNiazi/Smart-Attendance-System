@@ -17,6 +17,7 @@ import {
   Settings,
   StudentPortal,
   Students,
+  Support,
   Teachers,
   Tickets,
 } from "./components/pages.jsx";
@@ -137,6 +138,7 @@ const navGroups = [
       { id: "registrations", label: "پذیرش درخواست‌ها", icon: "bi-person-check" },
       { id: "teachers", label: "اساتید", icon: "bi-person-workspace" },
       { id: "activity", label: "گزارش فعالیت مدیران", icon: "bi-journal-text" },
+      { id: "support", label: "پشتیبانی", icon: "bi-headset" },
       { id: "tickets", label: "تیکت‌ها", icon: "bi-ticket" },
       { id: "settings", label: "تنظیمات", icon: "bi-gear" },
     ],
@@ -159,6 +161,7 @@ const ROLE_PERMISSIONS = {
     "trends",
     "reports",
     "profile",
+    "support",
   ]),
 };
 const faDate = new Intl.DateTimeFormat("fa-IR", {
@@ -3306,6 +3309,16 @@ export default function App() {
               onRespond={respondTicket}
               onClose={closeTicket}
               onRefresh={refreshTickets}
+            />
+          )}
+          {active === "support" && (
+            <Support
+              role={loginRole}
+              tickets={tickets}
+              loading={ticketsLoading}
+              onRefresh={refreshTickets}
+              onOpenHelp={() => setHelpOpen(true)}
+              onNavigate={go}
             />
           )}
           {active === "leave-requests" && (

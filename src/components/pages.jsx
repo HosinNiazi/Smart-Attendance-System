@@ -6113,6 +6113,284 @@ export function Tickets({
   );
 }
 
+/* ================= پشتیبانی ================= */
+
+export function Support({
+  role = "teacher",
+  tickets = [],
+  loading = false,
+  onRefresh,
+  onOpenHelp,
+  onNavigate,
+}) {
+  const isAdmin = role === "admin";
+  const roleLabel = isAdmin ? "مدیر" : "استاد";
+  const supportMailto = `mailto:admin@hozorban.local?subject=${encodeURIComponent(
+    `درخواست پشتیبانی - پنل ${roleLabel}`,
+  )}&body=${encodeURIComponent(
+    `نام:\nنقش: ${roleLabel}\n\nمتن درخواست:\n`,
+  )}`;
+
+  const faqs = [
+    {
+      question: "چطور حضور دانشجویان را در کلاس ثبت کنم؟",
+      answer:
+        "از بخش «ثبت دستی حضور»، «تشخیص چهره»، «تشخیص صدا» یا «دوربین کلاس» استفاده کنید. پس از پایان کلاس، جلسه را نهایی کنید تا وضعیت‌ها قطعی شوند.",
+    },
+    {
+      question: "اگر دوربین یا میکروفون کار نکند چه کنم؟",
+      answer:
+        "ابتدا از بخش «تنظیمات» بررسی مرورگر را انجام دهید و دسترسی دوربین/میکروفون را در مرورگر مجاز کنید. از مرورگر به‌روز و اتصال امن (localhost یا HTTPS) استفاده کنید.",
+    },
+    {
+      question: "چرا دانشجویی در فهرست کلاس دیده نمی‌شود؟",
+      answer:
+        "دانشجو باید در همان دانشکده و در فهرست ثبت‌نام کلاس باشد. در صورت نیاز از مدیر سامانه بخواهید عضویت دانشجو را در درس اصلاح کند.",
+    },
+    {
+      question: "جلسهٔ کلاس را چطور ایجاد یا نهایی کنم؟",
+      answer:
+        "در بخش «جلسات کلاس» جلسهٔ جدید بسازید و تاریخ و ساعت آن را مشخص کنید. پس از پایان، دکمهٔ نهایی‌سازی را بزنید تا گزارش‌ها به‌روز شوند.",
+    },
+    {
+      question: "اگر تیکت یا درخواست دانشجویی نیاز به پیگیری داشت چه کنم؟",
+      answer: isAdmin
+        ? "از تب «تیکت‌ها» می‌توانید درخواست‌های دانشجویان را بررسی، پاسخ و بسته‌بندی کنید."
+        : "درخواست‌های دانشجویان توسط مدیر سامانه بررسی می‌شود. در صورت مشاهدهٔ مشکل، از طریق ایمیل یا دستیار هوشمند به مدیر اطلاع دهید.",
+    },
+  ];
+
+  const list = Array.isArray(tickets) ? tickets : [];
+
+  function statusBadge(ticket) {
+    if (!ticket) return null;
+    if (ticket.status === "closed")
+      return <Badge tone="neutral">بسته شد</Badge>;
+    if (ticket.status === "answered")
+      return (
+        <Badge tone={ticket.outcome === "reject" ? "danger" : "success"}>
+          {ticket.outcome === "reject" ? "رد شده" : "پاسخ داده شد"}
+        </Badge>
+      );
+    return <Badge tone="warning">باز</Badge>;
+  }
+
+  function formatDate(value) {
+    if (!value) return "—";
+    const date = new Date(value);
+    if (Number.isNaN(date.getTime())) return "—";
+    return date.toLocaleDateString("fa-IR", {
+      year: "numeric",
+      month: "2-digit",
+      day: "2-digit",
+    });
+  }
+
+  function truncate(text, max = 90) {
+    const value = String(text || "");
+    return value.length > max ? `${value.slice(0, max).trimEnd()}…` : value;
+  }
+
+  return (
+    <>
+      <PanelTitle
+        eyebrow="پشتیبانی"
+        title="پشتیبانی و راهنما"
+        description="پاسخ سؤال‌های پرتکرار، ارتباط با مدیر سامانه و پیگیری درخواست‌های شما."
+        action={
+          <button
+            className="btn btn-light-outline"
+            type="button"
+            onClick={onRefresh}
+          >
+            <Icon name="bi-arrow-clockwise" /> بروزرسانی
+          </button>
+        }
+      />
+      <section className="student-help-section">
+        <div className="student-help-hero">
+          <div className="student-help-copy">
+            <span className="student-welcome-eyebrow">
+              <i /> پشتیبانی و راهنما
+            </span>
+            <h1>چطور می‌توانیم کمک کنیم؟</h1>
+            <p>
+              دستیار هوشمند حضوربان دربارهٔ امکانات سامانه، حضور و غیاب و
+              مشکلات رایج پاسخ می‌دهد. برای موارد خاص نیز می‌توانید به مدیر
+              سامانه ایمیل بزنید.
+            </p>
+            <div className="student-help-actions">
+              <button
+                className="btn btn-primary"
+                type="button"
+                onClick={onOpenHelp}
+              >
+                <Icon name="bi-stars" /> گفت‌وگو با دستیار
+              </button>
+              <a className="btn btn-light-outline" href={supportMailto}>
+                <Icon name="bi-envelope" /> ارسال ایمیل به مدیر
+              </a>
+              {isAdmin ? (
+                <button
+                  className="btn btn-light-outline"
+                  type="button"
+                  onClick={() => onNavigate?.("tickets")}
+                >
+                  <Icon name="bi-ticket" /> مدیریت تیکت‌ها
+                </button>
+              ) : null}
+            </div>
+          </div>
+          <span className="student-help-mark">
+            <Icon name="bi-headset" />
+          </span>
+        </div>
+
+        <div className="student-help-grid">
+          <section className="content-card student-faq-card">
+            <div className="student-section-heading">
+              <div>
+                <span>پاسخ سریع</span>
+                <h2>سؤال‌های پرتکرار</h2>
+              </div>
+            </div>
+            <div className="student-faq-list">
+              {faqs.map((item, index) => (
+                <details
+                  className="student-faq-item"
+                  key={item.question}
+                  open={index === 0}
+                >
+                  <summary>
+                    <span>{item.question}</span>
+                    <Icon name="bi-chevron-down" />
+                  </summary>
+                  <p>{item.answer}</p>
+                </details>
+              ))}
+            </div>
+          </section>
+
+          <aside className="content-card student-contact-card">
+            <div className="student-section-heading">
+              <div>
+                <span>ارتباط با ما</span>
+                <h2>راه‌های تماس</h2>
+              </div>
+            </div>
+            <div className="student-contact-row">
+              <span>
+                <Icon name="bi-envelope-at" />
+              </span>
+              <div>
+                <strong>رایانامهٔ مدیر سامانه</strong>
+                <a href={supportMailto}>admin@hozorban.local</a>
+              </div>
+            </div>
+            <div className="student-contact-row">
+              <span>
+                <Icon name="bi-chat-dots" />
+              </span>
+              <div>
+                <strong>دستیار هوشمند</strong>
+                <small>
+                  پاسخ فوری دربارهٔ امکانات سامانه، بدون محدودیت ساعت.
+                </small>
+              </div>
+            </div>
+            <div className="student-contact-row">
+              <span>
+                <Icon name="bi-clock-history" />
+              </span>
+              <div>
+                <strong>زمان پاسخ‌گویی</strong>
+                <small>در اولین فرصت کاری</small>
+              </div>
+            </div>
+            <div className="student-contact-row">
+              <span>
+                <Icon name="bi-shield-lock" />
+              </span>
+              <div>
+                <strong>حریم خصوصی</strong>
+                <small>
+                  اطلاعات درخواست‌های شما فقط برای خودتان و مدیر سامانه قابل
+                  مشاهده است.
+                </small>
+              </div>
+            </div>
+            <p className="student-contact-note">
+              <Icon name="bi-info-circle" /> برای پیگیری سریع‌تر، نام صفحه و
+              شرح دقیق مشکل را ذکر کنید.
+            </p>
+          </aside>
+        </div>
+
+        <section className="content-card data-card">
+          <div className="table-toolbar">
+            <div>
+              <strong>درخواست‌های من</strong>
+            </div>
+            <small className="text-muted">
+              {isAdmin
+                ? "برای پاسخ و مدیریت کامل، از تب «تیکت‌ها» استفاده کنید."
+                : "درخواست‌های ثبت‌شده و پاسخ مدیر سامانه در این بخش نمایش داده می‌شود."}
+            </small>
+          </div>
+          {loading && !list.length ? (
+            <SkeletonTable rows={3} columns={4} />
+          ) : list.length ? (
+            <div className="table-responsive">
+              <table className="table custom-table align-middle">
+                <thead>
+                  <tr>
+                    <th>موضوع</th>
+                    <th>متن درخواست</th>
+                    <th>وضعیت</th>
+                    <th>پاسخ</th>
+                    <th>تاریخ</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {list.map((ticket) => (
+                    <tr key={ticket.id}>
+                      <td>
+                        <strong>{ticket.subject}</strong>
+                      </td>
+                      <td>
+                        <span className="ticket-text-cell" title={ticket.message}>
+                          {truncate(ticket.message)}
+                        </span>
+                      </td>
+                      <td>{statusBadge(ticket)}</td>
+                      <td>
+                        <span className="ticket-text-cell" title={ticket.response || ""}>
+                          {ticket.response ? truncate(ticket.response) : "—"}
+                        </span>
+                      </td>
+                      <td>{formatDate(ticket.createdAt)}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          ) : (
+            <EmptyState
+              icon="bi-ticket"
+              title="درخواستی ثبت نشده"
+              text={
+                isAdmin
+                  ? "هنوز درخواستی از سوی کاربران ثبت نشده است."
+                  : "برای ثبت درخواست جدید با مدیر سامانه تماس بگیرید."
+              }
+            />
+          )}
+        </section>
+      </section>
+    </>
+  );
+}
+
 /* ================= مرخصی و اعتراض ================= */
 
 function RequestReviewModal({
