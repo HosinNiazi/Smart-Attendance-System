@@ -334,6 +334,18 @@ export function voidExamAttempt(examId, attemptId, reason) {
     body: JSON.stringify({ reason }),
   });
 }
+export function grantExamAccommodation(examId, studentId, payload) {
+  return api(`/exams/${examId}/students/${studentId}/accommodation`, {
+    method: 'POST',
+    body: JSON.stringify(payload),
+  });
+}
+export function fetchExamAnalysis(examId) {
+  return api(`/exams/${examId}/analysis`);
+}
+export function fetchExamReports(examId) {
+  return api(`/exams/${examId}/reports`);
+}
 // ---- exams (student) ----
 export function fetchMyExams() {
   return api('/exams/mine');
@@ -355,5 +367,11 @@ export function submitExam(attemptId, answers, integrity) {
 }
 export function fetchExamAttempt(attemptId) {
   return api(`/exams/attempts/${attemptId}`);
+}
+export function reportExamQuestion(attemptId, payload) {
+  return api(`/exams/attempts/${attemptId}/report`, {
+    method: 'POST',
+    body: JSON.stringify(payload),
+  });
 }
 

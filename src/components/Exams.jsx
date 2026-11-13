@@ -6,10 +6,13 @@ import {
   closeExam,
   createExam,
   deleteExam,
+  fetchExamAnalysis,
   fetchExamAttemptDetail,
   fetchExamDetail,
+  fetchExamReports,
   fetchExamResults,
   fetchExams,
+  grantExamAccommodation,
   publishExam,
   updateExam,
   voidExamAttempt,
@@ -35,6 +38,10 @@ const ATTEMPT_STATUS_LABELS = {
   expired: "به پایان رسیده",
   voided: "ابطال شده",
 };
+
+// Attempts whose tab-switch counter reaches this threshold are highlighted
+// for teacher review. Not an automatic penalty — just a signal.
+const SUSPECT_TAB_SWITCHES = 3;
 
 const faNumber = (value) =>
   Number(value || 0).toLocaleString("fa-IR", { maximumFractionDigits: 2 });
@@ -671,6 +678,16 @@ function ResultsModal({ exam, onClose, notify }) {
   const [voidReason, setVoidReason] = useState("");
   const [voidBusy, setVoidBusy] = useState(false);
   const [exporting, setExporting] = useState(false);
+  const [resultsTab, setResultsTab] = useState("results");
+  const [analysis, setAnalysis] = useState(null);
+  const [analysisLoading, setAnalysisLoading] = useState(false);
+  const [analysisError, setAnalysisError] = useState("");
+  const [reports, setReports] = useState(null);
+  const [reportsLoading, setReportsLoading] = useState(false);
+  const [reportsError, setReportsError] = useState("");
+  const [accommodationTarget, setAccommodationTarget] = useState(null);
+  const [accommodationForm, setAccommodationForm] = useState({ extraMinutes: 0, extraAttempts: 0, note: "" });
+  const [accommodationBusy, setAccommodationBusy] = useState(false);
 
   async function load() {
     setLoading(true);
@@ -729,6 +746,67 @@ function ResultsModal({ exam, onClose, notify }) {
     }
   }
 
+  async function loadAnalysis(force = false) {
+    if (analysis && !force) return;
+    setAnalysisLoading(true);
+    setAnalysisError("");
+    try {
+      setAnalysis(await fetchExamAnalysis(exam.id));
+    } catch (analysisLoadError) {
+      setAnalysisError(analysisLoadError.message || "دریافت تحلیل سوالات انجام نشد.");
+    } finally {
+      setAnalysisLoading(false);
+    }
+  }
+
+  async function loadReports(force = false) {
+    if (reports && !force) return;
+    setReportsLoading(true);
+    setReportsError("");
+    try {
+      setReports(await fetchExamReports(exam.id));
+    } catch (reportsLoadError) {
+      setReportsError(reportsLoadError.message || "دریافت گزارش‌های دانشجویان انجام نشد.");
+    } finally {
+      setReportsLoading(false);
+    }
+  }
+
+  function selectTab(tab) {
+    setResultsTab(tab);
+    if (tab === "analysis") loadAnalysis();
+    if (tab === "reports") loadReports();
+  }
+
+  function openAccommodation(row) {
+    setAccommodationTarget(row);
+    setAccommodationForm({
+      extraMinutes: Number(row.extraMinutes || 0),
+      extraAttempts: Number(row.extraAttempts || 0),
+      note: "",
+    });
+  }
+
+  async function submitAccommodation(event) {
+    event.preventDefault();
+    if (!accommodationTarget) return;
+    setAccommodationBusy(true);
+    try {
+      await grantExamAccommodation(exam.id, accommodationTarget.studentId, {
+        extraMinutes: Number(accommodationForm.extraMinutes) || 0,
+        extraAttempts: Number(accommodationForm.extraAttempts) || 0,
+        note: accommodationForm.note.trim() || undefined,
+      });
+      notify("امتیاز ویژهٔ دانشجو ثبت شد.");
+      setAccommodationTarget(null);
+      await load();
+    } catch (accommodationError) {
+      notify(accommodationError.message || "ثبت امتیاز ویژه انجام نشد.");
+    } finally {
+      setAccommodationBusy(false);
+    }
+  }
+
   const summary = data?.summary;
 
   return (
@@ -752,15 +830,28 @@ function ResultsModal({ exam, onClose, notify }) {
           </div>
         </div>
 
-        {loading && <div className="exam-loading"><span className="exam-spinner" /> در حال دریافت نتایج…</div>}
-        {error && <div className="exam-form-error" role="alert"><Icon name="bi-exclamation-triangle" /> {error}</div>}
+        <div className="exam-results-tabs" role="tablist" aria-label="بخش‌های نتایج آزمون">
+          <button type="button" role="tab" aria-selected={resultsTab === "results"} className={`exam-results-tab ${resultsTab === "results" ? "is-active" : ""}`} onClick={() => selectTab("results")}>
+            نتایج
+          </button>
+          <button type="button" role="tab" aria-selected={resultsTab === "analysis"} className={`exam-results-tab ${resultsTab === "analysis" ? "is-active" : ""}`} onClick={() => selectTab("analysis")}>
+            تحلیل سوالات
+          </button>
+          <button type="button" role="tab" aria-selected={resultsTab === "reports"} className={`exam-results-tab ${resultsTab === "reports" ? "is-active" : ""}`} onClick={() => selectTab("reports")}>
+            گزارش‌های دانشجویان{reports ? ` (${faNumber(reports.reports?.length || 0)})` : ""}
+          </button>
+        </div>
 
-        {!loading && data && (
+        {resultsTab === "results" && loading && <div className="exam-loading"><span className="exam-spinner" /> در حال دریافت نتایج…</div>}
+        {resultsTab === "results" && error && <div className="exam-form-error" role="alert"><Icon name="bi-exclamation-triangle" /> {error}</div>}
+
+        {resultsTab === "results" && !loading && data && (
           <>
             <div className="exam-result-stats">
               <div><span>شرکت‌کنندگان</span><strong>{faNumber(summary?.studentCount)}</strong></div>
               <div><span>برگهٔ ثبت‌شده</span><strong>{faNumber(summary?.submittedCount)}</strong></div>
               <div><span>قبول</span><strong>{faNumber(summary?.passedCount)}</strong></div>
+              <div><span>مشکوک</span><strong>{faNumber(summary?.suspiciousCount ?? 0)}</strong></div>
               <div><span>میانگین</span><strong>{summary?.averagePercent == null ? "—" : `${faNumber(summary.averagePercent)}٪`}</strong></div>
             </div>
             <div className="exam-results-table-wrap">
@@ -777,12 +868,15 @@ function ResultsModal({ exam, onClose, notify }) {
                   </tr>
                 </thead>
                 <tbody>
-                  {(data.results || []).map((row) => (
-                    <tr key={row.studentId}>
+                  {(data.results || []).map((row) => {
+                    const suspicious = Number(row.tabSwitchCount || 0) >= SUSPECT_TAB_SWITCHES;
+                    return (
+                    <tr key={row.studentId} className={suspicious ? "is-suspicious" : ""}>
                       <td>
                         <div className="exam-student-cell">
                           <strong>{row.fullName}</strong>
                           <small>{row.studentNumber}</small>
+                          {suspicious && <Badge tone="warning">مشکوک</Badge>}
                         </div>
                       </td>
                       <td>
@@ -803,9 +897,12 @@ function ResultsModal({ exam, onClose, notify }) {
                           ? <Badge tone="success">قبول</Badge>
                           : <Badge tone="danger">مردود</Badge>}
                       </td>
-                      <td>{faNumber(row.tabSwitchCount)}</td>
+                      <td className={`exam-tab-count${suspicious ? " is-high" : ""}`}>{faNumber(row.tabSwitchCount)}</td>
                       <td>
                         <div className="exam-row-actions">
+                          <button type="button" className="row-action" title="مهلت یا فرصت اضافه" onClick={() => openAccommodation(row)}>
+                            <Icon name="bi-stopwatch" />
+                          </button>
                           {row.attemptId && (
                             <button type="button" className="btn btn-light btn-sm" onClick={() => openDetail(row.attemptId)}>
                               <Icon name="bi-eye" /> برگه
@@ -819,7 +916,8 @@ function ResultsModal({ exam, onClose, notify }) {
                         </div>
                       </td>
                     </tr>
-                  ))}
+                    );
+                  })}
                   {!(data.results || []).length && (
                     <tr><td colSpan={7}><EmptyState icon="bi-inbox" title="نتیجه‌ای ثبت نشده" description="هنوز دانشجویی در این آزمون شرکت نکرده است." /></td></tr>
                   )}
@@ -829,7 +927,79 @@ function ResultsModal({ exam, onClose, notify }) {
           </>
         )}
 
-        {detail && (
+        {resultsTab === "analysis" && (
+          <div className="exam-analysis">
+            {analysisLoading && <div className="exam-loading"><span className="exam-spinner" /> در حال تحلیل سوالات…</div>}
+            {analysisError && <div className="exam-form-error" role="alert"><Icon name="bi-exclamation-triangle" /> {analysisError}</div>}
+            {analysis && !analysisLoading && (
+              <>
+                <p className="exam-analysis-meta">
+                  تحلیل بر اساس {faNumber(analysis.attemptCount)} برگهٔ ثبت‌شده • درصد پاسخ صحیح از کل برگه‌ها
+                </p>
+                {(analysis.analysis || []).map((question) => {
+                  const pct = question.correctPercent;
+                  const tone = pct == null ? "mid" : pct >= 70 ? "good" : pct >= 40 ? "mid" : "low";
+                  return (
+                    <div className="exam-analysis-row" key={question.id}>
+                      <div className="exam-analysis-head">
+                        <span className="exam-analysis-q">سوال {faNumber(question.position)}</span>
+                        <span className="exam-analysis-prompt">{question.prompt}</span>
+                        <span className={`exam-analysis-pct ${tone}`}>{pct == null ? "—" : `${faNumber(pct)}٪`}</span>
+                      </div>
+                      <div className="exam-analysis-bar" role="presentation"><span className={`exam-analysis-fill ${tone}`} style={{ width: `${pct == null ? 0 : pct}%` }} /></div>
+                      <div className="exam-analysis-options">
+                        {(question.options || []).map((option) => {
+                          const share = question.doneCount
+                            ? Math.round((option.selectedCount / question.doneCount) * 1000) / 10
+                            : 0;
+                          return (
+                            <div className={`exam-analysis-option${option.isCorrect ? " is-correct" : ""}`} key={option.id}>
+                              <span className="exam-analysis-option-text">
+                                {option.isCorrect && <Icon name="bi-check-circle-fill" />} {option.text}
+                              </span>
+                              <span className="exam-analysis-option-count">{faNumber(option.selectedCount)} نفر ({faNumber(share)}٪)</span>
+                            </div>
+                          );
+                        })}
+                      </div>
+                    </div>
+                  );
+                })}
+                {!(analysis.analysis || []).length && (
+                  <EmptyState icon="bi-inbox" title="تحلیلی در دسترس نیست" description="هنوز برگه‌ای برای این آزمون ثبت نشده است." />
+                )}
+              </>
+            )}
+          </div>
+        )}
+
+        {resultsTab === "reports" && (
+          <div className="exam-reports">
+            {reportsLoading && <div className="exam-loading"><span className="exam-spinner" /> در حال دریافت گزارش‌ها…</div>}
+            {reportsError && <div className="exam-form-error" role="alert"><Icon name="bi-exclamation-triangle" /> {reportsError}</div>}
+            {reports && !reportsLoading && (
+              (reports.reports || []).length ? (
+                <ul className="exam-reports-list">
+                  {reports.reports.map((report) => (
+                    <li key={report.id} className="exam-reports-item">
+                      <div className="exam-reports-head">
+                        <span className="exam-reports-q">سوال {faNumber(report.position)}</span>
+                        <span className="exam-reports-student">{report.fullName} <small>{report.studentNumber}</small></span>
+                        <time>{formatDateTime(report.createdAt)}</time>
+                      </div>
+                      <p className="exam-reports-prompt">{report.prompt}</p>
+                      <p className="exam-reports-note">{report.note || "بدون توضیح"}</p>
+                    </li>
+                  ))}
+                </ul>
+              ) : (
+                <EmptyState icon="bi-flag" title="گزارشی ثبت نشده" description="هنوز دانشجویی سوالی را خطادار گزارش نکرده است." />
+              )
+            )}
+          </div>
+        )}
+
+        {resultsTab === "results" && detail && (
           <div className="exam-detail-panel">
             <div className="exam-detail-head">
               <div>
@@ -842,6 +1012,10 @@ function ResultsModal({ exam, onClose, notify }) {
             </div>
             <p className="exam-detail-meta">
               وضعیت: {ATTEMPT_STATUS_LABELS[detail.attempt?.status] || "—"} • درصد: {detail.attempt?.percent == null ? "—" : `${faNumber(detail.attempt.percent)}٪`} • نمره: {detail.attempt?.scoreOutOf20 == null ? "—" : faNumber(detail.attempt.scoreOutOf20)}
+            </p>
+            <p className="exam-detail-meta exam-detail-integrity">
+              تغییر تب: <strong>{faNumber(detail.attempt?.tabSwitchCount)}</strong> • خروج از تمام‌صفحه: <strong>{faNumber(detail.attempt?.integrityFlags?.fullscreenExits ?? 0)}</strong>
+              {Number(detail.attempt?.tabSwitchCount || 0) >= SUSPECT_TAB_SWITCHES && <> • <Badge tone="warning">مشکوک</Badge></>}
             </p>
             <ol className="exam-detail-questions">
               {(detail.questions || []).map((question) => {
@@ -872,6 +1046,54 @@ function ResultsModal({ exam, onClose, notify }) {
         )}
 
         {detailLoading && <div className="exam-loading"><span className="exam-spinner" /> در حال دریافت برگه…</div>}
+
+        {accommodationTarget && (
+          <form className="exam-void-form" onSubmit={submitAccommodation}>
+            <h4><Icon name="bi-stopwatch" /> امتیاز ویژهٔ {accommodationTarget.fullName}</h4>
+            <p>مهلت و فرصت اضافه روی برگه‌های بعدی این دانشجو اعمال می‌شود؛ برگه‌های در حال انجام تغییر نمی‌کنند. حذف امتیاز با صفر کردن هر دو مقدار انجام می‌شود.</p>
+            <label className="form-label">
+              مهلت اضافه (دقیقه)
+              <input
+                type="number"
+                min="0"
+                max="180"
+                className="form-control"
+                value={accommodationForm.extraMinutes}
+                onChange={(event) => setAccommodationForm((form) => ({ ...form, extraMinutes: event.target.value }))}
+              />
+            </label>
+            <label className="form-label">
+              فرصت اضافه
+              <select
+                className="form-select"
+                value={accommodationForm.extraAttempts}
+                onChange={(event) => setAccommodationForm((form) => ({ ...form, extraAttempts: Number(event.target.value) }))}
+              >
+                <option value={0}>بدون فرصت اضافه</option>
+                <option value={1}>۱ فرصت اضافه</option>
+                <option value={2}>۲ فرصت اضافه</option>
+                <option value={3}>۳ فرصت اضافه</option>
+              </select>
+            </label>
+            <label className="form-label">
+              توضیح (اختیاری)
+              <input
+                type="text"
+                className="form-control"
+                maxLength={200}
+                placeholder="مثلاً: گواهی پزشکی — نارساخوانی"
+                value={accommodationForm.note}
+                onChange={(event) => setAccommodationForm((form) => ({ ...form, note: event.target.value }))}
+              />
+            </label>
+            <div className="modal-actions">
+              <button type="submit" className="btn btn-primary" disabled={accommodationBusy}>
+                {accommodationBusy ? "در حال ثبت…" : "ثبت امتیاز ویژه"}
+              </button>
+              <button type="button" className="btn btn-light" onClick={() => setAccommodationTarget(null)} disabled={accommodationBusy}>انصراف</button>
+            </div>
+          </form>
+        )}
 
         {voidTarget && (
           <form className="exam-void-form" onSubmit={submitVoid}>

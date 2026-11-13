@@ -4378,6 +4378,67 @@ async function finalizeExpiredExamAttempts({
       (error) => console.error("finalize expired exam attempt", error),
     );
   }
+  await maybeNotifyExamResultsReady({ organizationId, examId }).catch((error) =>
+    console.error("results-ready notification", error),
+  );
+}
+
+// "Results ready" notification for after_close exams. Idempotent: the first
+// caller to atomically claim the exam via results_notified_at sends the
+// notifications, so this is safe to call from finalize paths with no cron.
+async function maybeNotifyExamResultsReady({ organizationId, examId = null }) {
+  const params = [organizationId];
+  const filters = [
+    "e.organization_id = $1",
+    "e.results_visibility = 'after_close'",
+    "e.results_notified_at IS NULL",
+    "e.status <> 'cancelled'",
+    "(e.status = 'closed' OR e.available_until <= now())",
+  ];
+  if (examId) {
+    params.push(examId);
+    filters.push(`e.id = $${params.length}`);
+  }
+  const { rows: candidates } = await pool.query(
+    `SELECT e.id, e.title FROM exams e WHERE ${filters.join(" AND ")}`,
+    params,
+  );
+  for (const exam of candidates) {
+    const { rowCount } = await pool.query(
+      `UPDATE exams
+          SET results_notified_at = now(), updated_at = now()
+        WHERE id = $1 AND results_notified_at IS NULL`,
+      [exam.id],
+    );
+    if (!rowCount) continue;
+    try {
+      await pool.query(
+        `INSERT INTO notifications (organization_id, user_id, type, title, message, link)
+         SELECT DISTINCT $1::uuid, u.id, 'exam', $2, $3, 'portal'
+           FROM users u
+           JOIN students st
+             ON st.organization_id = u.organization_id
+            AND (
+              st.student_number = u.student_id
+              OR (
+                u.student_id ~* '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'
+                AND st.id = u.student_id::uuid
+              )
+            )
+           JOIN exam_attempts a ON a.student_id = st.id AND a.exam_id = $4::uuid
+          WHERE u.role = 'student' AND u.is_active = true
+            AND a.status IN ('submitted', 'expired')`,
+        [
+          organizationId,
+          `نتیجهٔ آزمون: ${exam.title}`,
+          `نمرهٔ آزمون «${exam.title}» اکنون در دسترس است.`,
+          exam.id,
+        ],
+      );
+    } catch (error) {
+      console.error("results-ready notification", error);
+    }
+  }
 }
 
 function examAttemptPayload(attempt) {
@@ -4399,6 +4460,7 @@ function examAttemptPayload(attempt) {
         : Number(attempt.score_out_of_20),
     passed: attempt.passed,
     tabSwitchCount: Number(attempt.tab_switch_count ?? 0),
+    integrityFlags: attempt.integrity_flags ?? attempt.integrityFlags ?? {},
   };
 }
 
@@ -4456,7 +4518,9 @@ async function buildStudentAttemptPayload(attempt) {
       courseTitle: attempt.course_title,
       courseCode: attempt.course_code,
       teacherName: attempt.teacher_name,
-      durationMinutes: Number(attempt.duration_minutes),
+      durationMinutes:
+        Number(attempt.duration_minutes) + Number(attempt.extra_minutes || 0),
+      extraMinutes: Number(attempt.extra_minutes || 0),
       questionCount: ordered.length,
       passPercent: Number(attempt.pass_percent),
       resultsVisibility: attempt.results_visibility,
@@ -4519,7 +4583,8 @@ async function buildStudentResultPayload(attempt, exam, questions = null) {
 }
 
 async function refreshExamStudents(client, examId, courseId) {
-  await client.query(`DELETE FROM exam_students WHERE exam_id = $1`, [examId]);
+  // Diff-style refresh: keep rows for students still enrolled (preserving any
+  // granted accommodations) and only drop students who left the course.
   await client.query(
     `INSERT INTO exam_students (exam_id, student_id)
      SELECT $1, cs.student_id
@@ -4527,6 +4592,19 @@ async function refreshExamStudents(client, examId, courseId) {
        JOIN students st ON st.id = cs.student_id
       WHERE cs.course_id = $2 AND st.status = 'active'
      ON CONFLICT DO NOTHING`,
+    [examId, courseId],
+  );
+  await client.query(
+    `DELETE FROM exam_students es
+      WHERE es.exam_id = $1
+        AND NOT EXISTS (
+          SELECT 1
+            FROM course_students cs
+            JOIN students st ON st.id = cs.student_id
+           WHERE cs.course_id = $2
+             AND cs.student_id = es.student_id
+             AND st.status = 'active'
+        )`,
     [examId, courseId],
   );
 }
@@ -5064,8 +5142,11 @@ app.get(
               a.percent, a.score_out_of_20 AS "scoreOutOf20", a.passed,
               a.correct_count AS "correctCount", a.total_points AS "totalPoints",
               a.tab_switch_count AS "tabSwitchCount",
+              a.integrity_flags AS "integrityFlags",
               a.ip_address AS "ipAddress", a.user_agent AS "userAgent",
-              a.void_reason AS "voidReason"
+              a.void_reason AS "voidReason",
+              es.extra_minutes AS "extraMinutes",
+              es.extra_attempts AS "extraAttempts"
          FROM exam_students es
          JOIN students st ON st.id = es.student_id
          LEFT JOIN LATERAL (
@@ -5087,6 +5168,9 @@ app.get(
       startedCount: rows.filter((row) => row.attemptStatus).length,
       submittedCount: finished.length,
       passedCount: finished.filter((row) => row.passed).length,
+      suspiciousCount: finished.filter(
+        (row) => Number(row.tabSwitchCount || 0) >= 3,
+      ).length,
       averagePercent: finished.length
         ? Math.round(
             (finished.reduce((sum, row) => sum + Number(row.percent || 0), 0) /
@@ -5208,6 +5292,8 @@ app.get(
               e.status,
               c.title AS "courseTitle", c.code AS "courseCode",
               c.teacher_name AS "teacherName",
+              es.extra_minutes AS "extraMinutes",
+              es.extra_attempts AS "extraAttempts",
               (SELECT count(*)::int FROM exam_questions q
                 WHERE q.exam_id = e.id) AS "questionCount",
               a.id AS "attemptId", a.status AS "attemptStatus",
@@ -5314,15 +5400,20 @@ app.post(
         .status(409)
         .json({ message: "زمان این آزمون به پایان رسیده است." });
     }
-    const { rowCount: eligible } = await pool.query(
-      `SELECT 1 FROM exam_students WHERE exam_id = $1 AND student_id = $2`,
+    const { rows: eligibility } = await pool.query(
+      `SELECT extra_minutes, extra_attempts
+         FROM exam_students
+        WHERE exam_id = $1 AND student_id = $2`,
       [exam.id, student.id],
     );
-    if (!eligible) {
+    if (!eligibility.length) {
       return res
         .status(403)
         .json({ message: "شما در فهرست دانشجویان مجاز این آزمون نیستید." });
     }
+    const accommodation = eligibility[0];
+    const extraMinutes = Number(accommodation.extra_minutes || 0);
+    const extraAttempts = Number(accommodation.extra_attempts || 0);
     await finalizeExpiredExamAttempts({
       organizationId: req.user.org,
       examId: exam.id,
@@ -5366,7 +5457,10 @@ app.post(
         attemptId: inProgress.id,
       });
     }
-    if (active.length >= Number(exam.max_attempts)) {
+    if (
+      active.length >=
+      Number(exam.max_attempts) + extraAttempts
+    ) {
       const last = active[active.length - 1];
       return res.status(409).json({
         message: "شما قبلاً در این آزمون شرکت کرده‌اید.",
@@ -5378,19 +5472,20 @@ app.post(
       const { rows } = await pool.query(
         `INSERT INTO exam_attempts
            (exam_id, student_id, attempt_no, started_at, expires_at,
-            ip_address, user_agent)
+            ip_address, user_agent, extra_minutes)
          VALUES ($1, $2, $3, now(),
                  LEAST(now() + make_interval(mins => $4), $5),
-                 $6, $7)
+                 $6, $7, $8)
          RETURNING *`,
         [
           exam.id,
           student.id,
           existing.length ? Math.max(...existing.map((row) => row.attempt_no)) + 1 : 1,
-          Number(exam.duration_minutes),
+          Number(exam.duration_minutes) + extraMinutes,
           exam.available_until,
           req.ip,
           req.get("user-agent") || null,
+          extraMinutes,
         ],
       );
       attempt = rows[0];
@@ -5545,6 +5640,207 @@ app.get(
       return res.json(await buildStudentAttemptPayload(attempt));
     }
     res.json(await buildStudentResultPayload(attempt, attempt));
+  }),
+);
+
+// Notify one linked student account about an exam (best effort).
+async function notifyExamStudent({ organizationId, studentId, title, message }) {
+  try {
+    await pool.query(
+      `INSERT INTO notifications (organization_id, user_id, type, title, message, link)
+       SELECT DISTINCT $1::uuid, u.id, 'exam', $2, $3, 'portal'
+         FROM users u
+         JOIN students st
+           ON st.organization_id = u.organization_id
+          AND (
+            st.student_number = u.student_id
+            OR (
+              u.student_id ~* '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'
+              AND st.id = u.student_id::uuid
+            )
+          )
+        WHERE u.role = 'student' AND u.is_active = true AND st.id = $4::uuid`,
+      [organizationId, title, message, studentId],
+    );
+  } catch (error) {
+    console.error("notify exam student", error);
+  }
+}
+
+app.post(
+  "/api/exams/:id/students/:studentId/accommodation",
+  authorize("admin", "teacher"),
+  validate(
+    z.object({
+      extraMinutes: z.coerce.number().int().min(0).max(180),
+      extraAttempts: z.coerce.number().int().min(0).max(3),
+      note: z.string().trim().max(200).optional().default(""),
+    }),
+  ),
+  asyncRoute(async (req, res) => {
+    const exam = await loadExamForManagement(req, req.params.id);
+    const body = req.body;
+    let updated = null;
+    await withTransaction(async (client) => {
+      const { rows } = await client.query(
+        `UPDATE exam_students
+            SET extra_minutes = $1, extra_attempts = $2
+          WHERE exam_id = $3 AND student_id = $4
+          RETURNING extra_minutes, extra_attempts`,
+        [body.extraMinutes, body.extraAttempts, exam.id, req.params.studentId],
+      );
+      updated = rows[0] || null;
+      if (!updated) {
+        throw examError(404, "این دانشجو در فهرست مجاز این آزمون نیست.");
+      }
+      await audit(client, req.user.org, req.user.sub, "grant_accommodation", "exam", exam.id, {
+        title: exam.title,
+        studentId: req.params.studentId,
+        extraMinutes: body.extraMinutes,
+        extraAttempts: body.extraAttempts,
+        note: body.note || undefined,
+      });
+    });
+    if (body.extraMinutes > 0 || body.extraAttempts > 0) {
+      const parts = [];
+      if (body.extraMinutes > 0) parts.push(`${body.extraMinutes} دقیقه مهلت اضافه`);
+      if (body.extraAttempts > 0) parts.push(`${body.extraAttempts} فرصت اضافه`);
+      await notifyExamStudent({
+        organizationId: req.user.org,
+        studentId: req.params.studentId,
+        title: `امتیاز ویژهٔ آزمون: ${exam.title}`,
+        message: `برای شما در آزمون «${exam.title}» ${parts.join(" و ")} در نظر گرفته شد.`,
+      });
+    }
+    res.json({
+      ok: true,
+      extraMinutes: Number(updated.extra_minutes),
+      extraAttempts: Number(updated.extra_attempts),
+    });
+  }),
+);
+
+app.get(
+  "/api/exams/:id/analysis",
+  authorize("admin", "teacher"),
+  asyncRoute(async (req, res) => {
+    const exam = await loadExamForManagement(req, req.params.id);
+    const questions = await loadExamQuestions(exam.id);
+    const { rows: attemptRows } = await pool.query(
+      `SELECT id FROM exam_attempts
+        WHERE exam_id = $1 AND status IN ('submitted', 'expired')`,
+      [exam.id],
+    );
+    const attemptIds = attemptRows.map((row) => row.id);
+    let answerRows = [];
+    if (attemptIds.length) {
+      const { rows } = await pool.query(
+        `SELECT question_id AS "questionId",
+                selected_option_id AS "selectedOptionId",
+                is_correct AS "isCorrect"
+           FROM exam_answers
+          WHERE attempt_id = ANY($1::uuid[])`,
+        [attemptIds],
+      );
+      answerRows = rows;
+    }
+    const analysis = questions.map((question) => {
+      const qAnswers = answerRows.filter(
+        (answer) => String(answer.questionId) === String(question.id),
+      );
+      const answeredCount = qAnswers.filter((answer) => answer.selectedOptionId).length;
+      const correctCount = qAnswers.filter((answer) => answer.isCorrect).length;
+      return {
+        id: question.id,
+        position: question.position,
+        prompt: question.prompt,
+        points: Number(question.points),
+        doneCount: attemptIds.length,
+        answeredCount,
+        correctCount,
+        correctPercent: attemptIds.length
+          ? Math.round((correctCount / attemptIds.length) * 1000) / 10
+          : null,
+        options: question.options.map((option) => ({
+          id: option.id,
+          position: option.position,
+          text: option.text,
+          isCorrect: option.isCorrect === true,
+          selectedCount: qAnswers.filter(
+            (answer) => String(answer.selectedOptionId) === String(option.id),
+          ).length,
+        })),
+      };
+    });
+    res.json({ analysis, attemptCount: attemptIds.length });
+  }),
+);
+
+app.post(
+  "/api/exams/attempts/:attemptId/report",
+  authorize("student"),
+  validate(
+    z.object({
+      questionId: z.string().uuid(),
+      note: z.string().trim().max(500).optional().default(""),
+    }),
+  ),
+  asyncRoute(async (req, res) => {
+    const student = await findStudentByUserId(req.user.sub, req.user.org);
+    if (!student) {
+      return res.status(404).json({ message: "پروفایل دانشجو یافت نشد." });
+    }
+    const body = req.body;
+    const attempt = await loadStudentExamAttempt(req.params.attemptId, student.id);
+    if (!attempt) {
+      return res.status(404).json({ message: "جلسهٔ آزمون یافت نشد." });
+    }
+    if (attempt.status !== "in_progress") {
+      return res.status(409).json({
+        message: "گزارش خطای سوال فقط در حین آزمون امکان‌پذیر است.",
+      });
+    }
+    if (new Date(attempt.expires_at).getTime() <= Date.now()) {
+      return res.status(409).json({ message: "مهلت این آزمون به پایان رسیده است." });
+    }
+    const { rowCount: questionBelongs } = await pool.query(
+      `SELECT 1 FROM exam_questions WHERE id = $1 AND exam_id = $2`,
+      [body.questionId, attempt.exam_id],
+    );
+    if (!questionBelongs) {
+      return res.status(404).json({ message: "این سوال مربوط به این آزمون نیست." });
+    }
+    await pool.query(
+      `INSERT INTO exam_question_reports (exam_id, question_id, student_id, attempt_id, note)
+       VALUES ($1, $2, $3, $4, $5)
+       ON CONFLICT (question_id, student_id)
+       DO UPDATE SET note = EXCLUDED.note,
+                     attempt_id = EXCLUDED.attempt_id,
+                     created_at = now()`,
+      [attempt.exam_id, body.questionId, student.id, attempt.id, body.note],
+    );
+    res.status(201).json({ ok: true });
+  }),
+);
+
+app.get(
+  "/api/exams/:id/reports",
+  authorize("admin", "teacher"),
+  asyncRoute(async (req, res) => {
+    const exam = await loadExamForManagement(req, req.params.id);
+    const { rows } = await pool.query(
+      `SELECT r.id, r.note, r.created_at AS "createdAt",
+              q.id AS "questionId", q.position AS "position", q.prompt,
+              st.id AS "studentId", st.student_number AS "studentNumber",
+              st.full_name AS "fullName"
+         FROM exam_question_reports r
+         JOIN exam_questions q ON q.id = r.question_id
+         JOIN students st ON st.id = r.student_id
+        WHERE r.exam_id = $1
+        ORDER BY r.created_at DESC`,
+      [exam.id],
+    );
+    res.json({ reports: rows });
   }),
 );
 

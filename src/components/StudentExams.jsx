@@ -3,6 +3,7 @@ import { Badge, EmptyState, Icon, PanelTitle } from "./shared.jsx";
 import {
   fetchExamAttempt,
   fetchMyExams,
+  reportExamQuestion,
   saveExamAnswers,
   startExam,
   submitExam,
@@ -122,6 +123,10 @@ function StudentRunner({ initial, onExit, notify }) {
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState("");
   const [result, setResult] = useState(null);
+  const [reportedIds, setReportedIds] = useState(() => new Set());
+  const [reportOpenId, setReportOpenId] = useState(null);
+  const [reportNote, setReportNote] = useState("");
+  const [reportBusy, setReportBusy] = useState(false);
   const tabSwitchesRef = useRef(0);
   const fullscreenExitsRef = useRef(0);
   const answersRef = useRef(answers);
@@ -238,6 +243,24 @@ function StudentRunner({ initial, onExit, notify }) {
     finish(false);
   }
 
+  async function submitReport(questionId) {
+    setReportBusy(true);
+    try {
+      await reportExamQuestion(attempt.id, {
+        questionId,
+        note: reportNote.trim(),
+      });
+      setReportedIds((previous) => new Set(previous).add(questionId));
+      setReportOpenId(null);
+      setReportNote("");
+      notify("گزارش شما ثبت شد. از همکاری شما سپاسگزاریم.");
+    } catch (reportError) {
+      notify(reportError.message || "ثبت گزارش انجام نشد.");
+    } finally {
+      setReportBusy(false);
+    }
+  }
+
   if (result) {
     return (
       <StudentResultView
@@ -311,6 +334,49 @@ function StudentRunner({ initial, onExit, notify }) {
                     </label>
                   );
                 })}
+              </div>
+              <div className="student-exam-report-row">
+                {reportedIds.has(currentQuestion.id) ? (
+                  <span className="student-exam-reported">
+                    <Icon name="bi-check-circle" /> گزارش شما برای این سوال ثبت شد
+                  </span>
+                ) : reportOpenId === currentQuestion.id ? (
+                  <form
+                    className="student-exam-report-form"
+                    onSubmit={(event) => {
+                      event.preventDefault();
+                      submitReport(currentQuestion.id);
+                    }}
+                  >
+                    <label htmlFor={`report-${currentQuestion.id}`}>چرا این سوال اشتباه است؟ (اختیاری)</label>
+                    <textarea
+                      id={`report-${currentQuestion.id}`}
+                      className="form-control"
+                      rows={2}
+                      maxLength={500}
+                      value={reportNote}
+                      onChange={(event) => setReportNote(event.target.value)}
+                      placeholder="مثلاً هیچ‌کدام از گزینه‌ها درست نیست"
+                      autoFocus
+                    />
+                    <div className="student-exam-report-actions">
+                      <button type="submit" className="btn btn-warning btn-sm" disabled={reportBusy}>
+                        {reportBusy ? "در حال ثبت…" : "ثبت گزارش"}
+                      </button>
+                      <button type="button" className="btn btn-light btn-sm" onClick={() => { setReportOpenId(null); setReportNote(""); }} disabled={reportBusy}>
+                        انصراف
+                      </button>
+                    </div>
+                  </form>
+                ) : (
+                  <button
+                    type="button"
+                    className="student-exam-report-toggle"
+                    onClick={() => { setReportOpenId(currentQuestion.id); setReportNote(""); }}
+                  >
+                    <Icon name="bi-flag" /> این سوال اشتباه است؟
+                  </button>
+                )}
               </div>
               <div className="student-exam-question-nav">
                 <button
@@ -575,7 +641,7 @@ export function StudentExams({ notify }) {
                 <div className="student-exam-info-grid">
                   <div><span><Icon name="bi-calendar-event" /> شروع</span><strong>{formatDateTime(exam.availableFrom)}</strong></div>
                   <div><span><Icon name="bi-calendar-check" /> پایان</span><strong>{formatDateTime(exam.availableUntil)}</strong></div>
-                  <div><span><Icon name="bi-clock" /> مدت</span><strong>{faNumber(exam.durationMinutes)} دقیقه</strong></div>
+                  <div><span><Icon name="bi-clock" /> مدت</span><strong>{faNumber(exam.durationMinutes)} دقیقه{Number(exam.extraMinutes || 0) > 0 && <small className="student-exam-extra-note"> (+{faNumber(exam.extraMinutes)} مهلت اضافه)</small>}</strong></div>
                   <div><span><Icon name="bi-question-circle" /> سوالات</span><strong>{faNumber(exam.questionCount)} سوال</strong></div>
                 </div>
                 {visible && submitted && (
