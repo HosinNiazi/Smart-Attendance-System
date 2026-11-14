@@ -1179,6 +1179,26 @@ export function Exams({ courses = [], accessRole = "teacher", notify }) {
     }
   }
 
+  async function publishAction(exam) {
+    setBusyId(exam.id);
+    try {
+      const result = await publishExam(exam.id);
+      const missing = Number(result?.studentsWithoutAccounts || 0);
+      if (missing > 0) {
+        notify(
+          `آزمون منتشر شد، اما ${faNumber(missing)} دانشجوی این درس حساب کاربری فعال ندارند و نمی‌توانند آن را ببینند.`,
+        );
+      } else {
+        notify("آزمون منتشر شد و برای دانشجویان اطلاع‌رسانی شد.");
+      }
+      await load();
+    } catch (publishError) {
+      notify(publishError.message || "انتشار آزمون انجام نشد.");
+    } finally {
+      setBusyId("");
+    }
+  }
+
   async function openEditor(exam) {
     if (!exam) {
       setEditorQuestions(null);
@@ -1310,7 +1330,7 @@ export function Exams({ courses = [], accessRole = "teacher", notify }) {
                   )}
                   {exam.status === "draft" && isTeacher && (
                     <button type="button" className="btn btn-primary" disabled={busyId === exam.id}
-                      onClick={() => runAction(exam.id, () => publishExam(exam.id), "آزمون منتشر شد و برای دانشجویان اطلاع‌رسانی شد.")}>
+                      onClick={() => publishAction(exam)}>
                       <Icon name="bi-send" /> انتشار
                     </button>
                   )}
@@ -1342,6 +1362,9 @@ export function Exams({ courses = [], accessRole = "teacher", notify }) {
                   )}
                   {canEdit && exam.status === "published" && (
                     <span className="exam-locked-note"><Icon name="bi-lock" /> سوالات قفل شده‌اند</span>
+                  )}
+                  {exam.status === "draft" && isTeacher && (
+                    <span className="exam-locked-note exam-draft-note"><Icon name="bi-eye-slash" /> تا انتشار برای دانشجویان دیده نمی‌شود</span>
                   )}
                 </div>
               </article>

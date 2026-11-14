@@ -1782,6 +1782,9 @@ app.patch(
              SELECT $1, unnest($2::uuid[])`,
             [req.params.courseId, c.studentIds],
           );
+        // Students added to / removed from the course must immediately be
+        // reflected in draft and open exams so nobody misses the window.
+        await refreshCourseExamStudents(client, req.params.courseId);
       }
       await audit(
         client,
@@ -4604,9 +4607,26 @@ async function refreshExamStudents(client, examId, courseId) {
            WHERE cs.course_id = $2
              AND cs.student_id = es.student_id
              AND st.status = 'active'
+        )
+        AND NOT EXISTS (
+          SELECT 1 FROM exam_attempts a
+           WHERE a.exam_id = es.exam_id AND a.student_id = es.student_id
         )`,
     [examId, courseId],
   );
+}
+
+// Keep the eligibility snapshot in sync while an exam is still editable/open.
+// Closed or cancelled exams keep their historical snapshot untouched.
+async function refreshCourseExamStudents(client, courseId) {
+  const { rows } = await client.query(
+    `SELECT id FROM exams
+      WHERE course_id = $1 AND status IN ('draft', 'published')`,
+    [courseId],
+  );
+  for (const row of rows) {
+    await refreshExamStudents(client, row.id, courseId);
+  }
 }
 
 app.get(
@@ -4652,8 +4672,15 @@ app.get(
               COALESCE(u.display_name, c.teacher_name) AS "teacherName",
               (SELECT count(*)::int FROM exam_questions q
                 WHERE q.exam_id = e.id) AS "questionCount",
-              (SELECT count(*)::int FROM exam_students es
-                WHERE es.exam_id = e.id) AS "studentCount",
+              CASE WHEN e.status = 'draft'
+                THEN (SELECT count(*)::int
+                        FROM course_students cs
+                        JOIN students st ON st.id = cs.student_id
+                       WHERE cs.course_id = e.course_id
+                         AND st.status = 'active')
+                ELSE (SELECT count(*)::int FROM exam_students es
+                       WHERE es.exam_id = e.id)
+              END AS "studentCount",
               (SELECT count(*)::int FROM exam_attempts a
                 WHERE a.exam_id = e.id
                   AND a.status IN ('submitted','expired')) AS "submittedCount",
@@ -4722,6 +4749,12 @@ app.post(
   validate(examInputSchema),
   asyncRoute(async (req, res) => {
     const input = req.body;
+    if (new Date(input.availableUntil).getTime() <= Date.now()) {
+      return res.status(422).json({
+        message:
+          "پایان بازهٔ آزمون باید در آینده باشد. زمان آزمون را اصلاح کنید و دوباره ذخیره کنید.",
+      });
+    }
     const course = await pool.query(
       `SELECT id, title, teacher_user_id
          FROM courses
@@ -4758,6 +4791,9 @@ app.post(
         ],
       );
       await insertExamQuestions(client, rows[0].id, input.questions);
+      // Snapshot the course roster right away so the teacher sees the real
+      // participant count; publish refreshes it again before the exam opens.
+      await refreshExamStudents(client, rows[0].id, input.courseId);
       await audit(
         client,
         req.user.org,
@@ -4779,6 +4815,12 @@ app.put(
   validate(examInputSchema),
   asyncRoute(async (req, res) => {
     const input = req.body;
+    if (new Date(input.availableUntil).getTime() <= Date.now()) {
+      return res.status(422).json({
+        message:
+          "پایان بازهٔ آزمون باید در آینده باشد. زمان آزمون را اصلاح کنید.",
+      });
+    }
     const exam = await loadExamForManagement(req, req.params.id);
     if (!["draft", "published"].includes(exam.status)) {
       return res
@@ -4996,7 +5038,31 @@ app.post(
       );
       return rows[0];
     });
-    res.json({ exam: normalizeExam(published) });
+    // Students only see exams through a linked user account. Tell the teacher
+    // when some course members cannot log in, instead of silently skipping them.
+    const { rows: missingAccounts } = await pool.query(
+      `SELECT count(*)::int AS count
+         FROM exam_students es
+         JOIN students st ON st.id = es.student_id
+        WHERE es.exam_id = $1
+          AND NOT EXISTS (
+            SELECT 1 FROM users u
+             WHERE u.organization_id = $2
+               AND u.role = 'student' AND u.is_active = true
+               AND (
+                 st.student_number = u.student_id
+                 OR (
+                   u.student_id ~* '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'
+                   AND st.id = u.student_id::uuid
+                 )
+               )
+          )`,
+      [exam.id, req.user.org],
+    );
+    res.json({
+      exam: normalizeExam(published),
+      studentsWithoutAccounts: missingAccounts[0].count,
+    });
   }),
 );
 

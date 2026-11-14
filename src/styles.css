@@ -1425,6 +1425,7 @@ html[lang="en"] body,html[lang="en"] button,html[lang="en"] input,html[lang="en"
 .exam-card-actions{display:flex;flex-direction:column;gap:8px;align-items:stretch;flex-shrink:0}
 .exam-card-actions .btn{justify-content:center;white-space:nowrap}
 .exam-locked-note{display:flex;align-items:center;gap:6px;font-size:11px;color:var(--muted);justify-content:center}
+.exam-draft-note{color:#b45309}
 .exam-row-actions{display:flex;gap:6px;align-items:center}
 .exam-results-modal{max-width:920px;max-height:92vh;overflow:auto}
 .exam-results-head-actions{display:flex;gap:8px;align-items:center}
@@ -1643,6 +1644,7 @@ html[lang="en"] body,html[lang="en"] button,html[lang="en"] input,html[lang="en"
 :root[data-theme="dark"] .exam-reports-note{background:#2c2312;color:#ffd07c}
 :root[data-theme="dark"] .exam-results-tab{background:#141e2c;border-color:#2b3547;color:#aebbd0}
 :root[data-theme="dark"] .exam-results-tab.is-active{background:var(--primary);border-color:var(--primary);color:#fff}
+:root[data-theme="dark"] .exam-draft-note{color:#ffd07c}
 :root[data-theme="dark"] .exam-filter-group label{background:#141e2c;border-color:#344258}
 :root[data-theme="dark"] .student-exam-option{background:#141e2c;border-color:#2b3547}
 :root[data-theme="dark"] .student-exam-option:hover{background:#1b283a;border-color:#3b4d6a}
