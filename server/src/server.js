@@ -5353,9 +5353,10 @@ app.put(
         exam.id,
       ]);
       await insertExamQuestions(client, exam.id, input.questions);
-      if (updated[0].status === "published") {
-        await refreshExamStudents(client, exam.id, input.courseId);
-      }
+      // The exam may have moved to another course, and the roster can change
+      // while it is still a draft. Refresh unconditionally: editing is only
+      // allowed before any attempt exists, so no student data can be lost.
+      await refreshExamStudents(client, exam.id, input.courseId);
       await audit(
         client,
         req.user.org,
