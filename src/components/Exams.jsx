@@ -1186,7 +1186,7 @@ export function Exams({ courses = [], accessRole = "teacher", notify }) {
       const missing = Number(result?.studentsWithoutAccounts || 0);
       if (missing > 0) {
         notify(
-          `آزمون منتشر شد، اما ${faNumber(missing)} دانشجوی این درس حساب کاربری فعال ندارند و نمی‌توانند آن را ببینند.`,
+          `آزمون منتشر شد، اما ${faNumber(missing)} دانشجوی این درس حساب کاربری فعال ندارند و نمی‌توانند آن را ببینند. از بخش «مدیریت دانشجویان» برای آن‌ها حساب بسازید.`,
         );
       } else {
         notify("آزمون منتشر شد و برای دانشجویان اطلاع‌رسانی شد.");

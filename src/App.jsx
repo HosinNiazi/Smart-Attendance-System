@@ -57,6 +57,10 @@ import {
   saveVoiceSample,
   signIn,
   updateStudent,
+  createStudent,
+  provisionStudentAccount,
+  resetStudentPassword,
+  provisionMissingStudentAccounts,
   updateCourse,
   uploadStudentPhoto,
   uploadMyPhoto,
@@ -614,12 +618,14 @@ export default function App() {
   const [toast, setToast] = useState("");
   const [storageWarning, setStorageWarning] = useState("");
   const [modal, setModal] = useState(false);
+  const [credentials, setCredentials] = useState(null);
   const [studentForm, setStudentForm] = useState({
     id: "",
     name: "",
     major: "مهندسی کامپیوتر",
     term: "۳",
     phone: "",
+    email: "",
   });
   const [sessionCourse, setSessionCourse] = useState("");
   const [sessionDate, setSessionDate] = useState(getLocalDate);
@@ -1493,16 +1499,14 @@ export default function App() {
     }
 
     try {
-      await api("/students", {
-        method: "POST",
-        body: JSON.stringify({
-          studentNumber: studentNumberValue,
-          fullName,
-          major: studentForm.major || "",
-          term: studentForm.term || "",
-          phone: studentForm.phone || "",
-          status: "active",
-        }),
+      const created = await createStudent({
+        studentNumber: studentNumberValue,
+        fullName,
+        major: studentForm.major || "",
+        term: studentForm.term || "",
+        phone: studentForm.phone || "",
+        email: studentForm.email.trim(),
+        status: "active",
       });
 
       await loadFromServer({ silent: true });
@@ -1512,13 +1516,89 @@ export default function App() {
         major: "مهندسی کامپیوتر",
         term: "۳",
         phone: "",
+        email: "",
       });
 
       setModal(false);
-      notify("دانشجو با موفقیت در دیتابیس ذخیره شد.");
+      setCredentials({
+        title: "دانشجو ثبت شد و حساب کاربری ساخته شد",
+        rows: [
+          {
+            fullName: created.fullName || fullName,
+            username: created.account?.username || studentNumberValue,
+            temporaryPassword: created.account?.temporaryPassword || "",
+            note: "نام کاربری همان شماره دانشجویی است.",
+          },
+        ],
+      });
     } catch (error) {
       console.error("Add student error:", error);
       notify(error.message || "ثبت دانشجو با مشکل مواجه شد.");
+    }
+  }
+
+  async function provisionOneStudentAccount(student) {
+    if (!student?.databaseId) {
+      return notify("شناسه دانشجو در دیتابیس پیدا نشد.");
+    }
+    try {
+      const result = await provisionStudentAccount(student.databaseId);
+      setCredentials({
+        title: "حساب کاربری ساخته شد",
+        rows: [
+          {
+            fullName: result.account.fullName,
+            username: result.account.username,
+            temporaryPassword: result.account.temporaryPassword,
+            note: "نام کاربری همان شماره دانشجویی است.",
+          },
+        ],
+      });
+      await loadFromServer({ silent: true });
+    } catch (error) {
+      notify(error.message || "ساخت حساب کاربری انجام نشد.");
+    }
+  }
+
+  async function provisionAllStudentAccounts() {
+    try {
+      const result = await provisionMissingStudentAccounts();
+      if (!result?.created) {
+        return notify("همهٔ دانشجویان این فهرست حساب کاربری دارند.");
+      }
+      setCredentials({
+        title: `حساب کاربری برای ${result.created.toLocaleString("fa-IR")} دانشجو ساخته شد`,
+        rows: result.accounts.map((account) => ({
+          fullName: account.fullName,
+          username: account.username,
+          temporaryPassword: account.temporaryPassword,
+        })),
+      });
+      await loadFromServer({ silent: true });
+    } catch (error) {
+      notify(error.message || "ساخت دسته‌ای حساب‌ها انجام نشد.");
+    }
+  }
+
+  async function resetStudentLogin(student) {
+    if (!student?.databaseId) {
+      return notify("شناسه دانشجو در دیتابیس پیدا نشد.");
+    }
+    try {
+      const result = await resetStudentPassword(student.databaseId);
+      setCredentials({
+        title: "رمز موقت جدید ساخته شد",
+        rows: [
+          {
+            fullName: result.student.fullName,
+            username: result.student.username,
+            temporaryPassword: result.temporaryPassword,
+            note: "رمز قبلی دیگر کار نمی‌کند و دانشجو باید در اولین ورود رمز را تغییر دهد.",
+          },
+        ],
+      });
+    } catch (error) {
+      notify(error.message || "بازنشانی رمز انجام نشد.");
     }
   }
 
@@ -2544,9 +2624,10 @@ export default function App() {
                 className="form-control"
                 value={loginName}
                 onChange={(e) => setLoginName(e.target.value)}
-                type="email"
-                autoComplete="email"
-                placeholder="نام کاربری خود را وارد کنید"
+                type="text"
+                autoComplete="username"
+                inputMode="text"
+                placeholder="شماره دانشجویی یا ایمیل"
                 required
               />
             </div>
@@ -3056,6 +3137,9 @@ export default function App() {
               }}
               onSavePhoto={saveStudentPhoto}
               onImportStudents={importStudentsHandler}
+              onProvisionAccount={provisionOneStudentAccount}
+              onProvisionMissing={provisionAllStudentAccounts}
+              onResetPassword={resetStudentLogin}
             />
           )}
           {active === "courses" && (
@@ -3503,6 +3587,24 @@ export default function App() {
                   placeholder="اختیاری"
                 />
               </div>
+              <div className="col-12">
+                <label className="form-label">
+                  ایمیل دانشجو <span className="form-hint-inline">(اختیاری)</span>
+                </label>
+                <input
+                  className="form-control"
+                  type="email"
+                  value={studentForm.email}
+                  onChange={(e) =>
+                    setStudentForm({ ...studentForm, email: e.target.value })
+                  }
+                  placeholder="مثلاً ali@example.com — برای ورود هم قابل استفاده است"
+                />
+                <small className="form-hint-inline">
+                  نام کاربری همان شماره دانشجویی است؛ رمز موقت پس از ثبت نمایش
+                  داده می‌شود و دانشجو در اولین ورود آن را تغییر می‌دهد.
+                </small>
+              </div>
             </div>
             <div className="modal-actions">
               <button
@@ -3517,6 +3619,94 @@ export default function App() {
               </button>
             </div>
           </form>
+        </div>
+      )}
+      {credentials && (
+        <div
+          className="modal-backdrop-custom"
+          onMouseDown={(e) => {
+            if (e.target === e.currentTarget) setCredentials(null);
+          }}
+        >
+          <section
+            className="custom-modal credentials-modal"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="credentials-title"
+          >
+            <div className="modal-head">
+              <div>
+                <span className="eyebrow">اعتبارنامهٔ ورود</span>
+                <h3 id="credentials-title">{credentials.title}</h3>
+              </div>
+              <button
+                type="button"
+                className="icon-button"
+                onClick={() => setCredentials(null)}
+              >
+                <Icon name="bi-x-lg" />
+              </button>
+            </div>
+            <p className="credentials-warning">
+              <Icon name="bi-shield-exclamation" /> این رمزها فقط همین یک‌بار
+              نمایش داده می‌شوند؛ در پایگاه داده تنها نسخهٔ هش‌شده ذخیره شده
+              است. همین حالا کپی یا چاپ کنید.
+            </p>
+            <div className="credentials-list">
+              {credentials.rows.map((row, index) => (
+                <div className="credentials-row" key={`${row.username}-${index}`}>
+                  <div className="credentials-who">
+                    <strong>{row.fullName}</strong>
+                    <small>
+                      {row.note || "دانشجو باید در اولین ورود رمز را تغییر دهد."}
+                    </small>
+                  </div>
+                  <div className="credentials-values">
+                    <span>
+                      <span className="credentials-label">نام کاربری</span>
+                      <code>{row.username}</code>
+                    </span>
+                    <span>
+                      <span className="credentials-label">رمز موقت</span>
+                      <code>{row.temporaryPassword}</code>
+                    </span>
+                    <button
+                      type="button"
+                      className="btn btn-light-outline"
+                      onClick={() => {
+                        const text = `نام کاربری: ${row.username}\nرمز موقت: ${row.temporaryPassword}`;
+                        if (!navigator.clipboard?.writeText) {
+                          return notify("کپی در این مرورگر پشتیبانی نمی‌شود.");
+                        }
+                        navigator.clipboard
+                          .writeText(text)
+                          .then(() => notify("در حافظه کپی شد."))
+                          .catch(() => notify("کپی انجام نشد."));
+                      }}
+                    >
+                      <Icon name="bi-clipboard" /> کپی
+                    </button>
+                  </div>
+                </div>
+              ))}
+            </div>
+            <div className="modal-actions">
+              <button
+                type="button"
+                className="btn btn-primary"
+                onClick={() => setCredentials(null)}
+              >
+                متوجه شدم
+              </button>
+              <button
+                type="button"
+                className="btn btn-light"
+                onClick={() => window.print()}
+              >
+                <Icon name="bi-printer" /> چاپ
+              </button>
+            </div>
+          </section>
         </div>
       )}
       {toast && (

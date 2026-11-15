@@ -28,11 +28,11 @@ export async function api(path, options = {}) {
   return payload;
 }
 
-export async function signIn(email, password, facultyId) {
+export async function signIn(identifier, password, facultyId) {
   const result = await api('/auth/login', {
     method: 'POST',
     body: JSON.stringify({
-      email,
+      identifier,
       password,
       ...(facultyId ? { facultyId } : {}),
     }),
@@ -132,6 +132,20 @@ export function createStudent(payload) {
 }
 export function updateStudent(studentId, payload) {
   return api(`/students/${studentId}`, { method: 'PATCH', body: JSON.stringify(payload) });
+}
+// Creating a student also creates their login (username = student number) and
+// returns a one-time temporary password that must be changed at first sign-in.
+export function provisionStudentAccount(studentId) {
+  return api(`/students/${studentId}/account`, { method: 'POST' });
+}
+export function resetStudentPassword(studentId) {
+  return api(`/students/${studentId}/reset-password`, { method: 'POST' });
+}
+export function provisionMissingStudentAccounts(courseId) {
+  return api('/students/provision-missing', {
+    method: 'POST',
+    body: JSON.stringify(courseId ? { courseId } : {}),
+  });
 }
 export function uploadStudentPhoto(studentId, file) {
   const form = new FormData();

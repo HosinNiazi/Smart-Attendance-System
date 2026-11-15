@@ -1677,3 +1677,21 @@ html[lang="en"] body,html[lang="en"] button,html[lang="en"] input,html[lang="en"
 .btn-warning{background:#f5a623;border:1px solid #f5a623;color:#4a2f09;box-shadow:0 4px 9px #f5a6232e}.btn-warning:hover{background:#dd8f10;border-color:#dd8f10;color:#3a2504}
 .btn-success{background:#1d9d6e;border:1px solid #1d9d6e;color:#fff;box-shadow:0 4px 9px #1d9d6e24}.btn-success:hover{background:#16885f;border-color:#16885f;color:#fff}
 .btn-danger-soft{background:#fdeaea;border:1px solid #f5c6cb;color:#c0392b}.btn-danger-soft:hover{background:#fadcdc}
+
+/* --- student account provisioning credentials card --- */
+.form-hint-inline{display:block;font-size:11px;color:#7f8a9e;font-weight:400;margin-top:6px;line-height:1.9}
+.credentials-modal{max-width:660px}
+.credentials-warning{display:flex;gap:8px;align-items:flex-start;background:#fff7e9;border:1px solid #f9ecd5;color:#8f5a0a;border-radius:9px;padding:11px 12px;font-size:11px;line-height:1.9;margin:0 0 16px}
+.credentials-list{display:flex;flex-direction:column;gap:10px;max-height:45vh;overflow:auto}
+.credentials-row{border:1px solid #eff1f6;border-radius:11px;padding:12px 14px;display:flex;flex-direction:column;gap:9px}
+.credentials-who{display:flex;justify-content:space-between;gap:10px;align-items:baseline;flex-wrap:wrap}
+.credentials-who strong{font-size:12px}
+.credentials-who small{font-size:11px;color:#7f8a9e}
+.credentials-values{display:flex;align-items:center;gap:10px;flex-wrap:wrap}
+.credentials-values>span{display:flex;align-items:center;gap:7px;font-size:11px;color:#5b6577}
+.credentials-label{font-weight:600}
+.credentials-values code{background:#f5f7fc;border:1px solid #e9edf5;border-radius:7px;padding:5px 8px;font-size:12px;letter-spacing:.4px;direction:ltr;color:#28324a}
+.credentials-values .btn{margin-right:auto;font-size:11px;padding:6px 10px}
+:root[data-theme="dark"] .credentials-row{border-color:#26313f}
+:root[data-theme="dark"] .credentials-values code{background:#1b2431;border-color:#26313f;color:#e6ecf5}
+:root[data-theme="dark"] .credentials-warning{background:#3a2c12;border-color:#4a3a18;color:#f2c986}

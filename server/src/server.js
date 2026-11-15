@@ -157,9 +157,11 @@ async function authenticate(req, res, next) {
   } catch {
     return res.status(401).json({ message: "نشست معتبر نیست." });
   }
-  // Teachers can be removed from a faculty or deactivated while an old token is
-  // still valid. Re-check membership on every request so revocation is immediate.
-  if (req.user.role === "teacher") {
+  // Staff can be removed from a faculty, and any account can be deactivated,
+  // while an old token is still valid. Re-check on every request so revocation
+  // is immediate. Students are included here so a temporary password really
+  // forces a change before the panel (and its API) opens.
+  if (req.user.role === "teacher" || req.user.role === "student") {
     try {
       const { rows } = await pool.query(
         `SELECT u.must_change_password
@@ -479,6 +481,80 @@ function generateTemporaryPassword(length = 12) {
   }
   return value;
 }
+
+// A student logs in with the student number, so that number is the username.
+// users.email still has to be unique per faculty; when the faculty does not
+// collect a real address an internal placeholder keeps the constraint happy.
+function studentAccountEmail(studentNumber) {
+  const slug = String(studentNumber)
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9._-]/g, "");
+  return `${slug || `student-${crypto.randomUUID().slice(0, 8)}`}@students.local`;
+}
+
+// Shared predicate: does this students row (aliased `st`) already have a login?
+const STUDENT_HAS_ACCOUNT_SQL = `EXISTS (
+  SELECT 1 FROM users u
+   WHERE u.organization_id = st.organization_id
+     AND u.role = 'student'
+     AND u.is_active = true
+     AND u.student_id IN (st.student_number, st.id::text)
+)`;
+
+async function createStudentAccount(
+  client,
+  { organizationId, student, email = "" },
+) {
+  const username = student.student_number;
+  const temporaryPassword = generateTemporaryPassword();
+  const passwordHash = await bcrypt.hash(temporaryPassword, 10);
+  const loginEmail =
+    String(email || "").trim().toLowerCase() || studentAccountEmail(username);
+  const { rows } = await client.query(
+    `INSERT INTO users
+       (organization_id, email, password_hash, display_name, role, student_id,
+        is_active, must_change_password, password_last_changed)
+     VALUES ($1,$2,$3,$4,'student',$5,true,true,now())
+     RETURNING id, email`,
+    [organizationId, loginEmail, passwordHash, student.full_name, student.id],
+  );
+  await client.query(
+    `INSERT INTO password_history (user_id, password_hash, created_at)
+     VALUES ($1,$2,now())`,
+    [rows[0].id, passwordHash],
+  );
+  return {
+    userId: rows[0].id,
+    studentId: student.id,
+    fullName: student.full_name,
+    studentNumber: username,
+    username,
+    email: rows[0].email,
+    temporaryPassword,
+  };
+}
+
+// Teachers may only provision accounts for students enrolled in their own
+// courses (or in a session of one of their courses).
+async function teacherCanManageStudent(client, teacherUserId, organizationId, studentId) {
+  const { rowCount } = await client.query(
+    `SELECT 1 FROM course_students cs
+       JOIN courses c ON c.id = cs.course_id
+      WHERE cs.student_id = $1 AND c.organization_id = $2
+        AND c.teacher_user_id = $3
+      UNION ALL
+     SELECT 1 FROM session_students ss
+       JOIN class_sessions s ON s.id = ss.session_id
+       JOIN courses c ON c.id = s.course_id
+      WHERE ss.student_id = $1 AND s.organization_id = $2
+        AND c.teacher_user_id = $3
+      LIMIT 1`,
+    [studentId, organizationId, teacherUserId],
+  );
+  return rowCount > 0;
+}
+
 const id = z.string().uuid();
 const studentSchema = z.object({
   studentNumber: z.string().trim().min(1).max(40),
@@ -572,22 +648,46 @@ app.get(
   }),
 );
 
+// A student signs in with the student number the faculty assigned, while staff
+// keep signing in with an email. Both resolve to the same users row, so no
+// separate username column is needed: students.student_number is the username.
+const LOGIN_IDENTIFIER_MATCH = `(
+  lower(u.email) = lower($1)
+  OR (
+    u.role = 'student'
+    AND EXISTS (
+      SELECT 1 FROM students st
+       WHERE st.organization_id = u.organization_id
+         AND st.student_number = $1
+         AND u.student_id IN (st.student_number, st.id::text)
+    )
+  )
+)`;
+
 app.post(
   "/api/auth/login",
   validate(
-    z.object({
-      email: z.string().trim().email().max(254),
-      password: z.string().min(8).max(128),
-      facultyId: z.string().uuid().optional(),
-    }),
+    z
+      .object({
+        identifier: z.string().trim().min(3).max(254).optional(),
+        // Older clients still post the identifier as `email`.
+        email: z.string().trim().min(3).max(254).optional(),
+        password: z.string().min(8).max(128),
+        facultyId: z.string().uuid().optional(),
+      })
+      .refine((body) => Boolean((body.identifier || body.email || "").trim()), {
+        message: "نام کاربری یا ایمیل را وارد کنید.",
+        path: ["identifier"],
+      }),
   ),
   asyncRoute(async (req, res) => {
-    const { email, password, facultyId } = req.body;
+    const identifier = (req.body.identifier || req.body.email || "").trim();
+    const { password, facultyId } = req.body;
     const result = await pool.query(
-      `SELECT * FROM users
-        WHERE lower(email) = lower($1) AND is_active = true
-        ORDER BY created_at`,
-      [email],
+      `SELECT u.* FROM users u
+        WHERE u.is_active = true AND ${LOGIN_IDENTIFIER_MATCH}
+        ORDER BY u.created_at`,
+      [identifier],
     );
     let user = null;
     for (const candidate of result.rows) {
@@ -598,21 +698,21 @@ app.post(
     }
 
     if (!user) {
-      // Increment failed attempts for any account with this email.
+      // Increment failed attempts for any account matching this identifier.
       const { rowCount } = await pool.query(
-        `UPDATE users
+        `UPDATE users u
             SET failed_login_attempts = failed_login_attempts + 1,
                 last_failed_login = now()
-          WHERE lower(email) = lower($1) AND is_active = true
-          RETURNING id, email`,
-        [email],
+          WHERE u.is_active = true AND ${LOGIN_IDENTIFIER_MATCH}
+          RETURNING u.id, u.email`,
+        [identifier],
       );
       if (rowCount > 0) {
         const { rows: lockedRows } = await pool.query(
-          `SELECT id FROM users
-            WHERE lower(email) = lower($1) AND is_active = true
-              AND failed_login_attempts >= 5`,
-          [email],
+          `SELECT u.id FROM users u
+            WHERE u.is_active = true AND u.failed_login_attempts >= 5
+              AND ${LOGIN_IDENTIFIER_MATCH}`,
+          [identifier],
         );
         for (const lock of lockedRows) {
           await pool.query(
@@ -621,7 +721,9 @@ app.post(
           );
         }
       }
-      return res.status(401).json({ message: "ایمیل یا رمز عبور نادرست است." });
+      return res
+        .status(401)
+        .json({ message: "نام کاربری یا رمز عبور نادرست است." });
     }
 
     // Lockout check: if account is locked, deny login
@@ -1411,7 +1513,9 @@ app.get(
     const [students, courses, sessions, attendance, settings, faceImages, voiceSamples] =
       await Promise.all([
         pool.query(
-          `SELECT st.id, st.student_number AS "studentNumber", st.full_name AS "fullName", st.major, st.term, st.phone, st.status FROM students st WHERE st.organization_id=$1${studentScope} ORDER BY st.full_name`,
+          `SELECT st.id, st.student_number AS "studentNumber", st.full_name AS "fullName", st.major, st.term, st.phone, st.status,
+                  ${STUDENT_HAS_ACCOUNT_SQL} AS "hasAccount"
+             FROM students st WHERE st.organization_id=$1${studentScope} ORDER BY st.full_name`,
           params,
         ),
         pool.query(
@@ -1479,7 +1583,14 @@ app.get(
       )`;
     }
     const { rows } = await pool.query(
-      `SELECT st.id, st.student_number AS "studentNumber", st.full_name AS "fullName", st.major, st.term, st.phone, st.status FROM students st WHERE st.organization_id=$1${scope} ORDER BY st.full_name`,
+      `SELECT st.id, st.student_number AS "studentNumber", st.full_name AS "fullName", st.major, st.term, st.phone, st.status,
+              ${STUDENT_HAS_ACCOUNT_SQL} AS "hasAccount",
+              (SELECT u.email FROM users u
+                WHERE u.organization_id = st.organization_id
+                  AND u.role = 'student' AND u.is_active = true
+                  AND u.student_id IN (st.student_number, st.id::text)
+                LIMIT 1) AS "accountEmail"
+         FROM students st WHERE st.organization_id=$1${scope} ORDER BY st.full_name`,
       params,
     );
     res.json(rows);
@@ -1487,23 +1598,90 @@ app.get(
 );
 app.post(
   "/api/students",
-  authorize("admin"),
-  validate(studentSchema),
+  authorize("admin", "teacher"),
+  validate(
+    studentSchema.extend({
+      email: z.string().trim().max(254).optional().default(""),
+    }),
+  ),
   asyncRoute(async (req, res) => {
     const s = req.body;
-    const { rows } = await pool.query(
-      `INSERT INTO students (organization_id,student_number,full_name,major,term,phone,status) VALUES ($1,$2,$3,$4,$5,$6,$7) RETURNING id, student_number AS "studentNumber", full_name AS "fullName", major,term,phone,status`,
-      [
-        req.user.org,
-        s.studentNumber,
-        s.fullName,
-        s.major || null,
-        s.term || null,
-        s.phone || null,
-        s.status,
-      ],
-    );
-    res.status(201).json(rows[0]);
+    const email = String(s.email || "").trim();
+    if (email && !z.string().email().safeParse(email).success) {
+      return res.status(422).json({ message: "قالب ایمیل دانشجو معتبر نیست." });
+    }
+
+    const client = await pool.connect();
+    let student;
+    let account;
+    try {
+      await client.query("BEGIN");
+      const { rows } = await client.query(
+        `INSERT INTO students (organization_id,student_number,full_name,major,term,phone,status) VALUES ($1,$2,$3,$4,$5,$6,$7) RETURNING id, student_number AS "studentNumber", full_name AS "fullName", major,term,phone,status`,
+        [
+          req.user.org,
+          s.studentNumber,
+          s.fullName,
+          s.major || null,
+          s.term || null,
+          s.phone || null,
+          s.status,
+        ],
+      );
+      student = rows[0];
+      // Adding a student without a login was the root cause of "the exam never
+      // reached the student". Provision the account in the same transaction so
+      // a student row can never exist without a way to sign in.
+      account = await createStudentAccount(client, {
+        organizationId: req.user.org,
+        student: {
+          id: student.id,
+          student_number: s.studentNumber,
+          full_name: s.fullName,
+        },
+        email,
+      });
+      await audit(client, req.user.org, req.user.sub, "create", "student", student.id, {
+        studentNumber: s.studentNumber,
+        fullName: s.fullName,
+        username: account.username,
+      });
+      await client.query("COMMIT");
+    } catch (error) {
+      await client.query("ROLLBACK");
+      if (error.code === "23505") {
+        return res.status(409).json({
+          message:
+            "این شماره دانشجویی یا ایمیل قبلاً ثبت شده است؛ صفحه را به‌روزرسانی کنید.",
+        });
+      }
+      throw error;
+    } finally {
+      client.release();
+    }
+
+    try {
+      await notifyUsers(req.user.org, [account.userId], {
+        type: "account",
+        title: "حساب کاربری شما ساخته شد",
+        message:
+          "نام کاربری شما شماره دانشجویی‌تان است. با رمز موقتی که استاد یا مدیر به شما داده وارد شوید و آن را تغییر دهید.",
+        link: "profile",
+      });
+    } catch (notifyError) {
+      console.warn("[students] welcome notification failed:", notifyError.message);
+    }
+
+    res.status(201).json({
+      ...student,
+      hasAccount: true,
+      account: {
+        username: account.username,
+        email: account.email,
+        temporaryPassword: account.temporaryPassword,
+        mustChangePassword: true,
+      },
+    });
   }),
 );
 app.patch(
@@ -1527,12 +1705,294 @@ app.patch(
       values.push(value || null);
       return `${fields[key]}=$${index + 3}`;
     });
+    const updated = await withTransaction(async (client) => {
+      const { rows } = await client.query(
+        `UPDATE students SET ${assignments.join(", ")}, updated_at=now() WHERE organization_id=$1 AND id=$2 RETURNING id, student_number AS "studentNumber", full_name AS "fullName", major,term,phone,status`,
+        values,
+      );
+      if (!rows[0]) return null;
+      // Keep the login in step with the student record: a renamed student number
+      // must still resolve the username, and deactivating a student must lock
+      // the account instead of leaving a working login behind.
+      if (req.body.studentNumber) {
+        await client.query(
+          `UPDATE users SET student_id = $1, updated_at = now()
+            WHERE organization_id = $2 AND role = 'student' AND student_id = $3`,
+          [req.body.studentNumber, req.user.org, req.params.studentId],
+        );
+      }
+      if (req.body.status) {
+        await client.query(
+          `UPDATE users SET is_active = ($1 = 'active'), updated_at = now()
+            WHERE organization_id = $2 AND role = 'student'
+              AND student_id IN ($3, $4)`,
+          [
+            req.body.status,
+            req.user.org,
+            rows[0].studentNumber,
+            req.params.studentId,
+          ],
+        );
+      }
+      return rows[0];
+    });
+    if (!updated) return res.sendStatus(404);
+    res.json(updated);
+  }),
+);
+
+// Create the missing login for an existing student (used to backfill students
+// that were added before accounts were provisioned automatically).
+app.post(
+  "/api/students/:studentId/account",
+  authorize("admin", "teacher"),
+  asyncRoute(async (req, res) => {
+    const studentId = req.params.studentId;
+    if (!UUID_RE.test(studentId)) {
+      return res.status(400).json({ message: "شناسهٔ دانشجو معتبر نیست." });
+    }
+    if (
+      isTeacher(req) &&
+      !(await teacherCanManageStudent(pool, req.user.sub, req.user.org, studentId))
+    ) {
+      return res
+        .status(403)
+        .json({ message: "این دانشجو در درس‌های شما ثبت نشده است." });
+    }
     const { rows } = await pool.query(
-      `UPDATE students SET ${assignments.join(", ")}, updated_at=now() WHERE organization_id=$1 AND id=$2 RETURNING id, student_number AS "studentNumber", full_name AS "fullName", major,term,phone,status`,
-      values,
+      `SELECT id, student_number, full_name FROM students
+        WHERE id = $1 AND organization_id = $2`,
+      [studentId, req.user.org],
     );
-    if (!rows[0]) return res.sendStatus(404);
-    res.json(rows[0]);
+    const student = rows[0];
+    if (!student) return res.status(404).json({ message: "دانشجو پیدا نشد." });
+
+    const existing = await pool.query(
+      `SELECT 1 FROM users
+        WHERE organization_id = $1 AND role = 'student'
+          AND student_id IN ($2, $3)
+        LIMIT 1`,
+      [req.user.org, student.student_number, student.id],
+    );
+    if (existing.rowCount) {
+      return res
+        .status(409)
+        .json({ message: "این دانشجو از قبل حساب کاربری دارد." });
+    }
+
+    const account = await withTransaction(async (client) => {
+      const created = await createStudentAccount(client, {
+        organizationId: req.user.org,
+        student: { id: student.id, student_number: student.student_number, full_name: student.full_name },
+      });
+      await audit(
+        client,
+        req.user.org,
+        req.user.sub,
+        "provision_account",
+        "student",
+        student.id,
+        { studentNumber: student.student_number, username: created.username },
+      );
+      return created;
+    });
+
+    try {
+      await notifyUsers(req.user.org, [account.userId], {
+        type: "account",
+        title: "حساب کاربری شما ساخته شد",
+        message:
+          "نام کاربری شما شماره دانشجویی‌تان است. با رمز موقتی که دریافت کرده‌اید وارد شوید و آن را تغییر دهید.",
+        link: "profile",
+      });
+    } catch (notifyError) {
+      console.warn("[students] welcome notification failed:", notifyError.message);
+    }
+
+    res.status(201).json({
+      account: {
+        studentId: account.studentId,
+        fullName: account.fullName,
+        username: account.username,
+        email: account.email,
+        temporaryPassword: account.temporaryPassword,
+        mustChangePassword: true,
+      },
+    });
+  }),
+);
+
+// Backfill: create logins for every active student that has none. Credentials
+// are returned exactly once so the faculty can print or hand them out.
+app.post(
+  "/api/students/provision-missing",
+  authorize("admin", "teacher"),
+  validate(z.object({ courseId: z.string().uuid().optional().nullable() })),
+  asyncRoute(async (req, res) => {
+    const courseId = req.body.courseId || null;
+    const params = [req.user.org];
+    const conditions = [
+      "st.organization_id = $1",
+      "st.status = 'active'",
+      `NOT ${STUDENT_HAS_ACCOUNT_SQL}`,
+    ];
+
+    if (isTeacher(req)) {
+      params.push(req.user.sub);
+      conditions.push(`st.id IN (
+        SELECT cs.student_id FROM course_students cs
+          JOIN courses c ON c.id = cs.course_id
+         WHERE c.organization_id = $1 AND c.teacher_user_id = $${params.length})`);
+    }
+
+    if (courseId) {
+      const owned = await pool.query(
+        `SELECT 1 FROM courses
+          WHERE id = $1 AND organization_id = $2
+            ${isTeacher(req) ? "AND teacher_user_id = $3" : ""}`,
+        isTeacher(req)
+          ? [courseId, req.user.org, req.user.sub]
+          : [courseId, req.user.org],
+      );
+      if (!owned.rowCount) {
+        return res.status(403).json({ message: "این درس به شما تخصیص نیافته است." });
+      }
+      params.push(courseId);
+      conditions.push(
+        `st.id IN (SELECT student_id FROM course_students WHERE course_id = $${params.length})`,
+      );
+    }
+
+    const { rows: missing } = await pool.query(
+      `SELECT st.id, st.student_number, st.full_name FROM students st
+        WHERE ${conditions.join(" AND ")}
+        ORDER BY st.full_name
+        LIMIT 500`,
+      params,
+    );
+    if (!missing.length) {
+      return res.json({ created: 0, accounts: [] });
+    }
+
+    const accounts = await withTransaction(async (client) => {
+      const created = [];
+      for (const student of missing) {
+        created.push(
+          await createStudentAccount(client, {
+            organizationId: req.user.org,
+            student,
+          }),
+        );
+      }
+      await audit(
+        client,
+        req.user.org,
+        req.user.sub,
+        "provision_accounts",
+        "student",
+        courseId || req.user.org,
+        { count: created.length, courseId },
+      );
+      return created;
+    });
+
+    try {
+      await notifyUsers(
+        req.user.org,
+        accounts.map((account) => account.userId),
+        {
+          type: "account",
+          title: "حساب کاربری شما ساخته شد",
+          message:
+            "نام کاربری شما شماره دانشجویی‌تان است. با رمز موقتی که دریافت کرده‌اید وارد شوید و آن را تغییر دهید.",
+          link: "profile",
+        },
+      );
+    } catch (notifyError) {
+      console.warn("[students] bulk welcome notification failed:", notifyError.message);
+    }
+
+    res.status(201).json({
+      created: accounts.length,
+      accounts: accounts.map((account) => ({
+        studentId: account.studentId,
+        fullName: account.fullName,
+        username: account.username,
+        email: account.email,
+        temporaryPassword: account.temporaryPassword,
+      })),
+    });
+  }),
+);
+
+app.post(
+  "/api/students/:studentId/reset-password",
+  authorize("admin", "teacher"),
+  asyncRoute(async (req, res) => {
+    const studentId = req.params.studentId;
+    if (!UUID_RE.test(studentId)) {
+      return res.status(400).json({ message: "شناسهٔ دانشجو معتبر نیست." });
+    }
+    if (
+      isTeacher(req) &&
+      !(await teacherCanManageStudent(pool, req.user.sub, req.user.org, studentId))
+    ) {
+      return res
+        .status(403)
+        .json({ message: "این دانشجو در درس‌های شما ثبت نشده است." });
+    }
+    const { rows } = await pool.query(
+      `SELECT st.id, st.student_number, st.full_name, u.id AS "userId", u.email
+         FROM students st
+         JOIN users u ON u.organization_id = st.organization_id
+           AND u.role = 'student' AND u.is_active = true
+           AND u.student_id IN (st.student_number, st.id::text)
+        WHERE st.id = $1 AND st.organization_id = $2
+        LIMIT 1`,
+      [studentId, req.user.org],
+    );
+    const student = rows[0];
+    if (!student) {
+      return res
+        .status(404)
+        .json({ message: "برای این دانشجو حساب کاربری فعالی پیدا نشد." });
+    }
+
+    const temporaryPassword = generateTemporaryPassword();
+    const passwordHash = await bcrypt.hash(temporaryPassword, 10);
+    await withTransaction(async (client) => {
+      await client.query(
+        `INSERT INTO password_history (user_id, password_hash, created_at)
+         VALUES ($1,$2,now())`,
+        [student.userId, passwordHash],
+      );
+      await client.query(
+        `UPDATE users
+            SET password_hash = $1, must_change_password = true,
+                failed_login_attempts = 0, account_locked_until = NULL,
+                password_last_changed = now(), updated_at = now()
+          WHERE id = $2`,
+        [passwordHash, student.userId],
+      );
+      await audit(
+        client,
+        req.user.org,
+        req.user.sub,
+        "reset_password",
+        "student",
+        student.id,
+        { studentNumber: student.student_number, username: student.student_number },
+      );
+    });
+
+    res.json({
+      student: {
+        id: student.id,
+        fullName: student.full_name,
+        username: student.student_number,
+      },
+      temporaryPassword,
+    });
   }),
 );
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -3769,7 +4229,7 @@ app.post(
       return res
         .status(400)
         .json({ message: "حداکثر ۲۰۰۰ سطر در هر ایمپورت مجاز است." });
-    const result = { created: 0, errors: [] };
+    const result = { created: 0, errors: [], accounts: [] };
     await withTransaction(async (client) => {
       for (const [index, row] of rows.entries()) {
         const parsed = studentSchema.safeParse(row);
@@ -3782,9 +4242,10 @@ app.post(
         }
         const data = parsed.data;
         try {
-          await client.query(
+          const inserted = await client.query(
             `INSERT INTO students (organization_id, student_number, full_name, major, term, phone, status)
-             VALUES ($1,$2,$3,$4,$5,$6,$7)`,
+             VALUES ($1,$2,$3,$4,$5,$6,$7)
+             RETURNING id`,
             [
               req.user.org,
               data.studentNumber,
@@ -3795,6 +4256,21 @@ app.post(
               data.status,
             ],
           );
+          // Imported students get a login too, otherwise they can never sign in
+          // to see their exams and attendance.
+          const account = await createStudentAccount(client, {
+            organizationId: req.user.org,
+            student: {
+              id: inserted.rows[0].id,
+              student_number: data.studentNumber,
+              full_name: data.fullName,
+            },
+          });
+          result.accounts.push({
+            fullName: account.fullName,
+            username: account.username,
+            temporaryPassword: account.temporaryPassword,
+          });
           result.created += 1;
         } catch (error) {
           result.errors.push({

@@ -495,10 +495,11 @@ export function Dashboard({
   );
 }
 
-export function Students({ students, query, setQuery, onAdd, onDelete, onSavePhoto, onImportStudents }) {
+export function Students({ students, query, setQuery, onAdd, onDelete, onSavePhoto, onImportStudents, onProvisionAccount, onProvisionMissing, onResetPassword }) {
   const [importOpen, setImportOpen] = useState(false);
   const [page, setPage] = useState(1);
   const pageSize = 10;
+  const missingAccounts = students.filter((s) => !s.hasAccount).length;
   useEffect(() => {
     setPage(1);
   }, [query, students.length]);
@@ -516,6 +517,15 @@ export function Students({ students, query, setQuery, onAdd, onDelete, onSavePho
         description="فهرست دانشجویان را مشاهده، جست‌وجو و مدیریت کنید."
         action={
           <div className="page-action-row">
+            {missingAccounts > 0 && (
+              <button
+                className="btn btn-light-outline"
+                onClick={() => onProvisionMissing?.()}
+                title="برای هر دانشجوی بدون حساب، نام کاربری و رمز موقت ساخته می‌شود"
+              >
+                <Icon name="bi-key" /> ساخت حساب برای {missingAccounts.toLocaleString("fa-IR")} نفر
+              </button>
+            )}
             <button className="btn btn-primary" onClick={onAdd}>
               <Icon name="bi-plus-lg" /> افزودن دانشجو
             </button>
@@ -562,6 +572,7 @@ export function Students({ students, query, setQuery, onAdd, onDelete, onSavePho
                     <th>ترم</th>
                     <th>شماره تماس</th>
                     <th>وضعیت</th>
+                    <th>حساب کاربری</th>
                     <th>عملیات</th>
                   </tr>
                 </thead>
@@ -586,6 +597,13 @@ export function Students({ students, query, setQuery, onAdd, onDelete, onSavePho
                         <Badge tone={s.status === "فعال" ? "success" : "neutral"}>
                           {s.status}
                         </Badge>
+                      </td>
+                      <td>
+                        {s.hasAccount ? (
+                          <Badge tone="success">فعال</Badge>
+                        ) : (
+                          <Badge tone="warning">بدون حساب</Badge>
+                        )}
                       </td>
                       <td>
                         <div className="student-actions-cell">
@@ -616,6 +634,30 @@ export function Students({ students, query, setQuery, onAdd, onDelete, onSavePho
                               }}
                             />
                           </label>
+                          {s.hasAccount ? (
+                            <button
+                              className="row-action"
+                              title="بازنشانی رمز عبور"
+                              onClick={() => {
+                                if (
+                                  window.confirm(
+                                    `برای «${s.name}» رمز موقت جدید ساخته شود؟ رمز فعلی بی‌اعتبار می‌شود.`,
+                                  )
+                                )
+                                  onResetPassword?.(s);
+                              }}
+                            >
+                              <Icon name="bi-arrow-repeat" />
+                            </button>
+                          ) : (
+                            <button
+                              className="row-action"
+                              title="ساخت حساب کاربری"
+                              onClick={() => onProvisionAccount?.(s)}
+                            >
+                              <Icon name="bi-key" />
+                            </button>
+                          )}
                           <button
                             className="row-action danger-action"
                             title="حذف دانشجو"

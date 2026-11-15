@@ -63,6 +63,8 @@ export function adaptBootstrap(data) {
       databaseId: student.id,
       faceImages,
       faceImage: faceImages[0] || "",
+      hasAccount: student.hasAccount === true,
+      accountEmail: student.accountEmail || "",
     };
   });
 
