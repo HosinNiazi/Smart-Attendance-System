@@ -52,6 +52,9 @@ import {
   getApiUser,
   changePassword,
   clearApiToken,
+  exitImpersonation,
+  getImpersonation,
+  clearImpersonation,
   migrateBrowserSnapshot,
   saveSettingsPayload,
   saveVoiceSample,
@@ -103,6 +106,7 @@ import {
 import { adaptBootstrap, toEnStatus } from "./api/adapter.js";
 import { HelpChat } from "./help/HelpChat.jsx";
 import { Landing } from "./components/Landing.jsx";
+import PlatformArea, { ImpersonationBanner } from "./components/Platform.jsx";
 
 const navGroups = [
   {
@@ -651,7 +655,14 @@ export default function App() {
     notifications: true,
     faceRecognition: true,
   });
-  const [login, setLogin] = useState(true);
+  const [login, setLogin] = useState(() => !getImpersonation());
+  const [platformMode, setPlatformMode] = useState(() => {
+    if (typeof window === "undefined") return false;
+    return window.location.hash === "#/platform";
+  });
+  const [impersonation, setImpersonationState] = useState(() => getImpersonation());
+  const [impersonationRemaining, setImpersonationRemaining] = useState(0);
+  const [impersonationExiting, setImpersonationExiting] = useState(false);
   const [showHome, setShowHome] = useState(() => {
     if (typeof window === "undefined") return true;
     const hash = window.location.hash;
@@ -725,11 +736,13 @@ export default function App() {
         "فضای ذخیره‌سازی مرورگر کافی نیست؛ از اطلاعات پشتیبان بگیرید.",
       );
   }, [theme]);
-  // مسیریابی سبک با هش: #/ (یا خالی) صفحهٔ اصلی و #/login صفحهٔ ورود.
+  // مسیریابی سبک با هش: #/ (یا خالی) صفحهٔ اصلی، #/login صفحهٔ ورود و
+  // #/platform پنل مدیر سامانه.
   useEffect(() => {
     const syncHomeFromHash = () => {
       const hash = window.location.hash;
       setShowHome(hash === "" || hash === "#/" || hash === "#/home");
+      setPlatformMode(hash === "#/platform");
     };
     syncHomeFromHash();
     window.addEventListener("hashchange", syncHomeFromHash);
@@ -2437,6 +2450,95 @@ export default function App() {
     refreshObjections().catch(() => {});
   }
 
+  // Entering a faculty from the platform panel swaps the API token for a short
+  // lived, faculty-scoped impersonation token. The platform session itself is
+  // kept in its own storage key, so going back restores full platform access.
+  async function handleEnterFaculty(result) {
+    const nextImpersonation = result?.impersonation || null;
+    setImpersonationState(nextImpersonation);
+    setImpersonationRemaining(
+      nextImpersonation?.expiresAt
+        ? Math.max(
+            0,
+            Math.round(
+              (new Date(nextImpersonation.expiresAt).getTime() - Date.now()) /
+                1000,
+            ),
+          )
+        : 60 * 60,
+    );
+    setAuthUser(result.user);
+    setLoginName(result.user?.name || "مدیر سامانه");
+    setLoginRole("admin");
+    setStudentNumber("");
+    setProfilePhoto("");
+    sessionStorage.setItem(
+      "smart-attendance:profile",
+      JSON.stringify({
+        name: result.user?.name || "مدیر سامانه",
+        role: "admin",
+        userId: result.user?.id,
+        email: "",
+        studentId: "",
+      }),
+    );
+    setPlatformMode(false);
+    setShowHome(false);
+    setLogin(false);
+    setActive("dashboard");
+    if (window.location.hash !== "#/") window.location.hash = "#/";
+    try {
+      await loadFromServer({ silent: true });
+    } catch (error) {
+      console.warn("impersonation bootstrap failed", error);
+      notify("ورود به دانشکده انجام شد، اما بارگذاری اطلاعات کامل نشد.");
+    }
+    refreshNotifications().catch(() => {});
+  }
+
+  async function handleExitImpersonation({ skipApi = false } = {}) {
+    if (impersonationExiting) return;
+    setImpersonationExiting(true);
+    if (!skipApi) {
+      try {
+        await exitImpersonation();
+      } catch (error) {
+        // The session may already be expired or revoked; the local cleanup is
+        // what matters, so the platform panel stays reachable.
+        console.warn("exit impersonation failed", error);
+      }
+    }
+    clearImpersonation();
+    clearApiToken();
+    setImpersonationState(null);
+    setAuthUser(null);
+    setLogin(true);
+    setLoginPassword("");
+    setPlatformMode(true);
+    setShowHome(false);
+    if (window.location.hash !== "#/platform") window.location.hash = "#/platform";
+    setImpersonationExiting(false);
+  }
+
+  // Countdown for the impersonation banner. When time runs out the local
+  // session is dropped automatically; the server rejects the token anyway.
+  useEffect(() => {
+    if (!impersonation?.expiresAt) return undefined;
+    const expiry = new Date(impersonation.expiresAt).getTime();
+    const tick = () => {
+      const remaining = Math.max(
+        0,
+        Math.round((expiry - Date.now()) / 1000),
+      );
+      setImpersonationRemaining(remaining);
+      if (remaining <= 0) handleExitImpersonation({ skipApi: true });
+    };
+    tick();
+    const timer = setInterval(tick, 1000);
+    return () => clearInterval(timer);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [impersonation]);
+
   // A teacher may reload the page while a temporary password is still pending.
   // Keep them on the login screen with the forced dialog instead of the panel.
   useEffect(() => {
@@ -2449,6 +2551,22 @@ export default function App() {
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [login, authUser]);
+
+  if (platformMode)
+    return (
+      <PlatformArea
+        theme={theme}
+        onToggleTheme={() =>
+          setTheme((current) => (current === "dark" ? "light" : "dark"))
+        }
+        onEnterFaculty={handleEnterFaculty}
+        onExitToSite={() => {
+          setPlatformMode(false);
+          setLogin(true);
+          setShowHome(false);
+        }}
+      />
+    );
 
   if (login && showHome)
     return (
@@ -2670,6 +2788,18 @@ export default function App() {
               onClick={() => setRegModal(true)}
             >
               <Icon name="bi-person-plus" /> ثبت‌نام دانشجوی جدید
+            </button>
+            <button
+              className="login-home-link"
+              type="button"
+              onClick={() => {
+                setPlatformMode(true);
+                if (window.location.hash !== "#/platform") {
+                  window.location.hash = "#/platform";
+                }
+              }}
+            >
+              <Icon name="bi-buildings" /> ورود مدیر سامانه
             </button>
             <button
               className="login-home-link"
@@ -3091,6 +3221,14 @@ export default function App() {
           </div>
         </header>
         <div className="page-content">
+          {impersonation && (
+            <ImpersonationBanner
+              impersonation={impersonation}
+              remainingSeconds={impersonationRemaining}
+              onExit={() => handleExitImpersonation()}
+              exiting={impersonationExiting}
+            />
+          )}
           {storageWarning && (
             <div className="storage-warning" role="alert">
               <Icon name="bi-exclamation-triangle" />

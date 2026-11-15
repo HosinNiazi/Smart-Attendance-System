@@ -6,21 +6,21 @@
 
 ## ماتریس
 
-| قابلیت / نقش | مدیر دانشکده (`admin`) | استاد (`teacher`) | دانشجو (`student`) | مدیر کل |
-|---|---|---|---|---|
-| داشبورد | ✅ دانشکدهٔ خودش | ✅ فقط دروس تخصیص‌یافته | ✅ پورتال خودش | پیاده‌سازی نشده |
-| دانشجویان (CRUD + ایمپورت Excel/CSV) | ✅ دانشکدهٔ خودش | ❌ | ❌ | پیاده‌سازی نشده |
-| درس‌ها و کلاس‌ها | ✅ همه | ✅ فقط دروس تخصیص‌یافته | ❌ | پیاده‌سازی نشده |
-| جلسات کلاس | ✅ همه | ✅ دروس خودش | ❌ | پیاده‌سازی نشده |
-| حضور و غیاب (دستی/چهره/صدا/اثر انگشت/دوربین/زنده) | ✅ | ✅ دروس خودش | ❌ | پیاده‌سازی نشده |
-| تحلیل روند · گزارش‌ها (Excel/PDF) | ✅ | ✅ دروس خودش | ❌ | پیاده‌سازی نشده |
-| اساتید (افزودن / اتصال استاد موجود / فعال‌سازی / بازنشانی رمز) | ✅ | ❌ | ❌ | پیاده‌سازی نشده |
-| **گزارش فعالیت مدیران** («چه کسی چه کاری کرد») | ✅ `audit_logs` همین دانشکده | ❌ | ❌ | پیاده‌سازی نشده |
-| پذیرش درخواست ثبت‌نام | ✅ | ❌ | ❌ | پیاده‌سازی نشده |
-| مرخصی / اعتراض حضور | ✅ بررسی و تأیید/رد | ❌ | ✅ ثبت درخواست | پیاده‌سازی نشده |
-| تیکت‌ها | ✅ پاسخ/بستن | ❌ | ✅ ثبت و پیگیری | پیاده‌سازی نشده |
-| تنظیمات دانشکده | ✅ | ❌ | ❌ | پیاده‌سازی نشده |
-| پروفایل و تاریخچهٔ ورود | ✅ خودش | ✅ خودش | ✅ خودش | پیاده‌سازی نشده |
+| قابلیت / نقش | مدیر دانشکده (`admin`) | استاد (`teacher`) | دانشجو (`student`) |
+|---|---|---|---|
+| داشبورد | ✅ دانشکدهٔ خودش | ✅ فقط دروس تخصیص‌یافته | ✅ پورتال خودش |
+| دانشجویان (CRUD + ایمپورت Excel/CSV) | ✅ دانشکدهٔ خودش | ❌ | ❌ |
+| درس‌ها و کلاس‌ها | ✅ همه | ✅ فقط دروس تخصیص‌یافته | ❌ |
+| جلسات کلاس | ✅ همه | ✅ دروس خودش | ❌ |
+| حضور و غیاب (دستی/چهره/صدا/اثر انگشت/دوربین/زنده) | ✅ | ✅ دروس خودش | ❌ |
+| تحلیل روند · گزارش‌ها (Excel/PDF) | ✅ | ✅ دروس خودش | ❌ |
+| اساتید (افزودن / اتصال استاد موجود / فعال‌سازی / بازنشانی رمز) | ✅ | ❌ | ❌ |
+| **گزارش فعالیت مدیران** («چه کسی چه کاری کرد») | ✅ `audit_logs` همین دانشکده | ❌ | ❌ |
+| پذیرش درخواست ثبت‌نام | ✅ | ❌ | ❌ |
+| مرخصی / اعتراض حضور | ✅ بررسی و تأیید/رد | ❌ | ✅ ثبت درخواست |
+| تیکت‌ها | ✅ پاسخ/بستن | ❌ | ✅ ثبت و پیگیری |
+| تنظیمات دانشکده | ✅ | ❌ | ❌ |
+| پروفایل و تاریخچهٔ ورود | ✅ خودش | ✅ خودش | ✅ خودش |
 
 ## قواعد و تضمین‌ها
 
@@ -32,12 +32,18 @@
 6. **بازیابی رمز:** رمز موقت یک‌بارمصرف؛ اجبار به تغییر در نخستین ورود (دیالوگ غیرقابل بستن)؛ عدم تکرار ۵ رمز اخیر؛ قفل ۵ دقیقه‌ای پس از ۵ تلاش ناموفق؛ تاریخچهٔ ورود در پروفایل.
 7. **تحویل رمز موقت:** اگر SMTP در `server/.env` پیکربندی نشده باشد، رمز موقت در لاگ سرور چاپ و در پاسخ API/مودال مدیر نمایش داده می‌شود (برای توسعهٔ محلی). در استقرار واقعی، `SMTP_HOST` و… را تنظیم کنید (نمونه در `server/.env.example`).
 
-## دربارهٔ «مدیر کل»
+## پنل سامانه (مدیر سامانه)
 
-نقش **مدیر کل (Global/Super Admin)** عمداً پیاده‌سازی نشده است؛ چون معرفی آن مرز ایزولاسیون دانشکده‌ها را می‌شکند و به طراحی جداگانه نیاز دارد (حداقل: دامنهٔ مشاهدهٔ cross-faculty فقط خواندنی + سیاست حسابرسی + عدم امکان تغییر دادهٔ دانشکدهٔ دیگر). اگر این نقش لازم شد، باید به‌صورت یک فاز جداگانه با RFC کوتاه طراحی و سپس با مایگریشن و گاردهای جدید اعمال شود؛ اضافه‌کردن موقت آن در قالب «یک فلگ `is_global` روی users» توصیه نمی‌شود.
+لایهٔ platform بالای دانشکده‌ها با همان جدول `users` و یک سازمانٔ پنهانٔ `kind='platform'` ساخته می‌شود:
+
+1. **مدیر سامانه:** کاربری با `platform_level` روی سازمان پنل (`owner` / `operator` / `auditor`). ورودش از صفحٔ جداگانه (`#/platform`) و انتهای `/api/platform/auth/login` است؛ توکنش فقط `/api/platform/*` کار می‌کند و هرگز به API دانشکده راه ندارد.
+2. **مدیر دانشکده با سطح:** `admin_level` روی هر مدیر دانشکده (`owner` / `manager` / `operator` / `viewer`). اجرا بر پایهٔ روش HTTP است: `viewer` فقط خواندنی (غیر از `/api/auth/*`)، `operator` بدون DELETE و بدون نوشتن در `/settings` و `/teachers`، `manager` بدون DELETE و بدون مدیریت اساتید، `owner` همهٔ اختیارات.
+3. **ورود به دانشکده (impersonation):** مدیر سامانه با دلیلٔ الزامی وارد دانشکده می‌شود؛ توکن ۶۰ دقیقهٔ محدود به همان دانشکده (`imp.sid`) صادر می‌شود و ردیفی در `admin_impersonations` ثبت می‌شود. تمام اقدامات با نام مدیر سامانه در `audit_logs` ثبت می‌شود و به مدیران دانشکده اعلان می‌رسد. خروج از پنل یا پایان نشست، توکن را فوراً باطل می‌کند.
+4. **ایجاد حساب:** مدیران دانشکده فقط از پنل سامانه ساخته می‌شوند؛ مدیران سامانه فقط توسط `owner`. ساخت هر حساب رمز یک‌بارمصرف با `must_change_password` می‌دهد.
+5. **آرشیو دانشکده:** حذف سخت نیست؛ آرشیو (`is_active=false` + `archived_at`) ورودها را می‌بندد و نشست‌های فعال impersonation را پایان می‌کند. آخرین `owner` فعال نمی‌تواند تنزل یا غیرفعال شود.
 
 ---
 
 ## English summary
 
-Three roles exist: faculty `admin`, `teacher` (scoped to courses they own via `teacher_user_id`) and `student`. All administrative queries are scoped to the caller's faculty (`req.user.org`); there is intentionally **no global super admin** — introducing one would break faculty isolation and needs its own design (read-only cross-faculty visibility, separate audit policy). The Teachers page surfaces `user_faculties.added_by` (who added the membership), the Admin Activity page renders `audit_logs` for the current faculty with an entity filter, and teachers receive a `membership` notification when added to a new faculty. All of this reuses the existing `audit_logs` table — no schema migration was added in Phase 3.
+Four roles exist: platform `owner`/`operator`/`auditor` (control plane, `/api/platform/*` only), faculty `admin` (scoped to their faculty, with `admin_level` owner/manager/operator/viewer enforced by HTTP method), `teacher` (scoped to courses they own via `teacher_user_id`) and `student`. All administrative queries are scoped to the caller's faculty (`req.user.org`). A platform token never works on faculty APIs; an impersonation token (60-minute, faculty-scoped, `imp.sid`) never works on `/api/platform/*`. The Teachers page surfaces `user_faculties.added_by`, the Admin Activity page renders `audit_logs` for the current faculty, and the platform panel renders a cross-faculty audit feed. Platform admin creation is owner-only; faculty admin creation is platform-only; archiving a faculty ends active impersonations and rejects login.

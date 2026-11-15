@@ -16,6 +16,12 @@ import {
   orderByAttempt,
   scoreVisible,
 } from "./examGrading.js";
+import {
+  FACULTY_ADMIN_LEVELS,
+  PLATFORM_LEVELS,
+  facultyLevelDenial,
+  platformLevelAllows,
+} from "./platformAccess.js";
 import multer from "multer";
 import path from "node:path";
 import fs from "node:fs";
@@ -129,9 +135,23 @@ app.use(
     skipSuccessfulRequests: true,
   }),
 );
+// The platform login is a separate surface; give it the same brute-force guard.
+app.use(
+  "/api/platform/auth/login",
+  rateLimit({
+    windowMs: 15 * 60_000,
+    limit: 10,
+    standardHeaders: true,
+    legacyHeaders: false,
+    skipSuccessfulRequests: true,
+  }),
+);
 
 const asyncRoute = (handler) => (req, res, next) =>
   Promise.resolve(handler(req, res, next)).catch(next);
+
+const IMPERSONATION_TTL_MINUTES = 60;
+
 function tokenFor(user, organizationId = user.organization_id) {
   return jwt.sign(
     { sub: user.id, org: organizationId, role: user.role },
@@ -139,11 +159,59 @@ function tokenFor(user, organizationId = user.organization_id) {
     { expiresIn: "8h", issuer: "hozorban-api", audience: "hozorban-web" },
   );
 }
+function tokenForPlatform(user) {
+  return jwt.sign(
+    {
+      sub: user.id,
+      org: user.organization_id,
+      role: "admin",
+      plat: user.platform_level,
+    },
+    jwtSecret,
+    { expiresIn: "8h", issuer: "hozorban-api", audience: "hozorban-web" },
+  );
+}
+// Short lived, faculty-scoped token.  The platform token stays in the browser
+// and is never accepted by /api/platform/*, so "entering" a faculty cannot be
+// used to escalate back into the control plane.
+function tokenForImpersonation(platformUser, organizationId, sessionId) {
+  return jwt.sign(
+    {
+      sub: platformUser.id,
+      org: organizationId,
+      role: "admin",
+      adminLevel: "owner",
+      imp: { sid: sessionId, by: platformUser.id },
+    },
+    jwtSecret,
+    {
+      expiresIn: `${IMPERSONATION_TTL_MINUTES}m`,
+      issuer: "hozorban-api",
+      audience: "hozorban-web",
+    },
+  );
+}
 function authorize(...allowed) {
-  return (req, res, next) =>
-    allowed.includes(req.user.role)
+  return (req, res, next) => {
+    // A platform token is only allowed to use the platform API.  To touch
+    // faculty data the admin must start an impersonation session first.
+    if (req.user.plat && !req.user.imp)
+      return res.status(403).json({
+        message: "برای دسترسی به دادهٔ دانشکده ابتدا از پنل سامانه وارد یکی از دانشکده‌ها شوید.",
+      });
+    return allowed.includes(req.user.role)
       ? next()
       : res.status(403).json({ message: "دسترسی کافی نیست." });
+  };
+}
+function requirePlatform(minLevel = "auditor") {
+  return (req, res, next) => {
+    if (!req.user.plat)
+      return res.status(403).json({ message: "این بخش فقط برای مدیران سامانه است." });
+    if (!platformLevelAllows(req.user.plat, minLevel))
+      return res.status(403).json({ message: "سطح دسترسی شما برای این عملیات کافی نیست." });
+    return next();
+  };
 }
 async function authenticate(req, res, next) {
   const token = req.get("authorization")?.replace(/^Bearer\s+/i, "");
@@ -157,39 +225,117 @@ async function authenticate(req, res, next) {
   } catch {
     return res.status(401).json({ message: "نشست معتبر نیست." });
   }
-  // Staff can be removed from a faculty, and any account can be deactivated,
-  // while an old token is still valid. Re-check on every request so revocation
-  // is immediate. Students are included here so a temporary password really
-  // forces a change before the panel (and its API) opens.
-  if (req.user.role === "teacher" || req.user.role === "student") {
-    try {
+
+  try {
+    const { rows: orgRows } = await pool.query(
+      "SELECT id, kind, is_active FROM organizations WHERE id = $1",
+      [req.user.org],
+    );
+    const organization = orgRows[0];
+    if (!organization || !organization.is_active)
+      return res
+        .status(401)
+        .json({ message: "دانشکدهٔ انتخابی غیرفعال است؛ با مدیر سامانه تماس بگیرید." });
+
+    // Tokens issued by "enter faculty" carry a session id.  Re-check the
+    // session (and the platform account) on every request so access can be
+    // revoked immediately.
+    if (req.user.imp?.sid) {
       const { rows } = await pool.query(
-        `SELECT u.must_change_password
+        `SELECT i.id
+           FROM admin_impersonations i
+           JOIN users u ON u.id = i.platform_user_id
+          WHERE i.id = $1
+            AND i.organization_id = $2
+            AND i.ended_at IS NULL
+            AND i.expires_at > now()
+            AND u.is_active = true
+            AND u.platform_level IS NOT NULL`,
+        [req.user.imp.sid, req.user.org],
+      );
+      if (!rows[0])
+        return res.status(401).json({
+          message: "نشست ورود به دانشکده پایان یافته است؛ دوباره از پنل سامانه وارد شوید.",
+        });
+      req.user.impersonating = true;
+      req.user.platformActorId = req.user.imp.by;
+      req.user.adminLevel = "owner";
+      return next();
+    }
+
+    // Platform (control plane) token: trust only the database, not the claim.
+    if (req.user.plat) {
+      const { rows } = await pool.query(
+        `SELECT u.platform_level, u.must_change_password
            FROM users u
+           JOIN organizations o ON o.id = u.organization_id
           WHERE u.id = $1 AND u.is_active = true
-            AND (u.organization_id = $2 OR EXISTS (
-                  SELECT 1 FROM user_faculties uf
-                   WHERE uf.user_id = u.id AND uf.organization_id = $2))`,
-        [req.user.sub, req.user.org],
+            AND o.kind = 'platform'
+            AND u.platform_level IS NOT NULL`,
+        [req.user.sub],
       );
       if (!rows[0])
         return res
           .status(401)
-          .json({ message: "دسترسی شما به این دانشکده معتبر نیست." });
-      // A temporary password may only be used to reach the change-password
-      // endpoint. Everything else stays blocked until a new password is set.
+          .json({ message: "دسترسی مدیر سامانه معتبر نیست." });
+      req.user.plat = rows[0].platform_level;
       const currentPath = req.originalUrl.split("?")[0];
       if (
         rows[0].must_change_password &&
         currentPath !== "/api/auth/change-password"
       )
         return res.status(403).json({
-          message: "برای ادامه ابتدا رمز عبور اولیه را تغییر دهید.",
+          message: "برای ادامه ابتدا رمز عبور اولیهٔ حساب سامانه را تغییر دهید.",
         });
-    } catch (error) {
-      return next(error);
+      return next();
     }
+
+    // Staff can be removed from a faculty, and any account can be deactivated,
+    // while an old token is still valid. Re-check on every request so revocation
+    // is immediate. Students are included here so a temporary password really
+    // forces a change before the panel (and its API) opens.
+    const { rows } = await pool.query(
+      `SELECT u.must_change_password, u.role, u.admin_level
+         FROM users u
+        WHERE u.id = $1 AND u.is_active = true AND u.role = $3
+          AND (u.organization_id = $2 OR EXISTS (
+                SELECT 1 FROM user_faculties uf
+                 WHERE uf.user_id = u.id AND uf.organization_id = $2))`,
+      [req.user.sub, req.user.org, req.user.role],
+    );
+    if (!rows[0])
+      return res
+        .status(401)
+        .json({ message: "دسترسی شما به این دانشکده معتبر نیست." });
+    req.user.adminLevel =
+      rows[0].admin_level || (rows[0].role === "admin" ? "owner" : null);
+    // A temporary password may only be used to reach the change-password
+    // endpoint. Everything else stays blocked until a new password is set.
+    const currentPath = req.originalUrl.split("?")[0];
+    if (
+      rows[0].must_change_password &&
+      currentPath !== "/api/auth/change-password"
+    )
+      return res.status(403).json({
+        message: "برای ادامه ابتدا رمز عبور اولیه را تغییر دهید.",
+      });
+  } catch (error) {
+    return next(error);
   }
+  return next();
+}
+
+// Faculty admin levels: the viewer level is enforced by HTTP method, which
+// makes "read only" a hard guarantee instead of a per-page convention.
+function enforceFacultyAdminLevel(req, res, next) {
+  if (req.user.role !== "admin" || (req.user.plat && !req.user.imp)) return next();
+  const path = req.originalUrl.split("?")[0];
+  const denial = facultyLevelDenial(
+    req.user.adminLevel || "owner",
+    req.method,
+    path,
+  );
+  if (denial) return res.status(403).json({ message: denial });
   return next();
 }
 function validate(schema, source = "body") {
@@ -493,6 +639,63 @@ function studentAccountEmail(studentNumber) {
   return `${slug || `student-${crypto.randomUUID().slice(0, 8)}`}@students.local`;
 }
 
+async function platformOrganization() {
+  const { rows } = await pool.query(
+    "SELECT id, name FROM organizations WHERE kind = 'platform' LIMIT 1",
+  );
+  return rows[0] || null;
+}
+
+// One shared creator for faculty admins and platform admins.  The password is
+// only ever returned once; the database keeps a bcrypt hash and password
+// history, exactly like the teacher/student provisioning flows.
+async function createAdminAccount(
+  client,
+  { organizationId, fullName, email, level, platformLevel = null, createdBy = null },
+) {
+  const temporaryPassword = generateTemporaryPassword();
+  const passwordHash = await bcrypt.hash(temporaryPassword, 10);
+  const { rows } = await client.query(
+    `INSERT INTO users
+       (organization_id, email, password_hash, display_name, role, is_active,
+        must_change_password, admin_level, platform_level, password_last_changed)
+     VALUES ($1, lower($2), $3, $4, 'admin', true, true, $5, $6, now())
+     RETURNING id, email, display_name AS "fullName", admin_level AS "adminLevel",
+               platform_level AS "platformLevel"`,
+    [organizationId, email, passwordHash, fullName, level, platformLevel],
+  );
+  await client.query(
+    `INSERT INTO password_history (user_id, password_hash, created_at)
+     VALUES ($1, $2, now())`,
+    [rows[0].id, passwordHash],
+  );
+  return {
+    ...rows[0],
+    createdBy,
+    temporaryPassword,
+  };
+}
+
+// Staff emails are the login identifier, so they must be unique across the
+// whole platform.  Student placeholder addresses live in their own faculty and
+// are excluded on purpose (the same student number may exist twice).
+async function staffEmailTaken(client, email, exceptUserId = null) {
+  const { rows } = await client.query(
+    `SELECT id FROM users
+      WHERE lower(email) = lower($1)
+        AND role <> 'student'
+        AND ($2::uuid IS NULL OR id <> $2)
+      LIMIT 1`,
+    [email, exceptUserId],
+  );
+  return rows[0] || null;
+}
+
+function facultyDisplayName(row) {
+  return row?.name || "دانشکده";
+}
+
+
 // Shared predicate: does this students row (aliased `st`) already have a login?
 const STUDENT_HAS_ACCOUNT_SQL = `EXISTS (
   SELECT 1 FROM users u
@@ -642,9 +845,91 @@ app.get(
   "/api/faculties",
   asyncRoute(async (req, res) => {
     const { rows } = await pool.query(
-      "SELECT id, name, code FROM organizations WHERE is_active = true ORDER BY name",
+      "SELECT id, name, code FROM organizations WHERE is_active = true AND kind = 'faculty' ORDER BY name",
     );
     res.json({ faculties: rows });
+  }),
+);
+
+/* ------------------------- platform (super admin) ------------------------- */
+
+app.post(
+  "/api/platform/auth/login",
+  validate(
+    z.object({
+      identifier: z.string().trim().min(3).max(254),
+      password: z.string().min(8).max(128),
+    }),
+  ),
+  asyncRoute(async (req, res) => {
+    const { identifier, password } = req.body;
+    const { rows } = await pool.query(
+      `SELECT u.*, o.kind AS organization_kind
+         FROM users u
+         JOIN organizations o ON o.id = u.organization_id
+        WHERE lower(u.email) = lower($1)
+          AND u.is_active = true
+          AND o.is_active = true
+          AND o.kind = 'platform'
+          AND u.platform_level IS NOT NULL
+        LIMIT 1`,
+      [identifier],
+    );
+    const user = rows[0];
+    if (!user) {
+      return res
+        .status(401)
+        .json({ message: "نام کاربری یا رمز عبور مدیر سامانه نادرست است." });
+    }
+    if (user.account_locked_until && user.account_locked_until > new Date()) {
+      const seconds = Math.ceil((user.account_locked_until - new Date()) / 1000);
+      return res.status(423).json({
+        message: `حساب مدیر سامانه موقتاً قفل است. لطفاً ${Math.ceil(seconds / 60)} دقیقه دیگر تلاش کنید.`,
+      });
+    }
+    const valid = await bcrypt.compare(password, user.password_hash);
+    if (!valid) {
+      const attempts = Number(user.failed_login_attempts || 0) + 1;
+      await pool.query(
+        `UPDATE users
+            SET failed_login_attempts = $2,
+                last_failed_login = now(),
+                account_locked_until =
+                  CASE WHEN $2 >= 5 THEN now() + interval '5 minutes' ELSE account_locked_until END
+          WHERE id = $1`,
+        [user.id, attempts],
+      );
+      return res
+        .status(401)
+        .json({ message: "نام کاربری یا رمز عبور مدیر سامانه نادرست است." });
+    }
+
+    await pool.query(
+      `UPDATE users
+          SET failed_login_attempts = 0,
+              last_failed_login = NULL,
+              account_locked_until = NULL,
+              password_last_changed = COALESCE(password_last_changed, now())
+        WHERE id = $1`,
+      [user.id],
+    );
+    await pool.query(
+      `INSERT INTO login_history (user_id, organization_id, ip_address, user_agent, successful)
+       VALUES ($1, $2, $3, $4, true)`,
+      [user.id, user.organization_id, req.ip, req.get("user-agent") || null],
+    );
+
+    res.json({
+      token: tokenForPlatform(user),
+      user: {
+        id: user.id,
+        email: user.email,
+        name: user.display_name,
+        platformLevel: user.platform_level,
+        mustChangePassword: user.must_change_password === true,
+        organization: { id: user.organization_id, name: "پنل سامانه" },
+      },
+    });
   }),
 );
 
@@ -685,9 +970,15 @@ app.post(
     const { password, facultyId } = req.body;
     const result = await pool.query(
       `SELECT u.* FROM users u
-        WHERE u.is_active = true AND ${LOGIN_IDENTIFIER_MATCH}
+         JOIN organizations o
+           ON o.id = u.organization_id
+          AND o.kind = 'faculty'
+          AND o.is_active = true
+        WHERE u.is_active = true
+          AND ($2::uuid IS NULL OR u.organization_id = $2)
+          AND ${LOGIN_IDENTIFIER_MATCH}
         ORDER BY u.created_at`,
-      [identifier],
+      [identifier, facultyId || null],
     );
     let user = null;
     for (const candidate of result.rows) {
@@ -703,16 +994,27 @@ app.post(
         `UPDATE users u
             SET failed_login_attempts = failed_login_attempts + 1,
                 last_failed_login = now()
-          WHERE u.is_active = true AND ${LOGIN_IDENTIFIER_MATCH}
+           FROM organizations o
+          WHERE o.id = u.organization_id
+            AND o.kind = 'faculty'
+            AND o.is_active = true
+            AND u.is_active = true
+            AND ($2::uuid IS NULL OR u.organization_id = $2)
+            AND ${LOGIN_IDENTIFIER_MATCH}
           RETURNING u.id, u.email`,
-        [identifier],
+        [identifier, facultyId || null],
       );
       if (rowCount > 0) {
         const { rows: lockedRows } = await pool.query(
           `SELECT u.id FROM users u
-            WHERE u.is_active = true AND u.failed_login_attempts >= 5
+             JOIN organizations o ON o.id = u.organization_id
+            WHERE o.kind = 'faculty'
+              AND o.is_active = true
+              AND u.is_active = true
+              AND u.failed_login_attempts >= 5
+              AND ($2::uuid IS NULL OR u.organization_id = $2)
               AND ${LOGIN_IDENTIFIER_MATCH}`,
-          [identifier],
+          [identifier, facultyId || null],
         );
         for (const lock of lockedRows) {
           await pool.query(
@@ -817,6 +1119,997 @@ app.post(
 );
 
 app.use("/api", authenticate);
+// The control plane and the faculty plane share one JWT implementation but not
+// one surface: a platform token may only call /api/platform/*, and a faculty
+// token may never call it.
+app.use("/api", (req, res, next) => {
+  const path = req.originalUrl.split("?")[0];
+  if (
+    req.user.plat &&
+    !req.user.imp &&
+    !path.startsWith("/api/platform") &&
+    !path.startsWith("/api/auth/")
+  )
+    return res.status(403).json({
+      message: "برای دسترسی به دادهٔ دانشکده ابتدا از پنل سامانه وارد یکی از دانشکده‌ها شوید.",
+    });
+  return next();
+});
+app.use("/api", enforceFacultyAdminLevel);
+
+// Leaving an impersonation session is the only endpoint that a faculty-scoped
+// platform token may call outside the faculty data set.
+app.post(
+  "/api/auth/exit-impersonation",
+  asyncRoute(async (req, res) => {
+    if (!req.user.imp?.sid)
+      return res
+        .status(400)
+        .json({ message: "نشست ورود به دانشکده فعال نیست." });
+    const { rows } = await pool.query(
+      `UPDATE admin_impersonations
+          SET ended_at = now(), ended_by = $2, ended_reason = 'manual'
+        WHERE id = $1 AND ended_at IS NULL
+        RETURNING organization_id`,
+      [req.user.imp.sid, req.user.sub],
+    );
+    if (rows[0]) {
+      await audit(
+        pool,
+        rows[0].organization_id,
+        req.user.sub,
+        "platform.impersonation.end",
+        "faculty",
+        rows[0].organization_id,
+        { reason: "manual" },
+      );
+    }
+    res.json({ ok: true });
+  }),
+);
+
+/* --------------------------- platform endpoints --------------------------- */
+
+const FACULTY_SELECT = `
+  o.id, o.name, o.code, o.slug,
+  o.is_active AS "isActive", o.archived_at AS "archivedAt",
+  o.contact_name AS "contactName", o.contact_email AS "contactEmail",
+  o.contact_phone AS "contactPhone", o.created_at AS "createdAt"
+`;
+const FACULTY_STATS_SELECT = `
+  (SELECT count(*)::int FROM students s WHERE s.organization_id = o.id) AS "students",
+  (SELECT count(*)::int FROM users u WHERE u.organization_id = o.id AND u.role = 'teacher' AND u.is_active) AS "teachers",
+  (SELECT count(*)::int FROM users u WHERE u.organization_id = o.id AND u.role = 'admin' AND u.is_active) AS "admins",
+  (SELECT count(*)::int FROM courses c WHERE c.organization_id = o.id) AS "courses",
+  (SELECT count(*)::int FROM exams e WHERE e.organization_id = o.id) AS "exams",
+  (SELECT max(al.created_at) FROM audit_logs al WHERE al.organization_id = o.id) AS "lastActivity"
+`;
+
+async function loadFacultyForPlatform(client, facultyId) {
+  const { rows } = await client.query(
+    `SELECT ${FACULTY_SELECT}, ${FACULTY_STATS_SELECT}
+       FROM organizations o
+      WHERE o.id = $1 AND o.kind = 'faculty'`,
+    [facultyId],
+  );
+  return rows[0] || null;
+}
+
+async function facultyAdmins(facultyId) {
+  const { rows } = await pool.query(
+    `SELECT u.id,
+            u.display_name AS "fullName",
+            u.email,
+            u.is_active AS "isActive",
+            COALESCE(u.admin_level, 'owner') AS "level",
+            u.must_change_password AS "mustChangePassword",
+            u.created_at AS "createdAt",
+            (SELECT max(lh.created_at) FROM login_history lh
+              WHERE lh.user_id = u.id AND lh.successful = true) AS "lastLoginAt"
+       FROM users u
+      WHERE u.organization_id = $1 AND u.role = 'admin'
+      ORDER BY u.created_at`,
+    [facultyId],
+  );
+  return rows;
+}
+
+const facultyAdminLevels = FACULTY_ADMIN_LEVELS;
+const platformLevels = PLATFORM_LEVELS;
+const facultyContactShape = {
+  slug: z.string().trim().max(60).optional(),
+  contactName: z.string().trim().max(120).optional(),
+  contactEmail: z
+    .union([z.literal(""), z.string().trim().email().max(254)])
+    .optional(),
+  contactPhone: z.string().trim().max(40).optional(),
+};
+const facultyCodeSchema = z
+  .string()
+  .trim()
+  .min(2)
+  .max(32)
+  .regex(/^[A-Za-z0-9_-]+$/, "کد دانشکده فقط می‌تواند شامل حرف، رقم، خط تیره و زیرخط باشد.");
+
+app.get(
+  "/api/platform/me",
+  requirePlatform("auditor"),
+  asyncRoute(async (req, res) => {
+    const { rows } = await pool.query(
+      `SELECT id, email, display_name AS "name", platform_level AS "platformLevel"
+         FROM users WHERE id = $1`,
+      [req.user.sub],
+    );
+    res.json({ user: rows[0] || null });
+  }),
+);
+
+app.get(
+  "/api/platform/overview",
+  requirePlatform("auditor"),
+  asyncRoute(async (_req, res) => {
+    const { rows } = await pool.query(
+      `SELECT
+         (SELECT count(*)::int FROM organizations WHERE kind = 'faculty') AS "faculties",
+         (SELECT count(*)::int FROM organizations WHERE kind = 'faculty' AND is_active) AS "activeFaculties",
+         (SELECT count(*)::int FROM students) AS "students",
+         (SELECT count(*)::int FROM users WHERE role = 'teacher' AND is_active) AS "teachers",
+         (SELECT count(*)::int FROM users WHERE role = 'admin' AND is_active AND platform_level IS NULL) AS "facultyAdmins",
+         (SELECT count(*)::int FROM courses) AS "courses",
+         (SELECT count(*)::int FROM exams) AS "exams"`,
+    );
+    const { rows: recent } = await pool.query(
+      `SELECT al.id, al.action, al.created_at AS "createdAt",
+              o.name AS "organizationName", u.display_name AS "actorName"
+         FROM audit_logs al
+         JOIN organizations o ON o.id = al.organization_id
+         LEFT JOIN users u ON u.id = al.actor_id
+        WHERE o.kind = 'faculty'
+        ORDER BY al.created_at DESC
+        LIMIT 8`,
+    );
+    res.json({ stats: rows[0], recentActivity: recent });
+  }),
+);
+
+app.get(
+  "/api/platform/faculties",
+  requirePlatform("auditor"),
+  asyncRoute(async (_req, res) => {
+    const { rows } = await pool.query(
+      `SELECT ${FACULTY_SELECT}, ${FACULTY_STATS_SELECT}
+         FROM organizations o
+        WHERE o.kind = 'faculty'
+        ORDER BY o.created_at DESC`,
+    );
+    res.json({ faculties: rows });
+  }),
+);
+
+app.post(
+  "/api/platform/faculties",
+  requirePlatform("operator"),
+  validate(
+    z.object({
+      name: z.string().trim().min(2).max(120),
+      code: facultyCodeSchema,
+      ...facultyContactShape,
+      adminFullName: z.string().trim().min(2).max(120),
+      adminEmail: z.string().trim().email().max(254),
+      adminLevel: z.enum(facultyAdminLevels).default("owner"),
+    }),
+  ),
+  asyncRoute(async (req, res) => {
+    const {
+      name,
+      code,
+      slug,
+      contactName,
+      contactEmail,
+      contactPhone,
+      adminFullName,
+      adminEmail,
+      adminLevel,
+    } = req.body;
+    const normalizedCode = code.toUpperCase();
+    const conflict = await pool.query(
+      `SELECT name, code FROM organizations
+        WHERE kind = 'faculty'
+          AND (lower(name) = lower($1) OR lower(code) = lower($2))
+        LIMIT 1`,
+      [name, normalizedCode],
+    );
+    if (conflict.rows[0])
+      return res.status(409).json({
+        message:
+          conflict.rows[0].name?.toLowerCase() === name.toLowerCase()
+            ? "دانشکده‌ای با این نام از قبل وجود دارد."
+            : "این کد دانشکده قبلاً استفاده شده است.",
+      });
+
+    const client = await pool.connect();
+    try {
+      await client.query("BEGIN");
+      if (await staffEmailTaken(client, adminEmail)) {
+        await client.query("ROLLBACK");
+        return res.status(409).json({
+          message: "این ایمیل قبلاً برای حساب دیگری در سامانه ثبت شده است.",
+        });
+      }
+      const createdFaculty = await client.query(
+        `INSERT INTO organizations
+           (name, code, kind, slug, contact_name, contact_email, contact_phone, created_by)
+         VALUES ($1,$2,'faculty',$3,$4,$5,$6,$7)
+         RETURNING id, name, code, slug`,
+        [
+          name,
+          normalizedCode,
+          (slug || normalizedCode).toLowerCase(),
+          contactName || null,
+          contactEmail || null,
+          contactPhone || null,
+          req.user.sub,
+        ],
+      );
+      const facultyId = createdFaculty.rows[0].id;
+      const account = await createAdminAccount(client, {
+        organizationId: facultyId,
+        fullName: adminFullName,
+        email: adminEmail,
+        level: adminLevel,
+        createdBy: req.user.sub,
+      });
+      await client.query(
+        `INSERT INTO organization_settings (organization_id) VALUES ($1)
+         ON CONFLICT (organization_id) DO NOTHING`,
+        [facultyId],
+      );
+      await audit(
+        client,
+        facultyId,
+        req.user.sub,
+        "platform.faculty.create",
+        "faculty",
+        facultyId,
+        { name, code: normalizedCode, scope: "platform" },
+      );
+      await audit(
+        client,
+        facultyId,
+        req.user.sub,
+        "platform.faculty.admin.create",
+        "admin",
+        account.id,
+        { email: adminEmail, level: adminLevel, scope: "platform" },
+      );
+      await client.query("COMMIT");
+      const faculty = await loadFacultyForPlatform(pool, facultyId);
+      res.status(201).json({
+        faculty,
+        admin: {
+          id: account.id,
+          fullName: account.fullName,
+          email: account.email,
+          level: account.adminLevel,
+        },
+        account: {
+          username: account.email,
+          temporaryPassword: account.temporaryPassword,
+        },
+      });
+    } catch (error) {
+      await client.query("ROLLBACK");
+      if (error.code === "23505")
+        return res
+          .status(409)
+          .json({ message: "دانشکده یا حساب هم‌زمان توسط مدیر دیگری ساخته شد." });
+      throw error;
+    } finally {
+      client.release();
+    }
+  }),
+);
+
+app.get(
+  "/api/platform/faculties/:id",
+  requirePlatform("auditor"),
+  asyncRoute(async (req, res) => {
+    const faculty = await loadFacultyForPlatform(pool, req.params.id);
+    if (!faculty)
+      return res.status(404).json({ message: "دانشکده یافت نشد." });
+    const admins = await facultyAdmins(faculty.id);
+    const { rows: sessions } = await pool.query(
+      `SELECT i.id, i.started_at AS "startedAt", i.expires_at AS "expiresAt",
+              i.reason, u.display_name AS "platformName"
+         FROM admin_impersonations i
+         JOIN users u ON u.id = i.platform_user_id
+        WHERE i.organization_id = $1 AND i.ended_at IS NULL AND i.expires_at > now()
+        ORDER BY i.started_at DESC`,
+      [faculty.id],
+    );
+    res.json({ faculty, admins, activeSessions: sessions });
+  }),
+);
+
+app.patch(
+  "/api/platform/faculties/:id",
+  requirePlatform("operator"),
+  validate(
+    z
+      .object({
+        name: z.string().trim().min(2).max(120).optional(),
+        code: facultyCodeSchema.optional(),
+        ...facultyContactShape,
+        isActive: z.boolean().optional(),
+      })
+      .partial(),
+  ),
+  asyncRoute(async (req, res) => {
+    const existing = await loadFacultyForPlatform(pool, req.params.id);
+    if (!existing)
+      return res.status(404).json({ message: "دانشکده یافت نشد." });
+    const body = req.body;
+    const name = body.name ?? existing.name;
+    const code = (body.code ?? existing.code ?? "").toUpperCase();
+    if (body.name || body.code) {
+      const conflict = await pool.query(
+        `SELECT id, name, code FROM organizations
+          WHERE kind = 'faculty' AND id <> $3
+            AND (lower(name) = lower($1) OR lower(code) = lower($2))
+          LIMIT 1`,
+        [name, code, existing.id],
+      );
+      if (conflict.rows[0])
+        return res.status(409).json({
+          message:
+            conflict.rows[0].name?.toLowerCase() === name.toLowerCase()
+              ? "دانشکده‌ای با این نام از قبل وجود دارد."
+              : "این کد دانشکده قبلاً استفاده شده است.",
+        });
+    }
+    const isActive = body.isActive ?? existing.isActive;
+    const { rows } = await pool.query(
+      `UPDATE organizations
+          SET name = $2,
+              code = $3,
+              slug = $4,
+              contact_name = $5,
+              contact_email = $6,
+              contact_phone = $7,
+              is_active = $8,
+              archived_at = CASE
+                WHEN $8 = true THEN NULL
+                WHEN archived_at IS NULL THEN now()
+                ELSE archived_at
+              END
+        WHERE id = $1 AND kind = 'faculty'
+        RETURNING id`,
+      [
+        existing.id,
+        name,
+        code,
+        (body.slug ?? existing.slug ?? code).toLowerCase(),
+        body.contactName ?? existing.contactName,
+        body.contactEmail ?? existing.contactEmail,
+        body.contactPhone ?? existing.contactPhone,
+        isActive,
+      ],
+    );
+    if (!isActive) {
+      await pool.query(
+        `UPDATE admin_impersonations
+            SET ended_at = now(), ended_reason = 'faculty_deactivated'
+          WHERE organization_id = $1 AND ended_at IS NULL`,
+        [existing.id],
+      );
+    }
+    await audit(
+      pool,
+      existing.id,
+      req.user.sub,
+      "platform.faculty.update",
+      "faculty",
+      existing.id,
+      { scope: "platform", changes: body, isActive },
+    );
+    res.json({ faculty: await loadFacultyForPlatform(pool, rows[0].id) });
+  }),
+);
+
+app.post(
+  "/api/platform/faculties/:id/archive",
+  requirePlatform("operator"),
+  asyncRoute(async (req, res) => {
+    const existing = await loadFacultyForPlatform(pool, req.params.id);
+    if (!existing)
+      return res.status(404).json({ message: "دانشکده یافت نشد." });
+    await pool.query(
+      `UPDATE organizations
+          SET is_active = false, archived_at = COALESCE(archived_at, now())
+        WHERE id = $1 AND kind = 'faculty'`,
+      [existing.id],
+    );
+    await pool.query(
+      `UPDATE admin_impersonations
+          SET ended_at = now(), ended_reason = 'faculty_archived'
+        WHERE organization_id = $1 AND ended_at IS NULL`,
+      [existing.id],
+    );
+    await audit(
+      pool,
+      existing.id,
+      req.user.sub,
+      "platform.faculty.archive",
+      "faculty",
+      existing.id,
+      { scope: "platform" },
+    );
+    res.json({ faculty: await loadFacultyForPlatform(pool, existing.id) });
+  }),
+);
+
+app.post(
+  "/api/platform/faculties/:id/admin",
+  requirePlatform("operator"),
+  validate(
+    z.object({
+      fullName: z.string().trim().min(2).max(120),
+      email: z.string().trim().email().max(254),
+      level: z.enum(facultyAdminLevels).default("owner"),
+    }),
+  ),
+  asyncRoute(async (req, res) => {
+    const faculty = await loadFacultyForPlatform(pool, req.params.id);
+    if (!faculty)
+      return res.status(404).json({ message: "دانشکده یافت نشد." });
+    if (!faculty.isActive)
+      return res
+        .status(409)
+        .json({ message: "دانشکده غیرفعال است؛ ابتدا آن را فعال کنید." });
+    const { fullName, email, level } = req.body;
+    const client = await pool.connect();
+    try {
+      await client.query("BEGIN");
+      if (await staffEmailTaken(client, email)) {
+        await client.query("ROLLBACK");
+        return res.status(409).json({
+          message: "این ایمیل قبلاً برای حساب دیگری در سامانه ثبت شده است.",
+        });
+      }
+      const account = await createAdminAccount(client, {
+        organizationId: faculty.id,
+        fullName,
+        email,
+        level,
+        createdBy: req.user.sub,
+      });
+      await audit(
+        client,
+        faculty.id,
+        req.user.sub,
+        "platform.faculty.admin.create",
+        "admin",
+        account.id,
+        { email, level, scope: "platform" },
+      );
+      await client.query("COMMIT");
+      try {
+        await notifyUsers(faculty.id, [account.id], {
+          type: "system",
+          title: "دسترسی مدیریت دانشکده",
+          message: `حساب شما با سطح «${level}» در دانشکدهٔ «${faculty.name}» ساخته شد. رمز موقت را از مدیر سامانه دریافت کنید.`,
+          link: "dashboard",
+        });
+      } catch (notifyError) {
+        console.warn("[platform] admin notification failed:", notifyError.message);
+      }
+      res.status(201).json({
+        admin: {
+          id: account.id,
+          fullName: account.fullName,
+          email: account.email,
+          level: account.adminLevel,
+          isActive: true,
+        },
+        account: {
+          username: account.email,
+          temporaryPassword: account.temporaryPassword,
+        },
+      });
+    } catch (error) {
+      await client.query("ROLLBACK");
+      if (error.code === "23505")
+        return res
+          .status(409)
+          .json({ message: "این ایمیل هم‌زمان ثبت شده است؛ صفحه را بروزرسانی کنید." });
+      throw error;
+    } finally {
+      client.release();
+    }
+  }),
+);
+
+app.patch(
+  "/api/platform/faculties/:id/admins/:userId",
+  requirePlatform("operator"),
+  validate(
+    z
+      .object({
+        level: z.enum(facultyAdminLevels).optional(),
+        isActive: z.boolean().optional(),
+      })
+      .refine((body) => body.level !== undefined || body.isActive !== undefined, {
+        message: "هیچ تغییری ارسال نشده است.",
+      }),
+  ),
+  asyncRoute(async (req, res) => {
+    const faculty = await loadFacultyForPlatform(pool, req.params.id);
+    if (!faculty)
+      return res.status(404).json({ message: "دانشکده یافت نشد." });
+    const { rows } = await pool.query(
+      `SELECT id, display_name AS "fullName", email, is_active AS "isActive",
+              COALESCE(admin_level, 'owner') AS "level"
+         FROM users
+        WHERE id = $1 AND organization_id = $2 AND role = 'admin'`,
+      [req.params.userId, faculty.id],
+    );
+    const target = rows[0];
+    if (!target)
+      return res.status(404).json({ message: "مدیر دانشکده یافت نشد." });
+
+    const nextLevel = req.body.level ?? target.level;
+    const nextActive = req.body.isActive ?? target.isActive;
+    const losingOwner =
+      target.level === "owner" && (nextLevel !== "owner" || nextActive === false);
+    if (losingOwner) {
+      const { rows: owners } = await pool.query(
+        `SELECT count(*)::int AS count FROM users
+          WHERE organization_id = $1 AND role = 'admin' AND is_active = true
+            AND COALESCE(admin_level, 'owner') = 'owner'`,
+        [faculty.id],
+      );
+      if (owners[0].count <= 1)
+        return res.status(409).json({
+          message: "دانشکده باید حداقل یک مدیر ارشد فعال داشته باشد.",
+        });
+    }
+
+    const updated = await pool.query(
+      `UPDATE users
+          SET admin_level = $3, is_active = $4, updated_at = now()
+        WHERE id = $1 AND organization_id = $2
+        RETURNING id, display_name AS "fullName", email, is_active AS "isActive",
+                  admin_level AS "level"`,
+      [target.id, faculty.id, nextLevel, nextActive],
+    );
+    if (!nextActive) {
+      await pool.query(
+        `UPDATE admin_impersonations
+            SET ended_at = now(), ended_reason = 'admin_deactivated'
+          WHERE organization_id = $1 AND platform_user_id = $2 AND ended_at IS NULL`,
+        [faculty.id, target.id],
+      );
+    }
+    await audit(
+      pool,
+      faculty.id,
+      req.user.sub,
+      "platform.faculty.admin.update",
+      "admin",
+      target.id,
+      { level: nextLevel, isActive: nextActive, scope: "platform" },
+    );
+    res.json({ admin: updated.rows[0] });
+  }),
+);
+
+app.post(
+  "/api/platform/faculties/:id/admins/:userId/reset-password",
+  requirePlatform("operator"),
+  asyncRoute(async (req, res) => {
+    const { rows } = await pool.query(
+      `SELECT id, email FROM users
+        WHERE id = $1 AND organization_id = $2 AND role = 'admin'`,
+      [req.params.userId, req.params.id],
+    );
+    const target = rows[0];
+    if (!target)
+      return res.status(404).json({ message: "مدیر دانشکده یافت نشد." });
+    const temporaryPassword = generateTemporaryPassword();
+    const passwordHash = await bcrypt.hash(temporaryPassword, 10);
+    await pool.query(
+      `UPDATE users
+          SET password_hash = $2, must_change_password = true,
+              password_last_changed = now(), failed_login_attempts = 0,
+              account_locked_until = NULL, updated_at = now()
+        WHERE id = $1`,
+      [target.id, passwordHash],
+    );
+    await pool.query(
+      `INSERT INTO password_history (user_id, password_hash, created_at)
+       VALUES ($1,$2,now())`,
+      [target.id, passwordHash],
+    );
+    await audit(
+      pool,
+      req.params.id,
+      req.user.sub,
+      "platform.faculty.admin.reset_password",
+      "admin",
+      target.id,
+      { scope: "platform" },
+    );
+    res.json({ username: target.email, temporaryPassword });
+  }),
+);
+
+app.post(
+  "/api/platform/faculties/:id/enter",
+  requirePlatform("operator"),
+  validate(
+    z.object({
+      reason: z.string().trim().min(5, "دلیل ورود باید حداقل ۵ کاراکتر باشد.").max(500),
+    }),
+  ),
+  asyncRoute(async (req, res) => {
+    const faculty = await loadFacultyForPlatform(pool, req.params.id);
+    if (!faculty)
+      return res.status(404).json({ message: "دانشکده یافت نشد." });
+    if (!faculty.isActive || faculty.archivedAt)
+      return res
+        .status(409)
+        .json({ message: "این دانشکده غیرفعال یا آرشیو شده است." });
+
+    const { rows: meRows } = await pool.query(
+      "SELECT * FROM users WHERE id = $1 AND is_active = true",
+      [req.user.sub],
+    );
+    const platformUser = meRows[0];
+    if (!platformUser)
+      return res.status(401).json({ message: "حساب مدیر سامانه معتبر نیست." });
+
+    const { rows: sessionRows } = await pool.query(
+      `INSERT INTO admin_impersonations
+         (platform_user_id, organization_id, reason, expires_at)
+       VALUES ($1, $2, $3, now() + make_interval(mins => $4))
+       RETURNING id, expires_at AS "expiresAt"`,
+      [platformUser.id, faculty.id, req.body.reason, IMPERSONATION_TTL_MINUTES],
+    );
+    const session = sessionRows[0];
+
+    await audit(
+      pool,
+      faculty.id,
+      platformUser.id,
+      "platform.impersonation.start",
+      "faculty",
+      faculty.id,
+      { reason: req.body.reason, sessionId: session.id, scope: "platform" },
+    );
+    try {
+      const admins = await adminUserIds(faculty.id);
+      await notifyUsers(faculty.id, admins, {
+        type: "system",
+        title: "ورود مدیر سامانه",
+        message: `مدیر سامانه با دسترسی مدیر وارد پنل «${faculty.name}» شد. دلیل: ${req.body.reason}`,
+        link: "dashboard",
+      });
+    } catch (notifyError) {
+      console.warn("[platform] impersonation notification failed:", notifyError.message);
+    }
+
+    res.status(201).json({
+      token: tokenForImpersonation(platformUser, faculty.id, session.id),
+      user: {
+        ...publicUser(platformUser),
+        faculty: { id: faculty.id, name: faculty.name, code: faculty.code },
+        faculties: [{ id: faculty.id, name: faculty.name, code: faculty.code }],
+        impersonated: true,
+        impersonation: {
+          sid: session.id,
+          facultyId: faculty.id,
+          facultyName: faculty.name,
+          expiresAt: session.expiresAt,
+          reason: req.body.reason,
+        },
+      },
+      impersonation: {
+        sid: session.id,
+        facultyId: faculty.id,
+        facultyName: faculty.name,
+        expiresAt: session.expiresAt,
+        reason: req.body.reason,
+      },
+    });
+  }),
+);
+
+app.get(
+  "/api/platform/impersonations",
+  requirePlatform("auditor"),
+  asyncRoute(async (_req, res) => {
+    const { rows } = await pool.query(
+      `SELECT i.id, i.reason, i.started_at AS "startedAt", i.expires_at AS "expiresAt",
+              o.id AS "facultyId", o.name AS "facultyName",
+              u.id AS "platformUserId", u.display_name AS "platformName"
+         FROM admin_impersonations i
+         JOIN organizations o ON o.id = i.organization_id
+         JOIN users u ON u.id = i.platform_user_id
+        WHERE i.ended_at IS NULL AND i.expires_at > now()
+        ORDER BY i.started_at DESC`,
+    );
+    res.json({ sessions: rows });
+  }),
+);
+
+app.delete(
+  "/api/platform/impersonations/:sid",
+  requirePlatform("operator"),
+  asyncRoute(async (req, res) => {
+    const { rows } = await pool.query(
+      `UPDATE admin_impersonations
+          SET ended_at = now(), ended_by = $2, ended_reason = 'revoked'
+        WHERE id = $1 AND ended_at IS NULL
+        RETURNING organization_id`,
+      [req.params.sid, req.user.sub],
+    );
+    if (!rows[0])
+      return res.status(404).json({ message: "نشست فعال یافت نشد." });
+    await audit(
+      pool,
+      rows[0].organization_id,
+      req.user.sub,
+      "platform.impersonation.revoke",
+      "faculty",
+      rows[0].organization_id,
+      { sessionId: req.params.sid, scope: "platform" },
+    );
+    res.json({ ok: true });
+  }),
+);
+
+app.get(
+  "/api/platform/admins",
+  requirePlatform("auditor"),
+  asyncRoute(async (_req, res) => {
+    const platform = await platformOrganization();
+    if (!platform) return res.json({ admins: [] });
+    const { rows } = await pool.query(
+      `SELECT u.id, u.display_name AS "fullName", u.email,
+              u.platform_level AS "level", u.is_active AS "isActive",
+              u.must_change_password AS "mustChangePassword",
+              u.created_at AS "createdAt",
+              (SELECT max(lh.created_at) FROM login_history lh
+                WHERE lh.user_id = u.id AND lh.successful = true) AS "lastLoginAt"
+         FROM users u
+        WHERE u.organization_id = $1 AND u.platform_level IS NOT NULL
+        ORDER BY u.created_at`,
+      [platform.id],
+    );
+    res.json({ admins: rows });
+  }),
+);
+
+app.post(
+  "/api/platform/admins",
+  requirePlatform("owner"),
+  validate(
+    z.object({
+      fullName: z.string().trim().min(2).max(120),
+      email: z.string().trim().email().max(254),
+      level: z.enum(platformLevels).default("operator"),
+    }),
+  ),
+  asyncRoute(async (req, res) => {
+    const platform = await platformOrganization();
+    if (!platform)
+      return res.status(500).json({ message: "سازمان پنل سامانه یافت نشد." });
+    const { fullName, email, level } = req.body;
+    const client = await pool.connect();
+    try {
+      await client.query("BEGIN");
+      if (await staffEmailTaken(client, email)) {
+        await client.query("ROLLBACK");
+        return res.status(409).json({
+          message: "این ایمیل قبلاً برای حساب دیگری در سامانه ثبت شده است.",
+        });
+      }
+      const account = await createAdminAccount(client, {
+        organizationId: platform.id,
+        fullName,
+        email,
+        level: "owner",
+        platformLevel: level,
+        createdBy: req.user.sub,
+      });
+      await audit(
+        client,
+        platform.id,
+        req.user.sub,
+        "platform.admin.create",
+        "platform_admin",
+        account.id,
+        { email, level, scope: "platform" },
+      );
+      await client.query("COMMIT");
+      res.status(201).json({
+        admin: {
+          id: account.id,
+          fullName: account.fullName,
+          email: account.email,
+          level: account.platformLevel,
+          isActive: true,
+        },
+        account: {
+          username: account.email,
+          temporaryPassword: account.temporaryPassword,
+        },
+      });
+    } catch (error) {
+      await client.query("ROLLBACK");
+      if (error.code === "23505")
+        return res
+          .status(409)
+          .json({ message: "این ایمیل هم‌زمان ثبت شده است؛ صفحه را بروزرسانی کنید." });
+      throw error;
+    } finally {
+      client.release();
+    }
+  }),
+);
+
+app.patch(
+  "/api/platform/admins/:userId",
+  requirePlatform("owner"),
+  validate(
+    z
+      .object({
+        level: z.enum(platformLevels).optional(),
+        isActive: z.boolean().optional(),
+      })
+      .refine((body) => body.level !== undefined || body.isActive !== undefined, {
+        message: "هیچ تغییری ارسال نشده است.",
+      }),
+  ),
+  asyncRoute(async (req, res) => {
+    const platform = await platformOrganization();
+    const { rows } = await pool.query(
+      `SELECT id, email, platform_level AS "level", is_active AS "isActive"
+         FROM users
+        WHERE id = $1 AND organization_id = $2 AND platform_level IS NOT NULL`,
+      [req.params.userId, platform?.id],
+    );
+    const target = rows[0];
+    if (!target)
+      return res.status(404).json({ message: "مدیر سامانه یافت نشد." });
+    if (target.id === req.user.sub && req.body.isActive === false)
+      return res
+        .status(400)
+        .json({ message: "امکان غیرفعال‌سازی حساب خودتان وجود ندارد." });
+
+    const nextLevel = req.body.level ?? target.level;
+    const nextActive = req.body.isActive ?? target.isActive;
+    if (target.level === "owner" && (nextLevel !== "owner" || !nextActive)) {
+      const { rows: owners } = await pool.query(
+        `SELECT count(*)::int AS count FROM users
+          WHERE organization_id = $1 AND platform_level = 'owner' AND is_active = true`,
+        [platform.id],
+      );
+      if (owners[0].count <= 1)
+        return res.status(409).json({
+          message: "سامانه باید حداقل یک مدیر ارشد فعال داشته باشد.",
+        });
+    }
+    const updated = await pool.query(
+      `UPDATE users
+          SET platform_level = $2, is_active = $3, updated_at = now()
+        WHERE id = $1 AND platform_level IS NOT NULL
+        RETURNING id, display_name AS "fullName", email,
+                  platform_level AS "level", is_active AS "isActive"`,
+      [target.id, nextLevel, nextActive],
+    );
+    await audit(
+      pool,
+      platform.id,
+      req.user.sub,
+      "platform.admin.update",
+      "platform_admin",
+      target.id,
+      { level: nextLevel, isActive: nextActive, scope: "platform" },
+    );
+    res.json({ admin: updated.rows[0] });
+  }),
+);
+
+app.post(
+  "/api/platform/admins/:userId/reset-password",
+  requirePlatform("owner"),
+  asyncRoute(async (req, res) => {
+    const platform = await platformOrganization();
+    const { rows } = await pool.query(
+      `SELECT id, email FROM users
+        WHERE id = $1 AND organization_id = $2 AND platform_level IS NOT NULL`,
+      [req.params.userId, platform?.id],
+    );
+    const target = rows[0];
+    if (!target)
+      return res.status(404).json({ message: "مدیر سامانه یافت نشد." });
+    const temporaryPassword = generateTemporaryPassword();
+    const passwordHash = await bcrypt.hash(temporaryPassword, 10);
+    await pool.query(
+      `UPDATE users
+          SET password_hash = $2, must_change_password = true,
+              password_last_changed = now(), failed_login_attempts = 0,
+              account_locked_until = NULL, updated_at = now()
+        WHERE id = $1`,
+      [target.id, passwordHash],
+    );
+    await pool.query(
+      `INSERT INTO password_history (user_id, password_hash, created_at)
+       VALUES ($1,$2,now())`,
+      [target.id, passwordHash],
+    );
+    await audit(
+      pool,
+      platform.id,
+      req.user.sub,
+      "platform.admin.reset_password",
+      "platform_admin",
+      target.id,
+      { scope: "platform" },
+    );
+    res.json({ username: target.email, temporaryPassword });
+  }),
+);
+
+app.get(
+  "/api/platform/audit",
+  requirePlatform("auditor"),
+  validate(
+    z.object({
+      organizationId: id.optional(),
+      action: z.string().trim().max(80).optional(),
+      actorId: id.optional(),
+      limit: z.coerce.number().int().min(1).max(200).default(50),
+      offset: z.coerce.number().int().min(0).default(0),
+    }),
+    "query",
+  ),
+  asyncRoute(async (req, res) => {
+    const { organizationId, action, actorId, limit, offset } = req.query;
+    const params = [];
+    const conditions = ["o.kind = 'faculty'"];
+    if (organizationId) {
+      params.push(organizationId);
+      conditions.push(`al.organization_id = $${params.length}`);
+    }
+    if (action) {
+      params.push(`%${action}%`);
+      conditions.push(`al.action ILIKE $${params.length}`);
+    }
+    if (actorId) {
+      params.push(actorId);
+      conditions.push(`al.actor_id = $${params.length}`);
+    }
+    params.push(limit, offset);
+    const { rows } = await pool.query(
+      `SELECT al.id, al.action, al.entity_type AS "entityType", al.entity_id AS "entityId",
+              al.metadata, al.created_at AS "createdAt",
+              o.id AS "organizationId", o.name AS "organizationName",
+              u.id AS "actorId", u.display_name AS "actorName", u.email AS "actorEmail",
+              (u.platform_level IS NOT NULL) AS "platformActor"
+         FROM audit_logs al
+         JOIN organizations o ON o.id = al.organization_id
+         LEFT JOIN users u ON u.id = al.actor_id
+        WHERE ${conditions.join(" AND ")}
+        ORDER BY al.created_at DESC
+        LIMIT $${params.length - 1} OFFSET $${params.length}`,
+      params,
+    );
+    res.json({ items: rows });
+  }),
+);
+
 app.get(
   "/api/registrations",
   authorize("admin"),

@@ -53,5 +53,44 @@ await pool.query(
    ON CONFLICT (organization_id) DO NOTHING`,
   [orgId],
 );
+
+// Optional platform (super admin) bootstrap.  Set PLATFORM_ADMIN_EMAIL and
+// PLATFORM_ADMIN_PASSWORD once; re-running migrations keeps the account in
+// sync without touching faculty data.
+const platformEmail = process.env.PLATFORM_ADMIN_EMAIL;
+const platformPassword = process.env.PLATFORM_ADMIN_PASSWORD;
+if (platformEmail && platformPassword) {
+  const platformOrg = await pool.query(
+    "SELECT id FROM organizations WHERE kind = 'platform' LIMIT 1",
+  );
+  const platformOrgId = platformOrg.rows[0]?.id;
+  if (!platformOrgId) {
+    throw new Error('Platform organization is missing; migration 017 did not run.');
+  }
+  const platformHash = await bcrypt.hash(platformPassword, 12);
+  const platformUser = await pool.query(
+    `INSERT INTO users
+       (organization_id, email, password_hash, display_name, role,
+        is_active, platform_level, admin_level)
+     VALUES ($1, lower($2), $3, 'مدیر سامانه', 'admin', true, 'owner', 'owner')
+     ON CONFLICT (organization_id, email) DO UPDATE
+       SET password_hash = EXCLUDED.password_hash,
+           display_name = EXCLUDED.display_name,
+           role = 'admin',
+           is_active = true,
+           platform_level = 'owner',
+           must_change_password = false,
+           failed_login_attempts = 0,
+           account_locked_until = NULL
+     RETURNING id`,
+    [platformOrgId, platformEmail, platformHash],
+  );
+  await pool.query(
+    `INSERT INTO password_history (user_id, password_hash, created_at)
+     VALUES ($1, $2, now())`,
+    [platformUser.rows[0].id, platformHash],
+  );
+  console.log(`Platform administrator ready: ${platformEmail}`);
+}
 console.log('Database migration completed.');
 await pool.end();

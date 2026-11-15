@@ -389,3 +389,175 @@ export function reportExamQuestion(attemptId, payload) {
   });
 }
 
+// ---- platform (super admin) ----
+// The control-plane token lives in its own storage key so "entering" a faculty
+// never destroys the platform session. The impersonation token replaces the
+// regular API token for the duration of the visit.
+const platformTokenKey = 'smart-attendance:platform-token';
+const platformUserKey = 'smart-attendance:platform-user';
+const impersonationKey = 'smart-attendance:impersonation';
+
+export function getPlatformToken() {
+  return sessionStorage.getItem(platformTokenKey) || '';
+}
+export function getPlatformUser() {
+  try {
+    return JSON.parse(sessionStorage.getItem(platformUserKey) || 'null');
+  } catch {
+    return null;
+  }
+}
+export function setPlatformSession(token, user) {
+  sessionStorage.setItem(platformTokenKey, token);
+  sessionStorage.setItem(platformUserKey, JSON.stringify(user || null));
+}
+export function clearPlatformSession() {
+  sessionStorage.removeItem(platformTokenKey);
+  sessionStorage.removeItem(platformUserKey);
+}
+export function getImpersonation() {
+  try {
+    return JSON.parse(sessionStorage.getItem(impersonationKey) || 'null');
+  } catch {
+    return null;
+  }
+}
+export function setImpersonation(value) {
+  if (!value) sessionStorage.removeItem(impersonationKey);
+  else sessionStorage.setItem(impersonationKey, JSON.stringify(value));
+}
+export function clearImpersonation() {
+  sessionStorage.removeItem(impersonationKey);
+}
+
+async function platformApi(path, options = {}) {
+  const token = getPlatformToken();
+  const response = await fetch(`${API_BASE}${path}`, {
+    ...options,
+    headers: {
+      ...(options.body ? { 'Content-Type': 'application/json' } : {}),
+      ...(token ? { Authorization: `Bearer ${token}` } : {}),
+      ...options.headers,
+    },
+  });
+  if (response.status === 204) return null;
+  const payload = await response.json().catch(() => null);
+  if (!response.ok)
+    throw new Error(payload?.message || 'درخواست پنل سامانه انجام نشد.');
+  return payload;
+}
+
+export async function platformSignIn(identifier, password) {
+  const result = await platformApi('/platform/auth/login', {
+    method: 'POST',
+    body: JSON.stringify({ identifier, password }),
+  });
+  setPlatformSession(result.token, result.user);
+  return result;
+}
+export function platformChangePassword(currentPassword, newPassword) {
+  return platformApi('/auth/change-password', {
+    method: 'POST',
+    body: JSON.stringify({ currentPassword, newPassword }),
+  });
+}
+export function fetchPlatformOverview() {
+  return platformApi('/platform/overview');
+}
+export function fetchPlatformFaculties() {
+  return platformApi('/platform/faculties');
+}
+export function createPlatformFaculty(payload) {
+  return platformApi('/platform/faculties', {
+    method: 'POST',
+    body: JSON.stringify(payload),
+  });
+}
+export function fetchPlatformFaculty(facultyId) {
+  return platformApi(`/platform/faculties/${facultyId}`);
+}
+export function updatePlatformFaculty(facultyId, payload) {
+  return platformApi(`/platform/faculties/${facultyId}`, {
+    method: 'PATCH',
+    body: JSON.stringify(payload),
+  });
+}
+export function archivePlatformFaculty(facultyId) {
+  return platformApi(`/platform/faculties/${facultyId}/archive`, {
+    method: 'POST',
+  });
+}
+export function createFacultyAdmin(facultyId, payload) {
+  return platformApi(`/platform/faculties/${facultyId}/admin`, {
+    method: 'POST',
+    body: JSON.stringify(payload),
+  });
+}
+export function updateFacultyAdmin(facultyId, userId, payload) {
+  return platformApi(`/platform/faculties/${facultyId}/admins/${userId}`, {
+    method: 'PATCH',
+    body: JSON.stringify(payload),
+  });
+}
+export function resetFacultyAdminPassword(facultyId, userId) {
+  return platformApi(
+    `/platform/faculties/${facultyId}/admins/${userId}/reset-password`,
+    { method: 'POST' },
+  );
+}
+export async function enterFaculty(facultyId, reason) {
+  const result = await platformApi(`/platform/faculties/${facultyId}/enter`, {
+    method: 'POST',
+    body: JSON.stringify({ reason }),
+  });
+  sessionStorage.setItem(tokenKey, result.token);
+  setApiUser(result.user);
+  setImpersonation(result.impersonation);
+  return result;
+}
+export async function exitImpersonation() {
+  const result = await api('/auth/exit-impersonation', { method: 'POST' });
+  clearApiToken();
+  clearImpersonation();
+  return result;
+}
+export function fetchPlatformImpersonations() {
+  return platformApi('/platform/impersonations');
+}
+export function revokeImpersonation(sessionId) {
+  return platformApi(`/platform/impersonations/${sessionId}`, {
+    method: 'DELETE',
+  });
+}
+export function fetchPlatformAdmins() {
+  return platformApi('/platform/admins');
+}
+export function createPlatformAdmin(payload) {
+  return platformApi('/platform/admins', {
+    method: 'POST',
+    body: JSON.stringify(payload),
+  });
+}
+export function updatePlatformAdmin(userId, payload) {
+  return platformApi(`/platform/admins/${userId}`, {
+    method: 'PATCH',
+    body: JSON.stringify(payload),
+  });
+}
+export function resetPlatformAdminPassword(userId) {
+  return platformApi(`/platform/admins/${userId}/reset-password`, {
+    method: 'POST',
+  });
+}
+export function fetchPlatformAudit(params = {}) {
+  const query = new URLSearchParams();
+  Object.entries(params).forEach(([key, value]) => {
+    if (value !== undefined && value !== null && value !== '') {
+      query.set(key, value);
+    }
+  });
+  const suffix = query.toString() ? `?${query.toString()}` : '';
+  return platformApi(`/platform/audit${suffix}`);
+}
+
+

@@ -162,7 +162,7 @@ CORS_ORIGIN=http://localhost:5173
 #### ۴) مایگریشن و دادهٔ نمونه
 
 ```bash
-npm run api:migrate          # ساخت/به‌روزرسانی جداول (۱۴ مایگریشن)
+npm run api:migrate          # ساخت/به‌روزرسانی جداول (۱۷ مایگریشن)
 npm --prefix server run seed # دادهٔ نمونه: مدیر، دانشجو، درس‌ها
 ```
 
@@ -179,8 +179,11 @@ npm run dev       # فرانت‌اند روی :5173
 
 | نقش | ایمیل | رمز |
 |---|---|---|
+| مدیر سامانه (پنل سامانه) | `platform@hozorban.local` | `Platform@123456` |
 | مدیر | `admin@hozorban.local` | `Admin@123456` |
 | دانشجو | `student@hozorban.local` | `Student@123456` |
+
+حساب مدیر سامانه توسط `PLATFORM_ADMIN_EMAIL`/`PLATFORM_ADMIN_PASSWORD` در مایگریشن ۰۱۷ ساخته می‌شود؛ در استقرار واقعی هر دو را عوض کنید. پنل سامانه از `http://localhost:5173/#/platform` باز می‌شود.
 
 دادهٔ نمونه: ۶ دانشجو (`40123001` تا `40123006`) و ۴ درس (`CS301`, `CS204`, `CS210`, `MA205`).
 
