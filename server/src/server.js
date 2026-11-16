@@ -1204,7 +1204,7 @@ async function facultyAdmins(facultyId) {
             COALESCE(u.admin_level, 'owner') AS "level",
             u.must_change_password AS "mustChangePassword",
             u.created_at AS "createdAt",
-            (SELECT max(lh.created_at) FROM login_history lh
+            (SELECT max(lh.login_time) FROM login_history lh
               WHERE lh.user_id = u.id AND lh.successful = true) AS "lastLoginAt"
        FROM users u
       WHERE u.organization_id = $1 AND u.role = 'admin'
@@ -1879,7 +1879,7 @@ app.get(
               u.platform_level AS "level", u.is_active AS "isActive",
               u.must_change_password AS "mustChangePassword",
               u.created_at AS "createdAt",
-              (SELECT max(lh.created_at) FROM login_history lh
+              (SELECT max(lh.login_time) FROM login_history lh
                 WHERE lh.user_id = u.id AND lh.successful = true) AS "lastLoginAt"
          FROM users u
         WHERE u.organization_id = $1 AND u.platform_level IS NOT NULL
