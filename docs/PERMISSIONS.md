@@ -32,18 +32,35 @@
 6. **بازیابی رمز:** رمز موقت یک‌بارمصرف؛ اجبار به تغییر در نخستین ورود (دیالوگ غیرقابل بستن)؛ عدم تکرار ۵ رمز اخیر؛ قفل ۵ دقیقه‌ای پس از ۵ تلاش ناموفق؛ تاریخچهٔ ورود در پروفایل.
 7. **تحویل رمز موقت:** اگر SMTP در `server/.env` پیکربندی نشده باشد، رمز موقت در لاگ سرور چاپ و در پاسخ API/مودال مدیر نمایش داده می‌شود (برای توسعهٔ محلی). در استقرار واقعی، `SMTP_HOST` و… را تنظیم کنید (نمونه در `server/.env.example`).
 
-## پنل سامانه (مدیر سامانه)
+## لایهٔ مدیر سامانه (Super Admin)
 
-لایهٔ platform بالای دانشکده‌ها با همان جدول `users` و یک سازمانٔ پنهانٔ `kind='platform'` ساخته می‌شود:
+در کنار نقش‌های دانشکده، یک **لایهٔ مدیر سامانه** وجود دارد که از پنل جداگانه `#/platform` وارد می‌شود. این لایه با سازمان مخفی `kind='platform'` و ستون `users.platform_level` پیاده شده است و هرگز دادهٔ دانشکده‌ها را کپی نمی‌کند.
 
-1. **مدیر سامانه:** کاربری با `platform_level` روی سازمان پنل (`owner` / `operator` / `auditor`). ورودش از صفحٔ جداگانه (`#/platform`) و انتهای `/api/platform/auth/login` است؛ توکنش فقط `/api/platform/*` کار می‌کند و هرگز به API دانشکده راه ندارد.
-2. **مدیر دانشکده با سطح:** `admin_level` روی هر مدیر دانشکده (`owner` / `manager` / `operator` / `viewer`). اجرا بر پایهٔ روش HTTP است: `viewer` فقط خواندنی (غیر از `/api/auth/*`)، `operator` بدون DELETE و بدون نوشتن در `/settings` و `/teachers`، `manager` بدون DELETE و بدون مدیریت اساتید، `owner` همهٔ اختیارات.
-3. **ورود به دانشکده (impersonation):** مدیر سامانه با دلیلٔ الزامی وارد دانشکده می‌شود؛ توکن ۶۰ دقیقهٔ محدود به همان دانشکده (`imp.sid`) صادر می‌شود و ردیفی در `admin_impersonations` ثبت می‌شود. تمام اقدامات با نام مدیر سامانه در `audit_logs` ثبت می‌شود و به مدیران دانشکده اعلان می‌رسد. خروج از پنل یا پایان نشست، توکن را فوراً باطل می‌کند.
-4. **ایجاد حساب:** مدیران دانشکده فقط از پنل سامانه ساخته می‌شوند؛ مدیران سامانه فقط توسط `owner`. ساخت هر حساب رمز یک‌بارمصرف با `must_change_password` می‌دهد.
-5. **آرشیو دانشکده:** حذف سخت نیست؛ آرشیو (`is_active=false` + `archived_at`) ورودها را می‌بندد و نشست‌های فعال impersonation را پایان می‌کند. آخرین `owner` فعال نمی‌تواند تنزل یا غیرفعال شود.
+| سطح | اختیارات |
+|---|---|
+| `owner` (مالک سامانه) | همه‌چیز: ساخت/آرشیو دانشکده، مدیران دانشکده، ساخت مدیران سامانه، ورود به دانشکده، گزارش فعالیت |
+| `operator` (اپراتور سامانه) | مدیریت دانشکده‌ها و ورود به آن‌ها؛ بدون مدیریت مدیران سامانه |
+| `auditor` (ناظر سامانه) | فقط مشاهدهٔ پنل سامانه و گزارش فعالیت |
+
+سطوح مدیر دانشکده (که فقط از پنل سامانه ساخته می‌شوند) به‌صورت سخت‌گیرانه بر اساس متد HTTP اعمال می‌شوند:
+
+| سطح | محدودیت |
+|---|---|
+| `owner` | بدون محدودیت |
+| `manager` | بدون حذف؛ بدون مدیریت استادان |
+| `operator` | بدون حذف؛ تنظیمات و استادان فقط‌خواندنی |
+| `viewer` | فقط خواندن (همهٔ نوشتن‌ها مسدود، به‌جز APIهای `/api/auth/*`) |
+
+### قواعد لایهٔ سامانه
+
+1. **توکن جدا:** توکن پنل سامانه (`plat`) هرگز روی APIهای دانشکده پذیرفته نمی‌شود و توکن دانشکده هرگز به `/api/platform/*` دسترسی ندارد.
+2. **ورود به دانشکده (Impersonation):** با دلیل الزامی و توکن کوتاه‌عمر ۶۰ دقیقه‌ای (`imp`) انجام می‌شود؛ یک ردیف در `admin_impersonations` ثبت و همهٔ اقدامات با نام مدیر سامانه در `audit_logs` ذخیره می‌شود. خروج دستی، انقضای زمان، آرشیو دانشکده یا غیرفعال‌سازی مدیر، نشست را فوراً باطل می‌کند.
+3. **آرشیو به‌جای حذف:** دانشکده فقط آرشیو (`is_active=false`, `archived_at`) می‌شود؛ ورود کاربران آن بسته و نشست‌های فعالش پایان می‌یابد.
+4. **آخرین مالک:** آخرین `owner` فعال (در دانشکده یا سامانه) قابل تنزل یا غیرفعال‌سازی نیست.
+5. **رمز موقت:** رمز موقت مدیران تازه‌ساخته فقط یک‌بار نمایش داده می‌شود و تغییر آن در نخستین ورود اجباری است.
 
 ---
 
 ## English summary
 
-Four roles exist: platform `owner`/`operator`/`auditor` (control plane, `/api/platform/*` only), faculty `admin` (scoped to their faculty, with `admin_level` owner/manager/operator/viewer enforced by HTTP method), `teacher` (scoped to courses they own via `teacher_user_id`) and `student`. All administrative queries are scoped to the caller's faculty (`req.user.org`). A platform token never works on faculty APIs; an impersonation token (60-minute, faculty-scoped, `imp.sid`) never works on `/api/platform/*`. The Teachers page surfaces `user_faculties.added_by`, the Admin Activity page renders `audit_logs` for the current faculty, and the platform panel renders a cross-faculty audit feed. Platform admin creation is owner-only; faculty admin creation is platform-only; archiving a faculty ends active impersonations and rejects login.
+Three faculty roles exist: `admin`, `teacher` (scoped to courses they own via `teacher_user_id`) and `student`. All faculty queries are scoped to the caller's faculty (`req.user.org`). A separate **platform (super admin) layer** sits above faculties: platform tokens only reach `/api/platform/*`, and faculty data is touched only through a short-lived, reason-logged impersonation session. Platform levels are `owner`/`operator`/`auditor`; faculty admin levels are `owner`/`manager`/`operator`/`viewer` and are enforced by HTTP method (`viewer` is hard read-only). Faculties are archived, never hard-deleted, and the last active owner cannot be demoted.
