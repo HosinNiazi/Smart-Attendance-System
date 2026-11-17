@@ -62,6 +62,7 @@ export function adaptBootstrap(data) {
           : null,
       featureVersion: image.featureVersion ?? null,
       quality: image.quality || null,
+      checksum: image.checksum || "",
     });
     referencesByStudent.set(image.studentId, references);
   }
@@ -206,6 +207,10 @@ export function adaptBootstrap(data) {
         lateAfter: String(data.settings.lateAfterMinutes ?? 10),
         notifications: data.settings.notificationsEnabled !== false,
         faceRecognition: data.settings.faceRecognitionEnabled !== false,
+        faceDistance: Number(data.settings.faceMatchDistance ?? 0.54),
+        faceMargin: Number(data.settings.faceMatchMargin ?? 0.035),
+        faceMinFrames: Number(data.settings.faceMinFrames ?? 3),
+        faceLiveness: data.settings.faceLivenessRequired !== false,
       }
     : null;
 

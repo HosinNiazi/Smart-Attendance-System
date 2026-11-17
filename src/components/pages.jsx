@@ -18,6 +18,17 @@ import {
   tickLivenessLost,
   updateLiveness,
 } from "../face/liveness.js";
+import {
+  advanceTracking,
+  createTrackingState,
+  hasStableVotes,
+  recordTrackVote,
+} from "../face/tracking.js";
+import {
+  getCachedDescriptor,
+  setCachedDescriptor,
+} from "../face/descriptorCache.js";
+import { sendCameraTelemetry } from "../api/client.js";
 import { playBeep as playUnknown, playSuccess } from "../audio/sfx.js";
 import { startAuthentication, startRegistration } from "@simplewebauthn/browser";
 import { exportAttendanceExcel } from "../reports/exportAttendanceExcel.js";
@@ -1387,8 +1398,17 @@ export function FaceAttendance({
   streamRef,
   startCamera,
   stopCamera,
+  settings = null,
 }) {
   const classroomMode = variant === "classroom";
+  // Faculty-level policy, editable in Settings. Defaults keep the previous
+  // behaviour when the row predates migration 019.
+  const faceMaxDistance = Number(settings?.faceDistance) || FACE_MATCH_DISTANCE;
+  const faceMinMargin = Number.isFinite(Number(settings?.faceMargin))
+    ? Number(settings.faceMargin)
+    : FACE_MATCH_MARGIN;
+  const faceMinFrames = Math.max(1, Number(settings?.faceMinFrames) || 3);
+  const personalLivenessRequired = settings?.faceLiveness !== false;
   const [modelStatus, setModelStatus] = React.useState("loading");
   const [faceDescriptors, setFaceDescriptors] = React.useState([]);
   const [descriptorsStatus, setDescriptorsStatus] = React.useState("idle");
@@ -1401,6 +1421,16 @@ export function FaceAttendance({
   const [attendancePopup, setAttendancePopup] = React.useState(null);
   const faceApiRef = React.useRef(null);
   const scanBusyRef = React.useRef(false);
+  const trackingRef = React.useRef(createTrackingState());
+  const telemetryRef = React.useRef({
+    startedAt: 0,
+    frames: 0,
+    faces: 0,
+    unknown: 0,
+    recognized: 0,
+    latencyTotal: 0,
+    lastSentAt: 0,
+  });
   const notifiedSessionRef = React.useRef(new Set());
   const notifiedLivenessRef = React.useRef(new Set());
   const attendanceRef = React.useRef(attendance);
@@ -1414,6 +1444,8 @@ export function FaceAttendance({
   studentsRef.current = students;
   markAttendanceRef.current = onMarkAttendance;
   recognitionNoticeRef.current = onRecognitionNotice;
+  const deviceIdRef = React.useRef(selectedCameraId || "camera");
+  deviceIdRef.current = selectedCameraId || "camera";
 
   useEffect(() => {
     let cancelled = false;
@@ -1482,7 +1514,17 @@ export function FaceAttendance({
             });
             continue;
           }
+          const cacheKey = reference.checksum || reference.url;
           try {
+            const cached = await getCachedDescriptor(cacheKey);
+            if (cached) {
+              registered.push({
+                studentId: student.id,
+                referenceId: reference.id || null,
+                descriptor: new Float32Array(cached),
+              });
+              continue;
+            }
             const image = await faceapi.fetchImage(reference.url);
             const result = await faceapi
               .detectSingleFace(
@@ -1494,13 +1536,14 @@ export function FaceAttendance({
               )
               .withFaceLandmarks(true)
               .withFaceDescriptor();
-            if (result)
+            if (result) {
+              await setCachedDescriptor(cacheKey, Array.from(result.descriptor));
               registered.push({
                 studentId: student.id,
                 referenceId: reference.id || null,
                 descriptor: result.descriptor,
               });
-            else invalid += 1;
+            } else invalid += 1;
           } catch {
             invalid += 1;
           }
@@ -1526,12 +1569,33 @@ export function FaceAttendance({
     livenessRef.current.clear();
     notifiedSessionRef.current.clear();
     notifiedLivenessRef.current.clear();
+    trackingRef.current = createTrackingState();
+    telemetryRef.current = {
+      startedAt: Date.now(),
+      frames: 0,
+      faces: 0,
+      unknown: 0,
+      recognized: 0,
+      latencyTotal: 0,
+      lastSentAt: Date.now(),
+    };
   }, [sessionId]);
 
   useEffect(() => {
     if (cameraState !== "live") {
       recognitionStreakRef.current.clear();
       livenessRef.current.clear();
+      trackingRef.current = createTrackingState();
+    } else {
+      telemetryRef.current = {
+        startedAt: Date.now(),
+        frames: 0,
+        faces: 0,
+        unknown: 0,
+        recognized: 0,
+        latencyTotal: 0,
+        lastSentAt: Date.now(),
+      };
     }
   }, [cameraState]);
 
@@ -1546,11 +1610,54 @@ export function FaceAttendance({
     let cancelled = false;
     const faceapi = faceApiRef.current;
     if (!faceapi) return;
+
+    // Batched telemetry keeps the admin dashboard current without a request per
+    // frame. Counts are reset after each successful (or attempted) flush.
+    function flushTelemetry(force = false) {
+      const t = telemetryRef.current;
+      const now = Date.now();
+      if (!t.startedAt) {
+        t.startedAt = now;
+        t.lastSentAt = now;
+        return;
+      }
+      if (!force && now - t.lastSentAt < 15000) return;
+      if (!t.frames) {
+        t.lastSentAt = now;
+        return;
+      }
+      const elapsedSec = Math.max(0.001, (now - t.startedAt) / 1000);
+      const payload = {
+        deviceId: deviceIdRef.current,
+        sessionId: sessionId || undefined,
+        cameraState,
+        modelStatus,
+        framesScanned: t.frames,
+        facesDetected: t.faces,
+        unknownFaces: t.unknown,
+        recognizedFaces: t.recognized,
+        detectionRate: Math.min(1, t.faces / Math.max(1, t.frames)),
+        fps: Number((t.frames / elapsedSec).toFixed(2)),
+        latencyMs: Math.round(t.latencyTotal / Math.max(1, t.frames)),
+      };
+      t.startedAt = now;
+      t.lastSentAt = now;
+      t.frames = 0;
+      t.faces = 0;
+      t.unknown = 0;
+      t.recognized = 0;
+      t.latencyTotal = 0;
+      sendCameraTelemetry(payload).catch(() => {
+        // Telemetry is best-effort; losing a sample must not disturb scanning.
+      });
+    }
+
     async function scanFrame() {
       if (cancelled || scanBusyRef.current) return;
       const video = videoRef.current;
       if (!video || video.readyState < 2) return;
       scanBusyRef.current = true;
+      const frameStartedAt = Date.now();
       try {
         const results = await faceapi
           .detectAllFaces(
@@ -1563,6 +1670,23 @@ export function FaceAttendance({
           .withFaceLandmarks(true)
           .withFaceDescriptors();
         if (cancelled) return;
+        telemetryRef.current.frames += 1;
+        telemetryRef.current.latencyTotal += Date.now() - frameStartedAt;
+        telemetryRef.current.faces += results.length;
+        const tracked = advanceTracking(
+          trackingRef.current,
+          results.map((result) => {
+            const box = result.detection.box;
+            return {
+              x: box.x,
+              y: box.y,
+              width: box.width,
+              height: box.height,
+            };
+          }),
+          Date.now(),
+          { ttlMs: 3000, minIou: 0.2 },
+        );
         if (!results.length) {
           recognitionStreakRef.current.clear();
           for (const [key, liveness] of livenessRef.current.entries())
@@ -1587,6 +1711,7 @@ export function FaceAttendance({
         const claimed = new Set();
         let livenessHint = null;
         const nextBoxes = results.map((result, faceIndex) => {
+          const trackId = tracked.faces[faceIndex]?.trackId ?? null;
           const studentMatches = new Map();
           for (const reference of faceDescriptors) {
             const distance = faceapi.euclideanDistance(
@@ -1613,8 +1738,8 @@ export function FaceAttendance({
           const second = ranked[1]?.[1].distance ?? Infinity;
           const reliable =
             best &&
-            nearest < FACE_MATCH_DISTANCE &&
-            (second === Infinity || second - nearest > FACE_MATCH_MARGIN) &&
+            nearest < faceMaxDistance &&
+            (second === Infinity || second - nearest > faceMinMargin) &&
             !claimed.has(best.studentId);
           const student = reliable
             ? studentsRef.current.find((item) => item.id === best.studentId)
@@ -1627,6 +1752,14 @@ export function FaceAttendance({
             claimed.add(student.id);
             const streak = (recognitionStreakRef.current.get(key) || 0) + 1;
             recognitionStreakRef.current.set(key, streak);
+            // Classroom mode needs a track to stay on the same student for
+            // several frames; a single lucky frame must not mark attendance.
+            const votes =
+              classroomMode && trackId != null
+                ? recordTrackVote(trackingRef.current, trackId, student.id, {
+                    window: Math.max(faceMinFrames, 5),
+                  })
+                : 0;
             let liveness = null;
             if (!classroomMode) {
               liveness = livenessRef.current.get(key);
@@ -1660,7 +1793,11 @@ export function FaceAttendance({
                   time: existing.time || "",
                 });
               }
-            } else if (!classroomMode && !liveness.verified) {
+            } else if (
+              !classroomMode &&
+              personalLivenessRequired &&
+              !liveness.verified
+            ) {
               // وضعیت قبلی (غایب/غیبت موجه/…) مانع نیست؛ با پلک‌تائید شدن، حضور ثبت می‌شود.
               tone = "review";
               livenessHint = livenessPhaseLabel(liveness);
@@ -1673,8 +1810,15 @@ export function FaceAttendance({
                 );
               }
             } else if (
-              streak >= (classroomMode ? 3 : 2) ||
-              liveness.verified
+              classroomMode
+                ? hasStableVotes(
+                    trackingRef.current,
+                    trackId,
+                    student.id,
+                    faceMinFrames,
+                  )
+                : liveness?.verified ||
+                  streak >= (personalLivenessRequired ? 2 : Math.max(2, faceMinFrames))
             ) {
               const noticeKey = `${sessionId}:${student.id}`;
               if (!notifiedSessionRef.current.has(noticeKey)) {
@@ -1690,9 +1834,13 @@ export function FaceAttendance({
                       margin: Number.isFinite(second)
                         ? Number((second - nearest).toFixed(4))
                         : undefined,
-                      threshold: FACE_MATCH_DISTANCE,
-                      liveness: classroomMode ? "none_provided" : "blink",
-                      frameCount: streak,
+                      threshold: faceMaxDistance,
+                      liveness: classroomMode
+                        ? "none_provided"
+                        : liveness?.verified
+                          ? "blink"
+                          : "none_provided",
+                      frameCount: Math.max(1, classroomMode ? votes : streak),
                       referenceId: best.referenceId || undefined,
                     },
                   },
@@ -1748,6 +1896,12 @@ export function FaceAttendance({
             label,
           };
         });
+        telemetryRef.current.unknown += nextBoxes.filter(
+          (item) => item.tone === "unknown",
+        ).length;
+        telemetryRef.current.recognized += nextBoxes.filter(
+          (item) => item.tone === "recognized",
+        ).length;
         for (const key of recognitionStreakRef.current.keys())
           if (!currentIds.has(key)) recognitionStreakRef.current.delete(key);
         for (const [key, liveness] of livenessRef.current.entries()) {
@@ -1796,6 +1950,7 @@ export function FaceAttendance({
         }
       } finally {
         scanBusyRef.current = false;
+        flushTelemetry();
       }
     }
     // فاصلهٔ کوتاه لازم است تا پلک ۱۰۰–۴۰۰ میلی‌ثانیه‌ای بین فریم‌ها از دست نرود.
@@ -1815,6 +1970,10 @@ export function FaceAttendance({
     videoRef,
     classroomMode,
     sessionCourse,
+    faceMaxDistance,
+    faceMinMargin,
+    faceMinFrames,
+    personalLivenessRequired,
   ]);
 
   const usableReferenceCount = new Set(
@@ -2896,6 +3055,10 @@ export function Settings({
       lateAfter: "10",
       notifications: true,
       faceRecognition: true,
+      faceDistance: 0.54,
+      faceMargin: 0.035,
+      faceMinFrames: 3,
+      faceLiveness: true,
     });
     onNotify?.("تنظیمات به پیش‌فرض‌ها بازنشانی شد.");
   };
@@ -3010,6 +3173,74 @@ export function Settings({
                 type="checkbox"
                 checked={settings.faceRecognition}
                 onChange={(e) => update("faceRecognition", e.target.checked)}
+              />
+              <span />
+            </label>
+          </div>
+          <div className="setting-item">
+            <div>
+              <strong>آستانهٔ تطبیق چهره</strong>
+              <small>
+                فاصلهٔ مجاز بین چهره و عکس مرجع (کمتر = سخت‌گیرانه‌تر). پیش‌فرض
+                ۰٫۵۴
+              </small>
+            </div>
+            <input
+              type="number"
+              step="0.01"
+              min="0.3"
+              max="0.7"
+              className="form-control settings-input narrow"
+              value={settings.faceDistance ?? 0.54}
+              onChange={(e) => update("faceDistance", e.target.value)}
+            />
+          </div>
+          <div className="setting-item">
+            <div>
+              <strong>حاشیهٔ اطمینان چهره</strong>
+              <small>
+                حداقل اختلاف با نفر دوم تا تطبیق قطعی شود. پیش‌فرض ۰٫۰۳۵
+              </small>
+            </div>
+            <input
+              type="number"
+              step="0.005"
+              min="0"
+              max="0.2"
+              className="form-control settings-input narrow"
+              value={settings.faceMargin ?? 0.035}
+              onChange={(e) => update("faceMargin", e.target.value)}
+            />
+          </div>
+          <div className="setting-item">
+            <div>
+              <strong>حداقل فریم تأیید (حالت کلاس)</strong>
+              <small>
+                چهره باید در این تعداد فریم پیوسته روی یک نفر پایدار بماند.
+                پیش‌فرض ۳
+              </small>
+            </div>
+            <input
+              type="number"
+              min="1"
+              max="10"
+              className="form-control settings-input narrow"
+              value={settings.faceMinFrames ?? 3}
+              onChange={(e) => update("faceMinFrames", e.target.value)}
+            />
+          </div>
+          <div className="setting-item">
+            <div>
+              <strong>الزام تأیید زنده‌بودن (پلک)</strong>
+              <small>
+                در حالت تک‌نفره، ثبت حضور بدون پلک‌زدن را غیرفعال می‌کند.
+              </small>
+            </div>
+            <label className="switch">
+              <input
+                type="checkbox"
+                checked={settings.faceLiveness !== false}
+                onChange={(e) => update("faceLiveness", e.target.checked)}
               />
               <span />
             </label>

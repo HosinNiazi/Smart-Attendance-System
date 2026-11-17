@@ -201,6 +201,76 @@ test("classroom mode needs several consecutive frames when liveness is absent", 
   assert.equal(threeFrames.frameCount, 3);
 });
 
+test("faculty policy overrides the matching distance", () => {
+  const strict = evaluateFaceAttendance({
+    method: "face",
+    verification: {
+      distance: 0.52,
+      margin: 0.1,
+      liveness: "blink",
+      frameCount: 2,
+    },
+    settings: { faceMatchDistance: 0.45 },
+  });
+  assert.equal(strict.ok, false);
+  assert.equal(strict.reason, "distance_too_far");
+
+  const lenient = evaluateFaceAttendance({
+    method: "face",
+    verification: {
+      distance: 0.5,
+      margin: 0.1,
+      liveness: "blink",
+      frameCount: 2,
+    },
+    settings: { faceMatchDistance: 0.6 },
+  });
+  assert.equal(lenient.ok, true);
+  assert.equal(lenient.threshold, 0.6);
+});
+
+test("faculty policy overrides the confidence margin", () => {
+  const strict = evaluateFaceAttendance({
+    method: "face",
+    verification: {
+      distance: 0.3,
+      margin: 0.04,
+      liveness: "blink",
+      frameCount: 2,
+    },
+    settings: { faceMatchMargin: 0.08 },
+  });
+  assert.equal(strict.ok, false);
+  assert.equal(strict.reason, "margin_too_small");
+});
+
+test("faculty policy overrides the required frame count", () => {
+  const twoFramesNeeded = evaluateFaceAttendance({
+    method: "face",
+    verification: { distance: 0.3, margin: 0.1, frameCount: 2 },
+    settings: { faceMinFrames: 2 },
+  });
+  assert.equal(twoFramesNeeded.ok, true);
+
+  const fiveFramesNeeded = evaluateFaceAttendance({
+    method: "face",
+    verification: { distance: 0.3, margin: 0.1, frameCount: 4 },
+    settings: { faceMinFrames: 5 },
+  });
+  assert.equal(fiveFramesNeeded.ok, false);
+  assert.equal(fiveFramesNeeded.reason, "liveness_missing");
+});
+
+test("a faculty may waive liveness for single-person attendance", () => {
+  const result = evaluateFaceAttendance({
+    method: "face",
+    verification: { distance: 0.3, margin: 0.1, frameCount: 1 },
+    settings: { faceLivenessRequired: false, faceMinFrames: 3 },
+  });
+  assert.equal(result.ok, true);
+  assert.equal(result.liveness, "none_provided");
+});
+
 test("reference gallery limit stays small", () => {
   assert.ok(MAX_REFERENCE_PHOTOS >= 3 && MAX_REFERENCE_PHOTOS <= 10);
 });

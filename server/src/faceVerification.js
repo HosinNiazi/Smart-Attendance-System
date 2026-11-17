@@ -19,8 +19,8 @@ export const DEFAULT_FACE_MAX_DISTANCE = 0.54;
 export const DEFAULT_FACE_MIN_MARGIN = 0.035;
 
 // Hard limits the server accepts even if a client claims better numbers.
-export const MAX_FACE_DISTANCE_ALLOWED = 0.6;
-export const MIN_FACE_MARGIN_ALLOWED = 0.015;
+export const MAX_FACE_DISTANCE_ALLOWED = 0.75;
+export const MIN_FACE_MARGIN_ALLOWED = 0.005;
 
 // Enrollment keeps a small gallery per student instead of a single photo.
 export const MAX_REFERENCE_PHOTOS = 5;
@@ -158,6 +158,23 @@ export function evaluateFaceAttendance({
     };
   }
 
+  // Faculty-level policy. Values arrive as numeric columns from PostgreSQL, so
+  // coerce once and fall back to the defaults for missing/legacy rows.
+  const policyDistance = Number(settings?.faceMatchDistance);
+  const policyMargin = Number(settings?.faceMatchMargin);
+  const policyFrames = Number(settings?.faceMinFrames);
+  const effectiveMaxDistance =
+    Number.isFinite(policyDistance) && policyDistance > 0
+      ? policyDistance
+      : maxDistance;
+  const effectiveMinMargin =
+    Number.isFinite(policyMargin) && policyMargin >= 0
+      ? policyMargin
+      : minMargin;
+  const minFrames =
+    Number.isInteger(policyFrames) && policyFrames >= 1 ? policyFrames : 3;
+  const livenessRequired = settings?.faceLivenessRequired !== false;
+
   if (!verification || typeof verification !== "object") {
     return {
       ok: false,
@@ -178,7 +195,7 @@ export function evaluateFaceAttendance({
       distance: Number.isFinite(distance) ? distance : null,
     };
   }
-  if (distance > maxDistance + 0.05) {
+  if (distance > effectiveMaxDistance + 0.05) {
     return {
       ok: false,
       applicable: true,
@@ -189,7 +206,11 @@ export function evaluateFaceAttendance({
   }
 
   const margin = verification.margin == null ? null : Number(verification.margin);
-  if (margin != null && (!Number.isFinite(margin) || margin < MIN_FACE_MARGIN_ALLOWED)) {
+  const marginFloor = Math.max(MIN_FACE_MARGIN_ALLOWED, effectiveMinMargin);
+  if (
+    margin != null &&
+    (!Number.isFinite(margin) || margin < marginFloor)
+  ) {
     return {
       ok: false,
       applicable: true,
@@ -207,7 +228,7 @@ export function evaluateFaceAttendance({
     : "none_provided";
   const frameCount = Math.trunc(Number(verification.frameCount) || 0);
 
-  if (liveness === "none_provided" && frameCount < 3) {
+  if (livenessRequired && liveness === "none_provided" && frameCount < minFrames) {
     return {
       ok: false,
       applicable: true,
@@ -230,7 +251,9 @@ export function evaluateFaceAttendance({
     threshold:
       verification.threshold != null && Number.isFinite(Number(verification.threshold))
         ? Number(verification.threshold)
-        : maxDistance,
+        : effectiveMaxDistance,
+    minMargin: effectiveMinMargin,
+    minFrames,
     liveness,
     frameCount,
     deviceId:

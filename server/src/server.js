@@ -842,6 +842,10 @@ const settingsSchema = z.object({
   lateAfterMinutes: z.number().int().min(0).max(120),
   notificationsEnabled: z.boolean().default(true),
   faceRecognitionEnabled: z.boolean().default(true),
+  faceMatchDistance: z.number().min(0.3).max(0.7).default(0.54),
+  faceMatchMargin: z.number().min(0).max(0.2).default(0.035),
+  faceMinFrames: z.number().int().min(1).max(10).default(3),
+  faceLivenessRequired: z.boolean().default(true),
 });
 const voiceSampleSchema = z.object({
   features: z.array(z.number().finite()).length(24),
@@ -2846,7 +2850,10 @@ app.get(
           params,
         ),
         pool.query(
-          `SELECT system_name AS "systemName", late_after_minutes AS "lateAfterMinutes", notifications_enabled AS "notificationsEnabled", face_recognition_enabled AS "faceRecognitionEnabled" FROM organization_settings WHERE organization_id=$1`,
+          `SELECT system_name AS "systemName", late_after_minutes AS "lateAfterMinutes", notifications_enabled AS "notificationsEnabled", face_recognition_enabled AS "faceRecognitionEnabled",
+                  face_match_distance AS "faceMatchDistance", face_match_margin AS "faceMatchMargin",
+                  face_min_frames AS "faceMinFrames", face_liveness_required AS "faceLivenessRequired"
+             FROM organization_settings WHERE organization_id=$1`,
           [req.user.org],
         ),
         pool.query(
@@ -2854,6 +2861,7 @@ app.get(
                   br.student_id AS "studentId",
                   br.object_key AS "objectKey",
                   br.features AS "descriptor",
+                  br.checksum,
                   br.feature_version AS "featureVersion",
                   br.descriptor_model AS "descriptorModel",
                   br.quality,
@@ -3778,23 +3786,37 @@ app.put(
     const s = req.body;
     const { rows } = await pool.query(
       `INSERT INTO organization_settings
-         (organization_id, system_name, late_after_minutes, notifications_enabled, face_recognition_enabled)
-       VALUES ($1,$2,$3,$4,$5)
+         (organization_id, system_name, late_after_minutes, notifications_enabled,
+          face_recognition_enabled, face_match_distance, face_match_margin,
+          face_min_frames, face_liveness_required)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)
        ON CONFLICT (organization_id) DO UPDATE
        SET system_name=EXCLUDED.system_name,
            late_after_minutes=EXCLUDED.late_after_minutes,
            notifications_enabled=EXCLUDED.notifications_enabled,
            face_recognition_enabled=EXCLUDED.face_recognition_enabled,
+           face_match_distance=EXCLUDED.face_match_distance,
+           face_match_margin=EXCLUDED.face_match_margin,
+           face_min_frames=EXCLUDED.face_min_frames,
+           face_liveness_required=EXCLUDED.face_liveness_required,
            updated_at=now()
        RETURNING system_name AS "systemName", late_after_minutes AS "lateAfterMinutes",
                  notifications_enabled AS "notificationsEnabled",
-                 face_recognition_enabled AS "faceRecognitionEnabled"`,
+                 face_recognition_enabled AS "faceRecognitionEnabled",
+                 face_match_distance AS "faceMatchDistance",
+                 face_match_margin AS "faceMatchMargin",
+                 face_min_frames AS "faceMinFrames",
+                 face_liveness_required AS "faceLivenessRequired"`,
       [
         req.user.org,
         s.systemName,
         s.lateAfterMinutes,
         s.notificationsEnabled,
         s.faceRecognitionEnabled,
+        s.faceMatchDistance,
+        s.faceMatchMargin,
+        s.faceMinFrames,
+        s.faceLivenessRequired,
       ],
     );
     res.json(rows[0]);
@@ -3985,7 +4007,11 @@ app.put(
       verification: faceVerification,
       settings: (
         await pool.query(
-          `SELECT face_recognition_enabled AS "faceRecognitionEnabled"
+          `SELECT face_recognition_enabled AS "faceRecognitionEnabled",
+                  face_match_distance AS "faceMatchDistance",
+                  face_match_margin AS "faceMatchMargin",
+                  face_min_frames AS "faceMinFrames",
+                  face_liveness_required AS "faceLivenessRequired"
              FROM organization_settings WHERE organization_id=$1`,
           [req.user.org],
         )
@@ -4204,6 +4230,127 @@ app.get(
       params,
     );
     res.json({ events: rows });
+  }),
+);
+
+// Telemetry from the camera page keeps the admin dashboard honest: it shows
+// which cameras are actually scanning, how often faces are found, and how many
+// recognitions were accepted or rejected.
+const cameraTelemetrySchema = z.object({
+  deviceId: z.string().trim().min(1).max(200),
+  sessionId: id.optional(),
+  cameraState: z.string().trim().max(40).optional(),
+  modelStatus: z.string().trim().max(40).optional(),
+  framesScanned: z.number().int().min(0).max(1_000_000).optional(),
+  facesDetected: z.number().int().min(0).max(1_000_000).optional(),
+  unknownFaces: z.number().int().min(0).max(1_000_000).optional(),
+  recognizedFaces: z.number().int().min(0).max(1_000_000).optional(),
+  detectionRate: z.number().min(0).max(1).optional(),
+  fps: z.number().min(0).max(120).optional(),
+  latencyMs: z.number().min(0).max(60000).optional(),
+});
+
+app.post(
+  "/api/face-recognition/telemetry",
+  authorize("admin", "teacher"),
+  validate(cameraTelemetrySchema),
+  asyncRoute(async (req, res) => {
+    const t = req.body;
+    let sessionId = null;
+    if (t.sessionId) {
+      const session = await pool.query(
+        "SELECT id FROM class_sessions WHERE id=$1 AND organization_id=$2",
+        [t.sessionId, req.user.org],
+      );
+      sessionId = session.rows[0]?.id || null;
+    }
+    await pool.query(
+      `INSERT INTO camera_health_samples
+         (organization_id, session_id, user_id, device_id, camera_state,
+          model_status, frames_scanned, faces_detected, unknown_faces,
+          recognized_faces, detection_rate, fps, latency_ms)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)`,
+      [
+        req.user.org,
+        sessionId,
+        req.user.sub,
+        t.deviceId,
+        t.cameraState || null,
+        t.modelStatus || null,
+        t.framesScanned ?? null,
+        t.facesDetected ?? null,
+        t.unknownFaces ?? null,
+        t.recognizedFaces ?? null,
+        t.detectionRate ?? null,
+        t.fps ?? null,
+        t.latencyMs ?? null,
+      ],
+    );
+    // Keep the telemetry table small without a separate cron job.
+    await pool
+      .query(
+        `DELETE FROM camera_health_samples
+          WHERE organization_id=$1 AND created_at < now() - interval '30 days'`,
+        [req.user.org],
+      )
+      .catch(() => {});
+    res.status(201).json({ ok: true });
+  }),
+);
+
+app.get(
+  "/api/face-recognition/health",
+  authorize("admin"),
+  asyncRoute(async (req, res) => {
+    const [latest, recent] = await Promise.all([
+      pool.query(
+        `SELECT DISTINCT ON (device_id)
+                device_id AS "deviceId", camera_state AS "cameraState",
+                model_status AS "modelStatus", frames_scanned AS "framesScanned",
+                faces_detected AS "facesDetected", unknown_faces AS "unknownFaces",
+                recognized_faces AS "recognizedFaces",
+                detection_rate AS "detectionRate", fps, latency_ms AS "latencyMs",
+                created_at AS "createdAt",
+                (created_at > now() - interval '2 minutes') AS online
+           FROM camera_health_samples
+          WHERE organization_id=$1
+          ORDER BY device_id, created_at DESC`,
+        [req.user.org],
+      ),
+      pool.query(
+        `SELECT device_id AS "deviceId",
+                count(*) FILTER (WHERE decision='accepted')::int AS accepted,
+                count(*) FILTER (WHERE decision='rejected')::int AS rejected
+           FROM face_recognition_events
+          WHERE organization_id=$1 AND created_at > now() - interval '24 hours'
+          GROUP BY device_id`,
+        [req.user.org],
+      ),
+    ]);
+    const byDevice = new Map(recent.rows.map((row) => [row.deviceId, row]));
+    const devices = latest.rows.map((row) => ({
+      ...row,
+      accepted24h: byDevice.get(row.deviceId)?.accepted ?? 0,
+      rejected24h: byDevice.get(row.deviceId)?.rejected ?? 0,
+    }));
+    const online = devices.filter((device) => device.online);
+    res.json({
+      devices,
+      summary: {
+        devices: devices.length,
+        online: online.length,
+        avgDetectionRate: online.length
+          ? online.reduce((sum, item) => sum + Number(item.detectionRate || 0), 0) /
+            online.length
+          : 0,
+        avgFps: online.length
+          ? online.reduce((sum, item) => sum + Number(item.fps || 0), 0) /
+            online.length
+          : 0,
+        accepted24h: devices.reduce((sum, item) => sum + item.accepted24h, 0),
+        rejected24h: devices.reduce((sum, item) => sum + item.rejected24h, 0),
+      },
+    });
   }),
 );
 

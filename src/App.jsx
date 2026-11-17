@@ -21,6 +21,7 @@ import {
   Teachers,
   Tickets,
 } from "./components/pages.jsx";
+import { CameraHealth } from "./components/CameraHealth.jsx";
 import { VoiceAttendance } from "./voice/VoiceAttendance.jsx";
 import { Exams } from "./components/Exams.jsx";
 import { LiveClass, TrendAnalysis } from "./components/phase2.jsx";
@@ -130,6 +131,7 @@ const navGroups = [
       { id: "voice", label: "تشخیص صدا", icon: "bi-mic" },
       { id: "face", label: "تشخیص چهره", icon: "bi-camera-video" },
       { id: "class-camera", label: "دوربین کلاس", icon: "bi-camera-reels" },
+      { id: "camera-health", label: "سلامت دوربین‌ها", icon: "bi-activity" },
       { id: "fingerprint", label: "اثر انگشت", icon: "bi-fingerprint" },
       { id: "class-live", label: "کلاس زنده", icon: "bi-broadcast" },
       { id: "trends", label: "تحلیل روند", icon: "bi-graph-up-arrow" },
@@ -655,6 +657,10 @@ export default function App() {
     lateAfter: "10",
     notifications: true,
     faceRecognition: true,
+    faceDistance: 0.54,
+    faceMargin: 0.035,
+    faceMinFrames: 3,
+    faceLiveness: true,
   });
   const [login, setLogin] = useState(() => !getImpersonation());
   const [platformMode, setPlatformMode] = useState(() => {
@@ -1289,15 +1295,44 @@ export default function App() {
       name,
       lateAfter: String(Math.round(lateAfterNumber)),
     };
+    const faceDistance = Number(normalized.faceDistance);
+    const faceMargin = Number(normalized.faceMargin);
+    const faceMinFrames = Number(normalized.faceMinFrames);
+    if (!Number.isFinite(faceDistance) || faceDistance < 0.3 || faceDistance > 0.7) {
+      notify("آستانهٔ فاصلهٔ چهره باید عددی بین ۰٫۳ تا ۰٫۷ باشد.");
+      return;
+    }
+    if (!Number.isFinite(faceMargin) || faceMargin < 0 || faceMargin > 0.2) {
+      notify("حاشیهٔ اطمینان چهره باید عددی بین ۰ تا ۰٫۲ باشد.");
+      return;
+    }
+    if (
+      !Number.isInteger(faceMinFrames) ||
+      faceMinFrames < 1 ||
+      faceMinFrames > 10
+    ) {
+      notify("حداقل تعداد فریم باید عددی صحیح بین ۱ تا ۱۰ باشد.");
+      return;
+    }
+    const normalizedFace = {
+      ...normalized,
+      faceDistance,
+      faceMargin,
+      faceMinFrames,
+    };
     try {
       await saveSettingsPayload({
         systemName: normalized.name,
         lateAfterMinutes: Math.round(lateAfterNumber),
         notificationsEnabled: normalized.notifications !== false,
         faceRecognitionEnabled: normalized.faceRecognition !== false,
+        faceMatchDistance: faceDistance,
+        faceMatchMargin: faceMargin,
+        faceMinFrames,
+        faceLivenessRequired: normalized.faceLiveness !== false,
       });
-      writeStoredValue("smart-attendance:settings", normalized);
-      setSettings(normalized);
+      writeStoredValue("smart-attendance:settings", normalizedFace);
+      setSettings(normalizedFace);
       notify("تنظیمات در دیتابیس ذخیره شد.");
     } catch (error) {
       notify(error.message || "ذخیرهٔ تنظیمات انجام نشد.");
@@ -3421,6 +3456,7 @@ export default function App() {
               onSelectCamera={selectCamera}
               videoRef={videoRef}
               streamRef={streamRef}
+              settings={settings}
               startCamera={
                 active === "class-camera"
                   ? startCamera
@@ -3493,6 +3529,7 @@ export default function App() {
               onPrint={() => window.print()}
             />
           )}
+          {active === "camera-health" && <CameraHealth />}
           {active === "settings" && (
             <Settings
               settings={settings}
