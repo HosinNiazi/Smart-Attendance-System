@@ -27,9 +27,11 @@ import {
   DEFAULT_FACE_MIN_MARGIN,
   FACE_DESCRIPTOR_MODEL,
   FACE_FEATURE_VERSION,
+  FACE_METHODS,
   MAX_REFERENCE_PHOTOS,
   evaluateFaceAttendance,
   validateFaceEnrollment,
+  verifyDescriptorClaim,
 } from "./faceVerification.js";
 import multer from "multer";
 import path from "node:path";
@@ -834,6 +836,8 @@ const attendanceUpsertSchema = z.object({
       frameCount: z.number().int().min(0).max(600).optional(),
       deviceId: z.string().trim().max(200).optional(),
       referenceId: z.string().uuid().optional(),
+      // Phase 3+: the live descriptor lets the server re-verify the match.
+      descriptor: z.array(z.number().finite()).length(128).optional(),
     })
     .optional(),
 });
@@ -4049,6 +4053,93 @@ app.put(
       return res
         .status(422)
         .json({ message: faceDecision.message, reason: faceDecision.reason });
+    }
+
+    // Shared writer for the Phase 3+ rejection paths below.
+    async function logFaceRejection(reason, extra = {}) {
+      await pool
+        .query(
+          `INSERT INTO face_recognition_events
+             (organization_id, session_id, student_id, actor_user_id, method,
+              decision, reason, distance, margin, threshold, liveness,
+              frame_count, device_id, reference_id, detail)
+           VALUES ($1,$2,$3,$4,$5,'rejected',$6,$7,$8,$9,$10,$11,$12,$13,$14)`,
+          [
+            req.user.org,
+            sessionId,
+            studentId,
+            req.user.sub,
+            method,
+            reason,
+            extra.distance ?? null,
+            extra.margin ?? null,
+            extra.threshold ?? null,
+            extra.liveness ?? null,
+            extra.frameCount ?? null,
+            extra.deviceId ?? null,
+            extra.referenceId ?? null,
+            JSON.stringify({ reason, ...extra }),
+          ],
+        )
+        .catch(() => {});
+    }
+
+    // Phase 3+ (A): the browser cannot be taken on its word. When it sends the
+    // live descriptor, the server re-normalizes and re-scores it against the
+    // student's stored gallery and rejects forged or drifting claims.
+    if (faceVerification?.descriptor) {
+      const stored = await pool.query(
+        `SELECT features FROM biometric_references
+          WHERE student_id=$1 AND kind='face_image'
+            AND features IS NOT NULL AND jsonb_array_length(features)=128`,
+        [studentId],
+      );
+      const claim = verifyDescriptorClaim({
+        liveDescriptor: faceVerification.descriptor,
+        storedDescriptors: stored.rows.map((row) => row.features),
+        claimedDistance: faceVerification.distance,
+        maxDistance: faceDecision.threshold,
+      });
+      if (!claim.ok) {
+        await logFaceRejection(claim.reason, {
+          distance: faceVerification.distance,
+          margin: faceVerification.margin ?? null,
+          threshold: faceDecision.threshold ?? null,
+          liveness: faceDecision.liveness ?? null,
+          frameCount: faceDecision.frameCount ?? null,
+          deviceId: faceDecision.deviceId ?? null,
+          referenceId: faceDecision.referenceId ?? null,
+          serverDistance: claim.serverDistance,
+        });
+        return res.status(422).json({
+          message:
+            "شواهد تطبیق چهره با عکس مرجع همخوانی ندارد. دوباره مقابل دوربین قرار بگیرید.",
+          reason: claim.reason,
+        });
+      }
+    }
+
+    // Phase 3+ (D): a replayed verification payload must not re-write or
+    // re-log attendance. Legitimate clients never re-mark within 5 seconds
+    // (the UI already de-duplicates per session).
+    if (FACE_METHODS.has(method)) {
+      const recent = await pool.query(
+        `SELECT id FROM face_recognition_events
+          WHERE session_id=$1 AND student_id=$2 AND decision='accepted'
+            AND created_at > now() - interval '5 seconds'
+          LIMIT 1`,
+        [sessionId, studentId],
+      );
+      if (recent.rows[0]) {
+        await logFaceRejection("replay", {
+          distance: faceVerification?.distance ?? null,
+          deviceId: faceDecision.deviceId ?? null,
+        });
+        return res.status(429).json({
+          message: "این حضور چند لحظه قبل ثبت شده است.",
+          reason: "replay",
+        });
+      }
     }
 
     const record = await withTransaction(async (client) => {

@@ -4,14 +4,37 @@ import assert from "node:assert/strict";
 import {
   FACE_DESCRIPTOR_LENGTH,
   MAX_REFERENCE_PHOTOS,
+  DESCRIPTOR_MATCH_TOLERANCE,
   evaluateFaceAttendance,
   normalizeDescriptor,
   normalizeQuality,
   validateFaceEnrollment,
+  verifyDescriptorClaim,
 } from "../src/faceVerification.js";
 
 function descriptor(value = 0.1) {
   return Array.from({ length: FACE_DESCRIPTOR_LENGTH }, () => value);
+}
+
+// Realistic descriptors are near unit-norm with varied entries, so distances
+// land in the same range face-api produces (0.2 – 0.6).
+function realisticDescriptor() {
+  return Array.from({ length: FACE_DESCRIPTOR_LENGTH }, (_, index) =>
+    Number((Math.sin(index * 0.7) * 0.08).toFixed(6)),
+  );
+}
+function shiftedDescriptor() {
+  const copy = realisticDescriptor();
+  copy[0] += 0.1; // exactly 0.1 away from realisticDescriptor()
+  return copy.map((value) => Number(value.toFixed(6)));
+}
+function offsetDescriptor(offset) {
+  return realisticDescriptor().map((value) =>
+    Number((value + offset).toFixed(6)),
+  );
+}
+function negatedDescriptor() {
+  return realisticDescriptor().map((value) => -value);
 }
 
 test("normalizeDescriptor accepts arrays, typed arrays and JSON strings", () => {
@@ -273,4 +296,73 @@ test("a faculty may waive liveness for single-person attendance", () => {
 
 test("reference gallery limit stays small", () => {
   assert.ok(MAX_REFERENCE_PHOTOS >= 3 && MAX_REFERENCE_PHOTOS <= 10);
+});
+
+test("descriptor claim matches an identical stored descriptor", () => {
+  const live = realisticDescriptor();
+  const result = verifyDescriptorClaim({
+    liveDescriptor: live,
+    storedDescriptors: [realisticDescriptor()],
+    claimedDistance: 0.01,
+    maxDistance: 0.54,
+  });
+  assert.equal(result.ok, true);
+  assert.equal(result.skipped, false);
+  assert.ok(result.serverDistance < 0.01);
+});
+
+test("descriptor claim rejects a face that is too far from the gallery", () => {
+  const result = verifyDescriptorClaim({
+    liveDescriptor: realisticDescriptor(),
+    storedDescriptors: [negatedDescriptor()],
+    claimedDistance: 0.1,
+    maxDistance: 0.54,
+  });
+  assert.equal(result.ok, false);
+  assert.equal(result.reason, "distance_mismatch");
+  assert.ok(result.serverDistance > 0.6);
+});
+
+test("descriptor claim rejects a forged claimed distance", () => {
+  // The real server distance is ≈ 0.35, but the client claims 0.05.
+  const result = verifyDescriptorClaim({
+    liveDescriptor: realisticDescriptor(),
+    storedDescriptors: [offsetDescriptor(0.031)],
+    claimedDistance: 0.05,
+    maxDistance: 0.54,
+  });
+  assert.equal(result.ok, false);
+  assert.equal(result.reason, "distance_mismatch");
+});
+
+test("descriptor claim tolerates small drift within the tolerance", () => {
+  const result = verifyDescriptorClaim({
+    liveDescriptor: shiftedDescriptor(),
+    storedDescriptors: [realisticDescriptor()],
+    claimedDistance: 0.1,
+    maxDistance: 0.54,
+  });
+  assert.equal(result.ok, true);
+  assert.ok(Math.abs(result.serverDistance - 0.1) < DESCRIPTOR_MATCH_TOLERANCE);
+});
+
+test("a missing live descriptor is skipped but flagged", () => {
+  const result = verifyDescriptorClaim({
+    liveDescriptor: null,
+    storedDescriptors: [descriptor(0.1)],
+    claimedDistance: 0.1,
+    maxDistance: 0.54,
+  });
+  assert.equal(result.ok, false);
+  assert.equal(result.reason, "live_descriptor_missing");
+  assert.equal(result.skipped, true);
+
+  const noGallery = verifyDescriptorClaim({
+    liveDescriptor: descriptor(0.1),
+    storedDescriptors: [],
+    claimedDistance: 0.1,
+    maxDistance: 0.54,
+  });
+  assert.equal(noGallery.ok, true);
+  assert.equal(noGallery.skipped, true);
 });

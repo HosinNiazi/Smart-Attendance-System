@@ -1840,6 +1840,11 @@ export function FaceAttendance({
                           : "none_provided",
                       frameCount: Math.max(1, classroomMode ? votes : streak),
                       referenceId: best.referenceId || undefined,
+                      // Phase 3+: lets the server re-verify the match against
+                      // the stored gallery instead of trusting our numbers.
+                      descriptor: Array.from(result.descriptor).map(
+                        (value) => Number(value.toFixed(5)),
+                      ),
                     },
                   },
                 );

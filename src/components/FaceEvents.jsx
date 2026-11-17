@@ -24,6 +24,9 @@ const REASON_LABELS = {
   distance_too_far: "تطبیق ضعیف",
   margin_too_small: "ابهام با نفر دوم",
   liveness_missing: "پلک/فریم ناکافی",
+  distance_mismatch: "ناسازگاری تطبیق با سرور",
+  live_descriptor_missing: "شواهد زنده ناقص",
+  replay: "درخواست تکراری",
   unknown_reason: "دلایل دیگر",
 };
 

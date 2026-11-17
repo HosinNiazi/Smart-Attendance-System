@@ -25,6 +25,10 @@ export const MIN_FACE_MARGIN_ALLOWED = 0.005;
 // Enrollment keeps a small gallery per student instead of a single photo.
 export const MAX_REFERENCE_PHOTOS = 5;
 
+// Phase 3+: how far the server-recomputed distance may drift from the
+// distance the browser claimed before the claim is treated as forged.
+export const DESCRIPTOR_MATCH_TOLERANCE = 0.15;
+
 // Photos with a detection score below this are not usable as references.
 export const MIN_ENROLLMENT_SCORE = 0.4;
 // A face smaller than this many pixels is too blurry for a stable descriptor.
@@ -263,4 +267,70 @@ export function evaluateFaceAttendance({
     referenceId:
       typeof verification.referenceId === "string" ? verification.referenceId : null,
   };
+}
+
+// Euclidean distance between two already-normalized descriptors. Kept here so
+// the server recomputes exactly what the browser computes.
+export function normalizedDistance(a, b) {
+  let sum = 0;
+  for (let index = 0; index < FACE_DESCRIPTOR_LENGTH; index += 1) {
+    const delta = (a[index] || 0) - (b[index] || 0);
+    sum += delta * delta;
+  }
+  return Math.sqrt(sum);
+}
+
+// Phase 3+ (A): the browser cannot be trusted on its own word, but it can send
+// the *live* descriptor of the face it matched. The server re-normalizes it the
+// same way the browser does, recomputes the distance against the stored
+// gallery and rejects the claim when
+//   * the best stored distance is beyond the policy threshold (+ slack), or
+//   * it drifts too far from the distance the client reported.
+// A missing live descriptor keeps old clients working but is flagged so the
+// event log shows when the stronger check did not run.
+export function verifyDescriptorClaim({
+  liveDescriptor,
+  storedDescriptors,
+  claimedDistance,
+  maxDistance,
+  tolerance = DESCRIPTOR_MATCH_TOLERANCE,
+} = {}) {
+  const query = normalizeDescriptor(liveDescriptor);
+  if (!query)
+    return {
+      ok: false,
+      reason: "live_descriptor_missing",
+      serverDistance: null,
+      skipped: true,
+    };
+
+  const stored = (storedDescriptors || [])
+    .map((item) => normalizeDescriptor(item))
+    .filter(Boolean);
+  if (!stored.length)
+    return {
+      ok: true,
+      reason: null,
+      serverDistance: null,
+      skipped: true,
+    };
+
+  let best = Infinity;
+  for (const descriptor of stored) {
+    const distance = normalizedDistance(query, descriptor);
+    if (distance < best) best = distance;
+  }
+
+  const threshold = Number(maxDistance);
+  if (
+    Number.isFinite(threshold) &&
+    best > threshold + 0.05
+  )
+    return { ok: false, reason: "distance_mismatch", serverDistance: best };
+
+  const claimed = Number(claimedDistance);
+  if (Number.isFinite(claimed) && Math.abs(best - claimed) > tolerance)
+    return { ok: false, reason: "distance_mismatch", serverDistance: best };
+
+  return { ok: true, reason: null, serverDistance: best, skipped: false };
 }
