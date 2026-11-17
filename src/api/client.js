@@ -193,6 +193,14 @@ export function sendCameraTelemetry(payload) {
 export function fetchCameraHealth() {
   return api('/face-recognition/health');
 }
+export function fetchFaceEvents(params = {}) {
+  const qs = new URLSearchParams();
+  if (params.sessionId) qs.set('sessionId', params.sessionId);
+  if (params.studentId) qs.set('studentId', params.studentId);
+  if (params.limit) qs.set('limit', String(params.limit));
+  const query = qs.toString();
+  return api(`/face-recognition/events${query ? `?${query}` : ''}`);
+}
 export function fetchFingerprintCredentials(studentId) {
   const query = studentId ? `?studentId=${encodeURIComponent(studentId)}` : '';
   return api(`/fingerprint/credentials${query}`);

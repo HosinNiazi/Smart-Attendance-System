@@ -22,6 +22,7 @@ import {
   Tickets,
 } from "./components/pages.jsx";
 import { CameraHealth } from "./components/CameraHealth.jsx";
+import { FaceEvents } from "./components/FaceEvents.jsx";
 import { VoiceAttendance } from "./voice/VoiceAttendance.jsx";
 import { Exams } from "./components/Exams.jsx";
 import { LiveClass, TrendAnalysis } from "./components/phase2.jsx";
@@ -132,6 +133,7 @@ const navGroups = [
       { id: "face", label: "تشخیص چهره", icon: "bi-camera-video" },
       { id: "class-camera", label: "دوربین کلاس", icon: "bi-camera-reels" },
       { id: "camera-health", label: "سلامت دوربین‌ها", icon: "bi-activity" },
+      { id: "face-events", label: "رویدادهای چهره", icon: "bi-journal-text" },
       { id: "fingerprint", label: "اثر انگشت", icon: "bi-fingerprint" },
       { id: "class-live", label: "کلاس زنده", icon: "bi-broadcast" },
       { id: "trends", label: "تحلیل روند", icon: "bi-graph-up-arrow" },
@@ -3530,6 +3532,7 @@ export default function App() {
             />
           )}
           {active === "camera-health" && <CameraHealth />}
+          {active === "face-events" && <FaceEvents />}
           {active === "settings" && (
             <Settings
               settings={settings}

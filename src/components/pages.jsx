@@ -29,6 +29,7 @@ import {
   setCachedDescriptor,
 } from "../face/descriptorCache.js";
 import { sendCameraTelemetry } from "../api/client.js";
+import { buildMatcherData, matchDescriptor } from "../face/matching.js";
 import { playBeep as playUnknown, playSuccess } from "../audio/sfx.js";
 import { startAuthentication, startRegistration } from "@simplewebauthn/browser";
 import { exportAttendanceExcel } from "../reports/exportAttendanceExcel.js";
@@ -1440,6 +1441,12 @@ export function FaceAttendance({
   const lastUnknownNoticeRef = React.useRef(0);
   const recognitionStreakRef = React.useRef(new Map());
   const livenessRef = React.useRef(new Map());
+  // Phase 3: centroid-based matching. Built once per descriptor refresh so the
+  // per-frame cost stays O(students) instead of O(faces × references).
+  const matcherData = React.useMemo(
+    () => buildMatcherData(faceDescriptors),
+    [faceDescriptors],
+  );
   attendanceRef.current = attendance;
   studentsRef.current = students;
   markAttendanceRef.current = onMarkAttendance;
@@ -1654,6 +1661,9 @@ export function FaceAttendance({
 
     async function scanFrame() {
       if (cancelled || scanBusyRef.current) return;
+      // Phase 3: a hidden tab cannot show anything useful and the CPU budget
+      // belongs to the visible page; telemetry gaps mark the device offline.
+      if (document.hidden) return;
       const video = videoRef.current;
       if (!video || video.readyState < 2) return;
       scanBusyRef.current = true;
@@ -1712,30 +1722,18 @@ export function FaceAttendance({
         let livenessHint = null;
         const nextBoxes = results.map((result, faceIndex) => {
           const trackId = tracked.faces[faceIndex]?.trackId ?? null;
-          const studentMatches = new Map();
-          for (const reference of faceDescriptors) {
-            const distance = faceapi.euclideanDistance(
-              result.descriptor,
-              reference.descriptor,
-            );
-            const previous = studentMatches.get(reference.studentId);
-            if (!previous || distance < previous.distance)
-              studentMatches.set(reference.studentId, {
-                distance,
-                referenceId: reference.referenceId,
-              });
-          }
-          const ranked = [...studentMatches].sort(
-            (a, b) => a[1].distance - b[1].distance,
+          // Phase 3 matching: centroid-first ranking with per-reference
+          // refinement; ranked[1] feeds the margin rule.
+          const ranked = matchDescriptor(
+            result.descriptor,
+            matcherData,
+            (a, b) => faceapi.euclideanDistance(a, b),
           );
           const best = ranked.length
-            ? {
-                studentId: ranked[0][0],
-                referenceId: ranked[0][1].referenceId,
-              }
+            ? { studentId: ranked[0].studentId, referenceId: ranked[0].referenceId }
             : null;
-          const nearest = ranked[0]?.[1].distance ?? Infinity;
-          const second = ranked[1]?.[1].distance ?? Infinity;
+          const nearest = ranked[0]?.distance ?? Infinity;
+          const second = ranked[1]?.distance ?? Infinity;
           const reliable =
             best &&
             nearest < faceMaxDistance &&
@@ -1966,6 +1964,7 @@ export function FaceAttendance({
     cameraState,
     modelStatus,
     faceDescriptors,
+    matcherData,
     sessionId,
     videoRef,
     classroomMode,

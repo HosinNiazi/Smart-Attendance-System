@@ -4250,12 +4250,29 @@ const cameraTelemetrySchema = z.object({
   latencyMs: z.number().min(0).max(60000).optional(),
 });
 
+// Phase 3: a misbehaving or duplicated client could flood the telemetry table.
+// One insert per device every 5 seconds is plenty for a health dashboard.
+const telemetryLastInsertAt = new Map();
+const TELEMETRY_MIN_INTERVAL_MS = 5000;
+
 app.post(
   "/api/face-recognition/telemetry",
   authorize("admin", "teacher"),
   validate(cameraTelemetrySchema),
   asyncRoute(async (req, res) => {
     const t = req.body;
+    const now = Date.now();
+    const lastInsert = telemetryLastInsertAt.get(t.deviceId) || 0;
+    if (now - lastInsert < TELEMETRY_MIN_INTERVAL_MS) {
+      // Accepted but intentionally not stored; the client keeps its own batch.
+      return res.json({ ok: true, skipped: true });
+    }
+    telemetryLastInsertAt.set(t.deviceId, now);
+    if (telemetryLastInsertAt.size > 5000) {
+      // Bound the in-memory map in case of device-id churn.
+      for (const [key, stamp] of telemetryLastInsertAt)
+        if (now - stamp > 600000) telemetryLastInsertAt.delete(key);
+    }
     let sessionId = null;
     if (t.sessionId) {
       const session = await pool.query(
