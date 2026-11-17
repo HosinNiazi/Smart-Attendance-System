@@ -95,6 +95,18 @@ export function matchDescriptor(
   return ranked.sort((a, b) => a.distance - b.distance);
 }
 
+// Euclidean distance over two descriptor-like arrays (client-side twin of the
+// server helper, so the pages do not need face-api for plain math).
+export function euclideanDistance(a, b) {
+  let sum = 0;
+  const length = Math.min(a?.length || 0, b?.length || 0);
+  for (let index = 0; index < length; index += 1) {
+    const delta = a[index] - b[index];
+    sum += delta * delta;
+  }
+  return Math.sqrt(sum);
+}
+
 // True when `value` is inside [minMarginFloor, Infinity) — i.e. the runner-up
 // is far enough from the winner. Kept here so client and server policy stay in
 // one shape.

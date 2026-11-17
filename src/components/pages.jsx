@@ -29,7 +29,12 @@ import {
   setCachedDescriptor,
 } from "../face/descriptorCache.js";
 import { sendCameraTelemetry } from "../api/client.js";
-import { buildMatcherData, matchDescriptor } from "../face/matching.js";
+import { buildMatcherData, euclideanDistance, matchDescriptor } from "../face/matching.js";
+import {
+  detectFacesInWorker,
+  describeReferenceInWorker,
+  workerReady,
+} from "../face/workerClient.js";
 import { playBeep as playUnknown, playSuccess } from "../audio/sfx.js";
 import { startAuthentication, startRegistration } from "@simplewebauthn/browser";
 import { exportAttendanceExcel } from "../reports/exportAttendanceExcel.js";
@@ -1454,19 +1459,32 @@ export function FaceAttendance({
   const deviceIdRef = React.useRef(selectedCameraId || "camera");
   deviceIdRef.current = selectedCameraId || "camera";
 
+  // Option B: the worker owns the models and inference. The main thread loads
+  // face-api lazily only as a fallback (worker crash or unsupported browser).
+  const ensureFaceApi = React.useCallback(async () => {
+    if (faceApiRef.current) return faceApiRef.current;
+    const faceapi = await import("@vladmandic/face-api");
+    await Promise.all([
+      faceapi.nets.tinyFaceDetector.loadFromUri("/models"),
+      faceapi.nets.faceLandmark68TinyNet.loadFromUri("/models"),
+      faceapi.nets.faceRecognitionNet.loadFromUri("/models"),
+    ]);
+    faceApiRef.current = faceapi;
+    return faceapi;
+  }, []);
+
   useEffect(() => {
     let cancelled = false;
-    import("@vladmandic/face-api")
-      .then((faceapi) => {
-        faceApiRef.current = faceapi;
-        return Promise.all([
-          faceapi.nets.tinyFaceDetector.loadFromUri("/models"),
-          faceapi.nets.faceLandmark68TinyNet.loadFromUri("/models"),
-          faceapi.nets.faceRecognitionNet.loadFromUri("/models"),
-        ]);
-      })
-      .then(() => {
-        if (!cancelled) setModelStatus("ready");
+    workerReady()
+      .then((ok) => {
+        if (cancelled) return;
+        if (ok) {
+          setModelStatus("ready");
+          return;
+        }
+        return ensureFaceApi().then(() => {
+          if (!cancelled) setModelStatus("ready");
+        });
       })
       .catch((error) => {
         console.error("Face recognition models failed to load", error);
@@ -1475,7 +1493,7 @@ export function FaceAttendance({
     return () => {
       cancelled = true;
     };
-  }, []);
+  }, [ensureFaceApi]);
 
   // فقط وقتی گالری عکس‌ها واقعاً عوض شود بازسازی می‌شود؛ بارگذاری مجدد
   // دیتابیس پس از هر ثبت حضور، دسکریپتورها را دوباره نمی‌سازد (صرفه‌جویی در منابع).
@@ -1491,8 +1509,6 @@ export function FaceAttendance({
   useEffect(() => {
     if (modelStatus !== "ready") return;
     let cancelled = false;
-    const faceapi = faceApiRef.current;
-    if (!faceapi) return;
     setDescriptorsStatus("loading");
     setFaceDescriptors([]);
     setUnusablePhotos(0);
@@ -1532,23 +1548,33 @@ export function FaceAttendance({
               });
               continue;
             }
-            const image = await faceapi.fetchImage(reference.url);
-            const result = await faceapi
-              .detectSingleFace(
-                image,
-                new faceapi.TinyFaceDetectorOptions({
-                  inputSize: 320,
-                  scoreThreshold: 0.45,
-                }),
-              )
-              .withFaceLandmarks(true)
-              .withFaceDescriptor();
-            if (result) {
-              await setCachedDescriptor(cacheKey, Array.from(result.descriptor));
+            // Option B: legacy photos are decoded in the worker; the main
+            // thread only pays this cost when the worker is unavailable.
+            const workerDescriptor = await describeReferenceInWorker(
+              reference.url,
+            );
+            let descriptor = workerDescriptor;
+            if (!descriptor) {
+              const fallbackApi = await ensureFaceApi();
+              const image = await fallbackApi.fetchImage(reference.url);
+              const result = await fallbackApi
+                .detectSingleFace(
+                  image,
+                  new fallbackApi.TinyFaceDetectorOptions({
+                    inputSize: 320,
+                    scoreThreshold: 0.45,
+                  }),
+                )
+                .withFaceLandmarks(true)
+                .withFaceDescriptor();
+              descriptor = result ? Array.from(result.descriptor) : null;
+            }
+            if (descriptor) {
+              await setCachedDescriptor(cacheKey, descriptor);
               registered.push({
                 studentId: student.id,
                 referenceId: reference.id || null,
-                descriptor: result.descriptor,
+                descriptor: new Float32Array(descriptor),
               });
             } else invalid += 1;
           } catch {
@@ -1669,35 +1695,44 @@ export function FaceAttendance({
       scanBusyRef.current = true;
       const frameStartedAt = Date.now();
       try {
-        const results = await faceapi
-          .detectAllFaces(
-            video,
-            new faceapi.TinyFaceDetectorOptions({
-              inputSize: 320,
-              scoreThreshold: 0.5,
-            }),
-          )
-          .withFaceLandmarks(true)
-          .withFaceDescriptors();
+        // گزینهٔ B: استنتاج سنگین در Web Worker انجام می‌شود؛ نخ اصلی فقط در
+        // صورت ازکارافتادن Worker به تشخیص درجای خودش برمی‌گردد.
+        let detected = await detectFacesInWorker(await createImageBitmap(video));
         if (cancelled) return;
+        if (!detected) {
+          const fallbackApi = await ensureFaceApi();
+          const results = await fallbackApi
+            .detectAllFaces(
+              video,
+              new fallbackApi.TinyFaceDetectorOptions({
+                inputSize: 320,
+                scoreThreshold: 0.5,
+              }),
+            )
+            .withFaceLandmarks(true)
+            .withFaceDescriptors();
+          if (cancelled) return;
+          detected = results.map((result) => ({
+            box: {
+              x: result.detection.box.x,
+              y: result.detection.box.y,
+              width: result.detection.box.width,
+              height: result.detection.box.height,
+            },
+            descriptor: result.descriptor,
+            eyeRatio: averageEyeRatio(result.landmarks),
+          }));
+        }
         telemetryRef.current.frames += 1;
         telemetryRef.current.latencyTotal += Date.now() - frameStartedAt;
-        telemetryRef.current.faces += results.length;
+        telemetryRef.current.faces += detected.length;
         const tracked = advanceTracking(
           trackingRef.current,
-          results.map((result) => {
-            const box = result.detection.box;
-            return {
-              x: box.x,
-              y: box.y,
-              width: box.width,
-              height: box.height,
-            };
-          }),
+          detected.map((result) => result.box),
           Date.now(),
           { ttlMs: 3000, minIou: 0.2 },
         );
-        if (!results.length) {
+        if (!detected.length) {
           recognitionStreakRef.current.clear();
           for (const [key, liveness] of livenessRef.current.entries())
             if (!tickLivenessLost(liveness, false)) livenessRef.current.delete(key);
@@ -1720,14 +1755,14 @@ export function FaceAttendance({
         const currentIds = new Set();
         const claimed = new Set();
         let livenessHint = null;
-        const nextBoxes = results.map((result, faceIndex) => {
+        const nextBoxes = detected.map((result, faceIndex) => {
           const trackId = tracked.faces[faceIndex]?.trackId ?? null;
           // Phase 3 matching: centroid-first ranking with per-reference
           // refinement; ranked[1] feeds the margin rule.
           const ranked = matchDescriptor(
             result.descriptor,
             matcherData,
-            (a, b) => faceapi.euclideanDistance(a, b),
+            euclideanDistance,
           );
           const best = ranked.length
             ? { studentId: ranked[0].studentId, referenceId: ranked[0].referenceId }
@@ -1768,7 +1803,7 @@ export function FaceAttendance({
               liveness.lostFrames = 0;
               if (!liveness.verified)
                 // ماشین وضعیت پلک (کالیبره → بسته → باز → تأیید) از face/liveness.js
-                updateLiveness(liveness, averageEyeRatio(result.landmarks));
+                updateLiveness(liveness, result.eyeRatio);
             }
             label = student.name;
             const existing = attendanceRef.current.find(
@@ -1883,7 +1918,7 @@ export function FaceAttendance({
               label = `${student.name} · در حال تطبیق`;
             }
           }
-          const face = result.detection.box;
+          const face = result.box;
           let left = face.x * scale - cropX;
           const top = face.y * scale - cropY;
           const width = face.width * scale;
