@@ -45,10 +45,25 @@ function photoUrl(objectKey) {
 
 export function adaptBootstrap(data) {
   const photosByStudent = new Map();
+  const referencesByStudent = new Map();
   for (const image of data.faceImages || []) {
     const list = photosByStudent.get(image.studentId) || [];
-    list.push(photoUrl(image.objectKey));
+    const url = photoUrl(image.objectKey);
+    list.push(url);
     photosByStudent.set(image.studentId, list);
+
+    const references = referencesByStudent.get(image.studentId) || [];
+    references.push({
+      id: image.id || "",
+      url,
+      descriptor:
+        Array.isArray(image.descriptor) && image.descriptor.length === 128
+          ? image.descriptor
+          : null,
+      featureVersion: image.featureVersion ?? null,
+      quality: image.quality || null,
+    });
+    referencesByStudent.set(image.studentId, references);
   }
 
   const students = (data.students || []).map((student) => {
@@ -63,6 +78,7 @@ export function adaptBootstrap(data) {
       databaseId: student.id,
       faceImages,
       faceImage: faceImages[0] || "",
+      faceReferences: referencesByStudent.get(student.id) || [],
       hasAccount: student.hasAccount === true,
       accountEmail: student.accountEmail || "",
     };

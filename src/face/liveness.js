@@ -7,8 +7,8 @@
  */
 
 export const FACE_DESCRIPTOR_VERSION = 1;
-export const FACE_MATCH_DISTANCE = 0.52;
-export const FACE_MATCH_MARGIN = 0.04;
+export const FACE_MATCH_DISTANCE = 0.54;
+export const FACE_MATCH_MARGIN = 0.035;
 export const FACE_SCAN_INTERVAL_MS = 70;
 export const CLASSROOM_SCAN_INTERVAL_MS = 120;
 

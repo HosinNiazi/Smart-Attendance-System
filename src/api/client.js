@@ -147,14 +147,20 @@ export function provisionMissingStudentAccounts(courseId) {
     body: JSON.stringify(courseId ? { courseId } : {}),
   });
 }
-export function uploadStudentPhoto(studentId, file) {
+export function uploadStudentPhoto(studentId, file, face = null, mode = 'append') {
   const form = new FormData();
   form.append('photo', file);
+  if (face?.descriptor) form.append('descriptor', JSON.stringify(face.descriptor));
+  if (face?.quality) form.append('quality', JSON.stringify(face.quality));
+  if (mode) form.append('mode', mode);
   return api(`/students/${studentId}/photos`, { method: 'POST', body: form });
 }
-export function uploadMyPhoto(file) {
+export function uploadMyPhoto(file, face = null) {
   const form = new FormData();
   form.append('photo', file);
+  if (face?.descriptor) form.append('descriptor', JSON.stringify(face.descriptor));
+  if (face?.quality) form.append('quality', JSON.stringify(face.quality));
+  form.append('mode', 'replace');
   return api('/me/photo', { method: 'POST', body: form });
 }
 export function saveVoiceSample(studentId, features, featureVersion = 2) {

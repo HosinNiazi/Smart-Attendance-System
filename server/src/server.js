@@ -22,6 +22,15 @@ import {
   facultyLevelDenial,
   platformLevelAllows,
 } from "./platformAccess.js";
+import {
+  DEFAULT_FACE_MAX_DISTANCE,
+  DEFAULT_FACE_MIN_MARGIN,
+  FACE_DESCRIPTOR_MODEL,
+  FACE_FEATURE_VERSION,
+  MAX_REFERENCE_PHOTOS,
+  evaluateFaceAttendance,
+  validateFaceEnrollment,
+} from "./faceVerification.js";
 import multer from "multer";
 import path from "node:path";
 import fs from "node:fs";
@@ -814,6 +823,19 @@ const attendanceUpsertSchema = z.object({
   status: attendanceStatusSchema,
   method: attendanceMethodSchema,
   reason: z.string().trim().max(500).optional().default(""),
+  faceVerification: z
+    .object({
+      distance: z.number().finite().min(0).max(2),
+      margin: z.number().finite().min(0).max(2).nullable().optional(),
+      threshold: z.number().finite().min(0).max(2).nullable().optional(),
+      liveness: z
+        .enum(["blink", "motion", "teacher_confirm", "none_provided"])
+        .optional(),
+      frameCount: z.number().int().min(0).max(600).optional(),
+      deviceId: z.string().trim().max(200).optional(),
+      referenceId: z.string().uuid().optional(),
+    })
+    .optional(),
 });
 const settingsSchema = z.object({
   systemName: z.string().trim().min(1).max(120),
@@ -2828,11 +2850,18 @@ app.get(
           [req.user.org],
         ),
         pool.query(
-          `SELECT br.student_id AS "studentId", br.object_key AS "objectKey", br.created_at AS "createdAt"
+          `SELECT br.id,
+                  br.student_id AS "studentId",
+                  br.object_key AS "objectKey",
+                  br.features AS "descriptor",
+                  br.feature_version AS "featureVersion",
+                  br.descriptor_model AS "descriptorModel",
+                  br.quality,
+                  br.created_at AS "createdAt"
              FROM biometric_references br
              JOIN students st ON st.id = br.student_id
             WHERE br.kind='face_image' AND st.organization_id=$1${studentScope}
-            ORDER BY br.created_at`,
+            ORDER BY br.created_at DESC`,
           params,
         ),
         pool.query(
@@ -3290,7 +3319,31 @@ app.post(
 );
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
-async function replaceStudentFacePhoto(studentId, organizationId, file) {
+// Multipart fields arrive as strings; a broken descriptor is treated as a
+// missing one only when the field is absent entirely.
+function readFaceEnrollmentFields(body) {
+  const parse = (value) => {
+    if (value == null || value === "") return null;
+    if (typeof value === "object") return value;
+    try {
+      return JSON.parse(value);
+    } catch {
+      return undefined;
+    }
+  };
+  return {
+    descriptor: parse(body?.descriptor),
+    quality: parse(body?.quality),
+    mode: body?.mode === "replace" ? "replace" : "append",
+  };
+}
+
+async function addStudentFacePhoto(
+  studentId,
+  organizationId,
+  file,
+  { descriptor = null, quality = null, mode = "append" } = {},
+) {
   if (!studentId || !UUID_RE.test(String(studentId))) {
     await fs.promises.unlink(file.path).catch(() => {});
     return null;
@@ -3310,43 +3363,100 @@ async function replaceStudentFacePhoto(studentId, organizationId, file) {
     .update(await fs.promises.readFile(file.path))
     .digest("hex");
 
-  const oldRefs = await pool.query(
-    `SELECT object_key FROM biometric_references
-      WHERE student_id = $1 AND kind = 'face_image'`,
-    [studentId],
-  );
-
   try {
     const result = await withTransaction(async (client) => {
-      // Single reference photo per student: remove the previous one atomically.
-      await client.query(
-        `DELETE FROM biometric_references
-          WHERE student_id = $1 AND kind = 'face_image'`,
-        [studentId],
-      );
-      return client.query(
+      let removed = [];
+      if (mode === "replace") {
+        const previous = await client.query(
+          `DELETE FROM biometric_references
+            WHERE student_id = $1 AND kind = 'face_image'
+            RETURNING id, object_key`,
+          [studentId],
+        );
+        removed = previous.rows;
+      }
+
+      const inserted = await client.query(
         `INSERT INTO biometric_references
-         (student_id, kind, object_key, mime_type, checksum)
-         VALUES ($1, 'face_image', $2, $3, $4)
+           (student_id, kind, object_key, mime_type, checksum,
+            features, feature_version, descriptor_model, quality)
+         VALUES ($1, 'face_image', $2, $3, $4, $5, $6, $7, $8)
          RETURNING id, student_id AS "studentId",
                    object_key AS "objectKey",
                    mime_type AS "mimeType",
+                   features AS "descriptor",
+                   feature_version AS "featureVersion",
+                   descriptor_model AS "descriptorModel",
+                   quality,
                    created_at AS "createdAt"`,
-        [studentId, file.filename, file.mimetype, checksum],
+        [
+          studentId,
+          file.filename,
+          file.mimetype,
+          checksum,
+          descriptor ? JSON.stringify(descriptor) : null,
+          descriptor ? FACE_FEATURE_VERSION : null,
+          descriptor ? FACE_DESCRIPTOR_MODEL : null,
+          quality ? JSON.stringify(quality) : null,
+        ],
       );
+
+      // Keep a small gallery: the oldest references beyond the limit are
+      // removed together with their files after the transaction commits.
+      const overflow = await client.query(
+        `SELECT id, object_key FROM biometric_references
+          WHERE student_id = $1 AND kind = 'face_image'
+          ORDER BY created_at DESC, id DESC
+          OFFSET $2`,
+        [studentId, MAX_REFERENCE_PHOTOS],
+      );
+      if (overflow.rows.length) {
+        await client.query(
+          `DELETE FROM biometric_references WHERE id = ANY($1::uuid[])`,
+          [overflow.rows.map((row) => row.id)],
+        );
+      }
+
+      return { record: inserted.rows[0], deleted: [...removed, ...overflow.rows] };
     });
 
-    for (const ref of oldRefs.rows) {
+    for (const ref of result.deleted) {
       await fs.promises
         .unlink(path.join(uploadsRoot, "students", ref.object_key))
         .catch(() => {});
     }
 
-    return result.rows[0];
+    return result.record;
   } catch (error) {
     await fs.promises.unlink(file.path).catch(() => {});
     throw error;
   }
+}
+
+// Shared by both upload routes. Returns null when enrollment metadata is
+// absent (legacy avatar upload) or an error object when it is unusable.
+function resolveEnrollment(body) {
+  const fields = readFaceEnrollmentFields(body);
+  if (fields.descriptor === undefined || fields.quality === undefined) {
+    return {
+      error: {
+        status: 422,
+        message:
+          "اطلاعات چهره در درخواست معتبر نیست. صفحه را تازه‌سازی کنید و دوباره تلاش کنید.",
+      },
+    };
+  }
+  if (fields.descriptor === null) {
+    return { fields, enrollment: null };
+  }
+  const enrollment = validateFaceEnrollment(fields);
+  if (!enrollment.ok) {
+    return {
+      fields,
+      error: { status: 422, message: enrollment.message, reason: enrollment.reason },
+    };
+  }
+  return { fields, enrollment };
 }
 
 app.post(
@@ -3366,10 +3476,23 @@ app.post(
         .json({ message: "این دانشجو در درس‌های شما ثبت نشده است." });
     }
 
-    const record = await replaceStudentFacePhoto(
+    const { fields, enrollment, error } = resolveEnrollment(req.body);
+    if (error) {
+      await fs.promises.unlink(req.file.path).catch(() => {});
+      return res
+        .status(error.status)
+        .json({ message: error.message, reason: error.reason });
+    }
+
+    const record = await addStudentFacePhoto(
       req.params.studentId,
       req.user.org,
       req.file,
+      {
+        descriptor: enrollment?.descriptor ?? null,
+        quality: enrollment?.quality ?? null,
+        mode: fields.mode,
+      },
     );
 
     if (!record) {
@@ -3406,10 +3529,26 @@ app.post(
       });
     }
 
-    const record = await replaceStudentFacePhoto(
+    // عکس پروفایل خود دانشجو؛ همین عکس مرجع تشخیص چهره هم هست.
+    // For the student's own avatar we replace the gallery so the avatar and the
+    // reference stay identical, matching the previous behaviour.
+    const { enrollment, error } = resolveEnrollment(req.body);
+    if (error) {
+      await fs.promises.unlink(req.file.path).catch(() => {});
+      return res
+        .status(error.status)
+        .json({ message: error.message, reason: error.reason });
+    }
+
+    const record = await addStudentFacePhoto(
       studentId,
       req.user.org,
       req.file,
+      {
+        descriptor: enrollment?.descriptor ?? null,
+        quality: enrollment?.quality ?? null,
+        mode: "replace",
+      },
     );
 
     if (!record) {
@@ -3836,7 +3975,56 @@ app.put(
   authorize("admin", "teacher"),
   validate(attendanceUpsertSchema),
   asyncRoute(async (req, res) => {
-    const { sessionId, studentId, status, method, reason } = req.body;
+    const { sessionId, studentId, status, method, reason, faceVerification } =
+      req.body;
+
+    // Face attendance is only accepted when the client supplies a plausible
+    // verification payload and the faculty has the feature enabled.
+    const faceDecision = evaluateFaceAttendance({
+      method,
+      verification: faceVerification,
+      settings: (
+        await pool.query(
+          `SELECT face_recognition_enabled AS "faceRecognitionEnabled"
+             FROM organization_settings WHERE organization_id=$1`,
+          [req.user.org],
+        )
+      ).rows[0],
+      maxDistance: DEFAULT_FACE_MAX_DISTANCE,
+      minMargin: DEFAULT_FACE_MIN_MARGIN,
+    });
+
+    if (!faceDecision.ok) {
+      await pool
+        .query(
+          `INSERT INTO face_recognition_events
+             (organization_id, session_id, student_id, actor_user_id, method,
+              decision, reason, distance, margin, threshold, liveness,
+              frame_count, device_id, reference_id, detail)
+           VALUES ($1,$2,$3,$4,$5,'rejected',$6,$7,$8,$9,$10,$11,$12,$13,$14)`,
+          [
+            req.user.org,
+            sessionId,
+            studentId,
+            req.user.sub,
+            method,
+            faceDecision.reason,
+            Number.isFinite(faceDecision.distance) ? faceDecision.distance : null,
+            Number.isFinite(faceDecision.margin) ? faceDecision.margin : null,
+            null,
+            faceDecision.liveness || null,
+            faceDecision.frameCount ?? null,
+            faceDecision.deviceId || null,
+            null,
+            JSON.stringify({ reason: faceDecision.reason }),
+          ],
+        )
+        .catch(() => {});
+      return res
+        .status(422)
+        .json({ message: faceDecision.message, reason: faceDecision.reason });
+    }
+
     const record = await withTransaction(async (client) => {
       const session = await client.query(
         isTeacher(req)
@@ -3919,6 +4107,41 @@ app.put(
         attendanceId,
         { status, method, sessionId, studentId },
       );
+
+      if (faceDecision.applicable) {
+        let referenceId = faceDecision.referenceId;
+        if (referenceId) {
+          const reference = await client.query(
+            `SELECT id FROM biometric_references
+              WHERE id=$1 AND student_id=$2 AND kind='face_image'`,
+            [referenceId, studentId],
+          );
+          if (!reference.rows[0]) referenceId = null;
+        }
+        await client.query(
+          `INSERT INTO face_recognition_events
+             (organization_id, session_id, student_id, actor_user_id, method,
+              decision, distance, margin, threshold, liveness, frame_count,
+              device_id, reference_id, detail)
+           VALUES ($1,$2,$3,$4,$5,'accepted',$6,$7,$8,$9,$10,$11,$12,$13)`,
+          [
+            req.user.org,
+            sessionId,
+            studentId,
+            req.user.sub,
+            method,
+            faceDecision.distance,
+            faceDecision.margin,
+            faceDecision.threshold,
+            faceDecision.liveness,
+            faceDecision.frameCount || null,
+            faceDecision.deviceId,
+            referenceId,
+            JSON.stringify({ status }),
+          ],
+        );
+      }
+
       const { rows } = await client.query(
         `SELECT id, session_id AS "sessionId", student_id AS "studentId",
                 status, method, checked_at AS "checkedAt", updated_at AS "updatedAt"
@@ -3928,6 +4151,59 @@ app.put(
       return rows[0];
     });
     res.json(record);
+  }),
+);
+
+// Read model for the face-recognition audit trail. Admins see the whole
+// faculty; teachers only see sessions they own.
+app.get(
+  "/api/face-recognition/events",
+  authorize("admin", "teacher"),
+  validate(
+    z.object({
+      sessionId: id.optional(),
+      studentId: id.optional(),
+      limit: z.coerce.number().int().min(1).max(200).default(50),
+    }),
+    "query",
+  ),
+  asyncRoute(async (req, res) => {
+    const params = [req.user.org];
+    const filters = [];
+    if (req.query.sessionId) {
+      params.push(req.query.sessionId);
+      filters.push(`e.session_id = $${params.length}`);
+    }
+    if (req.query.studentId) {
+      params.push(req.query.studentId);
+      filters.push(`e.student_id = $${params.length}`);
+    }
+    if (isTeacher(req)) {
+      params.push(req.user.sub);
+      filters.push(
+        `e.session_id IN (
+           SELECT s.id FROM class_sessions s
+             JOIN courses c ON c.id = s.course_id
+            WHERE c.organization_id = $1 AND c.teacher_user_id = $${params.length}
+         )`,
+      );
+    }
+    params.push(req.query.limit);
+    const { rows } = await pool.query(
+      `SELECT e.id, e.session_id AS "sessionId", e.student_id AS "studentId",
+              st.full_name AS "studentName", e.method, e.decision, e.reason,
+              e.distance, e.margin, e.threshold, e.liveness,
+              e.frame_count AS "frameCount", e.device_id AS "deviceId",
+              e.created_at AS "createdAt"
+         FROM face_recognition_events e
+         LEFT JOIN students st ON st.id = e.student_id
+        WHERE e.organization_id = $1
+          ${filters.length ? `AND ${filters.join(" AND ")}` : ""}
+        ORDER BY e.created_at DESC
+        LIMIT $${params.length}`,
+      params,
+    );
+    res.json({ events: rows });
   }),
 );
 

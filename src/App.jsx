@@ -78,6 +78,7 @@ import {
   startMyFingerprintRegistration as startMyFingerprintRegistrationApi,
   finishMyFingerprintRegistration as finishMyFingerprintRegistrationApi,
 } from "./api/client.js";
+import { buildFaceReference } from "./face/enroll.js";
 import {
   createTicket as createTicketApi,
   fetchTickets as fetchTicketsApi,
@@ -1192,6 +1193,7 @@ export default function App() {
     method,
     sessionKey = sessionId,
     reason = "",
+    verification = null,
   }) {
     const session = sessionHistory[sessionKey];
     const dbSessionId = session?.databaseId;
@@ -1206,6 +1208,7 @@ export default function App() {
       status: toEnStatus(status),
       method,
       reason,
+      ...(verification ? { faceVerification: verification } : {}),
     })
       .then(() => {
         // For face recognition, sync without full reload to avoid blocking the scan loop
@@ -1432,7 +1435,10 @@ export default function App() {
     }
   }
   async function saveMyPhoto(file) {
-    const result = await uploadMyPhoto(file);
+    // Descriptor is computed once here and stored on the server with the photo;
+    // the photo is rejected before upload when no usable single face is found.
+    const reference = await buildFaceReference(file);
+    const result = await uploadMyPhoto(file, reference);
     await loadFromServer({ silent: true });
     if (result?.url) setProfilePhoto(result.url);
     return result;
@@ -1912,26 +1918,40 @@ export default function App() {
     if (cameraState === "live") startCamera(deviceId);
   }
   async function saveStudentPhoto(studentId, files) {
-    const selectedFiles = Array.from(files || []);
+    const selectedFiles = Array.from(files || []).slice(0, 5);
     if (!selectedFiles.length) return;
-    const file = selectedFiles[0];
-    if (!file.type.startsWith("image/")) return notify("فایل تصویری معتبری انتخاب نشد.");
     const dbId = studentDatabaseId(studentId);
     if (!dbId) return notify("شناسهٔ دیتابیسی دانشجو پیدا نشد.");
+    let saved = 0;
     try {
-      await uploadStudentPhoto(dbId, file);
+      for (const file of selectedFiles) {
+        if (!file.type.startsWith("image/")) {
+          notify("فایل تصویری معتبری انتخاب نشد.");
+          continue;
+        }
+        // Only usable, single-face photos are uploaded; the descriptor is
+        // stored next to the photo so it never has to be recomputed.
+        const reference = await buildFaceReference(file);
+        await uploadStudentPhoto(dbId, file, reference, "append");
+        saved += 1;
+      }
       await loadFromServer({ silent: true });
-      notify(
-        "عکس پروفایل دانشجو ذخیره شد؛ همین عکس در تشخیص چهره و همهٔ بخش‌های پروژه استفاده می‌شود.",
-      );
+      if (saved) {
+        notify(
+          saved > 1
+            ? `${saved.toLocaleString("fa-IR")} عکس مرجع چهره ذخیره شد.`
+            : "عکس پروفایل دانشجو ذخیره شد؛ همین عکس مرجع تشخیص چهره هم هست.",
+        );
+      }
     } catch (error) {
+      if (saved) await refreshBootstrapSilently();
       notify(error.message || "ذخیره عکس انجام نشد. لطفاً تصاویر دیگری انتخاب کنید.");
     }
   }
   function markFaceAttendance(
     studentId,
     status,
-    { silent = false, method = "manual" } = {},
+    { silent = false, method = "manual", verification = null } = {},
   ) {
     const student = students.find(
       (item) => String(item.id) === String(studentId),
@@ -2063,6 +2083,7 @@ export default function App() {
       status: finalStatus,
       method,
       sessionKey: sessionId,
+      verification,
       reason:
         method === "voice"
           ? "ثبت با تشخیص صدا"

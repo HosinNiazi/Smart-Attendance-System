@@ -9,6 +9,8 @@ import { StudentExams } from "./StudentExams.jsx";
 import { HelpChat } from "../help/HelpChat.jsx";
 import {
   CLASSROOM_SCAN_INTERVAL_MS,
+  FACE_MATCH_DISTANCE,
+  FACE_MATCH_MARGIN,
   FACE_SCAN_INTERVAL_MS,
   averageEyeRatio,
   createLivenessState,
@@ -1436,10 +1438,15 @@ export function FaceAttendance({
     };
   }, []);
 
-  // فقط وقتی عکس پروفایل‌ها واقعاً عوض شود بازسازی می‌شود؛ بارگذاری مجدد
-  // دیتابیس پس از هر ثبت حضور، دیسکریپتورها را دوباره نمی‌سازد (صرفه‌جویی در منابع).
+  // فقط وقتی گالری عکس‌ها واقعاً عوض شود بازسازی می‌شود؛ بارگذاری مجدد
+  // دیتابیس پس از هر ثبت حضور، دسکریپتورها را دوباره نمی‌سازد (صرفه‌جویی در منابع).
   const photoKey = students
-    .map((student) => `${student.id}:${student.faceImage || ""}`)
+    .map(
+      (student) =>
+        `${student.id}:${(student.faceReferences || [])
+          .map((reference) => `${reference.id}:${reference.url}`)
+          .join(",")}`,
+    )
     .join("|");
 
   useEffect(() => {
@@ -1454,11 +1461,29 @@ export function FaceAttendance({
       const registered = [];
       let invalid = 0;
       for (const student of studentsRef.current) {
-        // فقط یک عکس پروفایلی برای هر دانشجو مبناست (همان عکسی که در کل پروژه دیده می‌شود).
-        const photos = student.faceImage ? [student.faceImage] : [];
-        for (const photo of photos) {
+        // چند عکس مرجع برای هر دانشجو پشتیبانی می‌شود. اگر سرور دسکریپتور را
+        // هنگام ثبت‌نام ذخیره کرده باشد، اصلاً عکس دانلود و پردازش نمی‌شود.
+        const references = student.faceReferences?.length
+          ? student.faceReferences
+          : (student.faceImages || []).map((url) => ({
+              id: "",
+              url,
+              descriptor: null,
+            }));
+        for (const reference of references) {
+          if (
+            Array.isArray(reference.descriptor) &&
+            reference.descriptor.length === 128
+          ) {
+            registered.push({
+              studentId: student.id,
+              referenceId: reference.id || null,
+              descriptor: new Float32Array(reference.descriptor),
+            });
+            continue;
+          }
           try {
-            const image = await faceapi.fetchImage(photo);
+            const image = await faceapi.fetchImage(reference.url);
             const result = await faceapi
               .detectSingleFace(
                 image,
@@ -1472,6 +1497,7 @@ export function FaceAttendance({
             if (result)
               registered.push({
                 studentId: student.id,
+                referenceId: reference.id || null,
                 descriptor: result.descriptor,
               });
             else invalid += 1;
@@ -1561,24 +1587,34 @@ export function FaceAttendance({
         const claimed = new Set();
         let livenessHint = null;
         const nextBoxes = results.map((result, faceIndex) => {
-          const studentDistances = new Map();
+          const studentMatches = new Map();
           for (const reference of faceDescriptors) {
             const distance = faceapi.euclideanDistance(
               result.descriptor,
               reference.descriptor,
             );
-            const previous = studentDistances.get(reference.studentId);
-            if (previous == null || distance < previous)
-              studentDistances.set(reference.studentId, distance);
+            const previous = studentMatches.get(reference.studentId);
+            if (!previous || distance < previous.distance)
+              studentMatches.set(reference.studentId, {
+                distance,
+                referenceId: reference.referenceId,
+              });
           }
-          const ranked = [...studentDistances].sort((a, b) => a[1] - b[1]);
-          const best = ranked.length ? { studentId: ranked[0][0] } : null;
-          const nearest = ranked[0]?.[1] ?? Infinity;
-          const second = ranked[1]?.[1] ?? Infinity;
+          const ranked = [...studentMatches].sort(
+            (a, b) => a[1].distance - b[1].distance,
+          );
+          const best = ranked.length
+            ? {
+                studentId: ranked[0][0],
+                referenceId: ranked[0][1].referenceId,
+              }
+            : null;
+          const nearest = ranked[0]?.[1].distance ?? Infinity;
+          const second = ranked[1]?.[1].distance ?? Infinity;
           const reliable =
             best &&
-            nearest < 0.54 &&
-            (second === Infinity || second - nearest > 0.035) &&
+            nearest < FACE_MATCH_DISTANCE &&
+            (second === Infinity || second - nearest > FACE_MATCH_MARGIN) &&
             !claimed.has(best.studentId);
           const student = reliable
             ? studentsRef.current.find((item) => item.id === best.studentId)
@@ -1636,14 +1672,30 @@ export function FaceAttendance({
                   `${student.name} شناسایی شد؛ برای ثبت حضور یک‌بار پلک بزنید.`,
                 );
               }
-            } else if (streak >= (classroomMode ? 1 : 2) || liveness.verified) {
+            } else if (
+              streak >= (classroomMode ? 3 : 2) ||
+              liveness.verified
+            ) {
               const noticeKey = `${sessionId}:${student.id}`;
               if (!notifiedSessionRef.current.has(noticeKey)) {
                 notifiedSessionRef.current.add(noticeKey);
                 const saved = markAttendanceRef.current(
                   student.id,
                   PRESENT_STATUS,
-                  { silent: !classroomMode, method: "face" },
+                  {
+                    silent: !classroomMode,
+                    method: "face",
+                    verification: {
+                      distance: Number(nearest.toFixed(4)),
+                      margin: Number.isFinite(second)
+                        ? Number((second - nearest).toFixed(4))
+                        : undefined,
+                      threshold: FACE_MATCH_DISTANCE,
+                      liveness: classroomMode ? "none_provided" : "blink",
+                      frameCount: streak,
+                      referenceId: best.referenceId || undefined,
+                    },
+                  },
                 );
                 if (saved) {
                   tone = "recognized";
