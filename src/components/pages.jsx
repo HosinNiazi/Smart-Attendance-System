@@ -1648,8 +1648,6 @@ export function FaceAttendance({
   useEffect(() => {
     if (cameraState !== "live" || modelStatus !== "ready") return;
     let cancelled = false;
-    const faceapi = faceApiRef.current;
-    if (!faceapi) return;
 
     // Batched telemetry keeps the admin dashboard current without a request per
     // frame. Counts are reset after each successful (or attempted) flush.
