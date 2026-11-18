@@ -43,6 +43,27 @@ const ATTEMPT_STATUS_LABELS = {
 // for teacher review. Not an automatic penalty — just a signal.
 const SUSPECT_TAB_SWITCHES = 3;
 
+// Integrity counters travel with the attempt; older rows only have tab switches.
+function integrityOf(attempt) {
+  const flags = attempt?.integrityFlags || {};
+  const tabSwitches = Number(attempt?.tabSwitchCount ?? flags.tabSwitches ?? 0);
+  const fullscreenExits = Number(flags.fullscreenExits ?? 0);
+  const copyAttempts = Number(flags.copyAttempts ?? 0);
+  const printAttempts = Number(flags.printAttempts ?? 0);
+  const focusLosses = Number(flags.focusLosses ?? 0);
+  return {
+    tabSwitches,
+    fullscreenExits,
+    copyAttempts,
+    printAttempts,
+    focusLosses,
+    suspicious:
+      tabSwitches >= SUSPECT_TAB_SWITCHES ||
+      copyAttempts > 0 ||
+      printAttempts > 0,
+  };
+}
+
 const faNumber = (value) =>
   Number(value || 0).toLocaleString("fa-IR", { maximumFractionDigits: 2 });
 
@@ -202,6 +223,9 @@ async function exportResultsExcel(exam, results, summary) {
     "تعداد صحیح",
     "مجموع بارم",
     "تغییر تب",
+    "تلاش کپی",
+    "تلاش پرینت",
+    "از دست دادن فوکوس",
   ];
   const rows = [
     [`نتایج آزمون: ${exam?.title || ""}`],
@@ -226,13 +250,16 @@ async function exportResultsExcel(exam, results, summary) {
       row.correctCount == null ? "—" : Number(row.correctCount),
       row.totalPoints == null ? "—" : Number(row.totalPoints),
       Number(row.tabSwitchCount || 0),
+      Number(row.integrityFlags?.copyAttempts || 0),
+      Number(row.integrityFlags?.printAttempts || 0),
+      Number(row.integrityFlags?.focusLosses || 0),
     ]);
   });
   const sheet = XLSX.utils.aoa_to_sheet(rows);
   sheet["!cols"] = [
     { wch: 6 }, { wch: 16 }, { wch: 28 }, { wch: 14 }, { wch: 20 },
     { wch: 20 }, { wch: 10 }, { wch: 12 }, { wch: 10 }, { wch: 12 },
-    { wch: 12 }, { wch: 10 },
+    { wch: 12 }, { wch: 10 }, { wch: 12 }, { wch: 12 }, { wch: 16 },
   ];
   sheet["!merges"] = [
     { s: { r: 0, c: 0 }, e: { r: 0, c: header.length - 1 } },
@@ -864,12 +891,14 @@ function ResultsModal({ exam, onClose, notify }) {
                     <th>نمره</th>
                     <th>نتیجه</th>
                     <th>تغییر تب</th>
+                    <th>کپی / پرینت</th>
                     <th>عملیات</th>
                   </tr>
                 </thead>
                 <tbody>
                   {(data.results || []).map((row) => {
-                    const suspicious = Number(row.tabSwitchCount || 0) >= SUSPECT_TAB_SWITCHES;
+                    const integrity = integrityOf(row);
+                    const suspicious = integrity.suspicious;
                     return (
                     <tr key={row.studentId} className={suspicious ? "is-suspicious" : ""}>
                       <td>
@@ -897,7 +926,10 @@ function ResultsModal({ exam, onClose, notify }) {
                           ? <Badge tone="success">قبول</Badge>
                           : <Badge tone="danger">مردود</Badge>}
                       </td>
-                      <td className={`exam-tab-count${suspicious ? " is-high" : ""}`}>{faNumber(row.tabSwitchCount)}</td>
+                      <td className={`exam-tab-count${suspicious ? " is-high" : ""}`}>{faNumber(integrity.tabSwitches)}</td>
+                      <td className={`exam-tab-count${integrity.copyAttempts || integrity.printAttempts ? " is-high" : ""}`}>
+                        {faNumber(integrity.copyAttempts)} / {faNumber(integrity.printAttempts)}
+                      </td>
                       <td>
                         <div className="exam-row-actions">
                           <button type="button" className="row-action" title="مهلت یا فرصت اضافه" onClick={() => openAccommodation(row)}>
@@ -919,7 +951,7 @@ function ResultsModal({ exam, onClose, notify }) {
                     );
                   })}
                   {!(data.results || []).length && (
-                    <tr><td colSpan={7}><EmptyState icon="bi-inbox" title="نتیجه‌ای ثبت نشده" description="هنوز دانشجویی در این آزمون شرکت نکرده است." /></td></tr>
+                    <tr><td colSpan={8}><EmptyState icon="bi-inbox" title="نتیجه‌ای ثبت نشده" description="هنوز دانشجویی در این آزمون شرکت نکرده است." /></td></tr>
                   )}
                 </tbody>
               </table>
@@ -1013,10 +1045,15 @@ function ResultsModal({ exam, onClose, notify }) {
             <p className="exam-detail-meta">
               وضعیت: {ATTEMPT_STATUS_LABELS[detail.attempt?.status] || "—"} • درصد: {detail.attempt?.percent == null ? "—" : `${faNumber(detail.attempt.percent)}٪`} • نمره: {detail.attempt?.scoreOutOf20 == null ? "—" : faNumber(detail.attempt.scoreOutOf20)}
             </p>
-            <p className="exam-detail-meta exam-detail-integrity">
-              تغییر تب: <strong>{faNumber(detail.attempt?.tabSwitchCount)}</strong> • خروج از تمام‌صفحه: <strong>{faNumber(detail.attempt?.integrityFlags?.fullscreenExits ?? 0)}</strong>
-              {Number(detail.attempt?.tabSwitchCount || 0) >= SUSPECT_TAB_SWITCHES && <> • <Badge tone="warning">مشکوک</Badge></>}
-            </p>
+            {(() => {
+              const integrity = integrityOf(detail.attempt);
+              return (
+                <p className="exam-detail-meta exam-detail-integrity">
+                  تغییر تب: <strong>{faNumber(integrity.tabSwitches)}</strong> • خروج از تمام‌صفحه: <strong>{faNumber(integrity.fullscreenExits)}</strong> • تلاش کپی: <strong>{faNumber(integrity.copyAttempts)}</strong> • تلاش پرینت: <strong>{faNumber(integrity.printAttempts)}</strong> • از دست دادن فوکوس: <strong>{faNumber(integrity.focusLosses)}</strong>
+                  {integrity.suspicious && <> • <Badge tone="warning">مشکوک</Badge></>}
+                </p>
+              );
+            })()}
             <ol className="exam-detail-questions">
               {(detail.questions || []).map((question) => {
                 const selected = question.answer?.selectedOptionId;

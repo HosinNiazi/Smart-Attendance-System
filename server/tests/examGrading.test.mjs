@@ -290,6 +290,30 @@ describe("examAnswersSchema", () => {
     assert.equal(parsed.answers[0].questionId, UUID_A);
   });
 
+  it("accepts copy, print and focus-loss counters", () => {
+    const parsed = examAnswersSchema.parse({
+      integrity: {
+        tabSwitches: 2,
+        fullscreenExits: 1,
+        copyAttempts: 4,
+        printAttempts: 1,
+        focusLosses: 3,
+      },
+    });
+    assert.equal(parsed.integrity.copyAttempts, 4);
+    assert.equal(parsed.integrity.printAttempts, 1);
+    assert.equal(parsed.integrity.focusLosses, 3);
+  });
+
+  it("rejects negative or oversized anti-cheat counters", () => {
+    assert.throws(() =>
+      examAnswersSchema.parse({ integrity: { copyAttempts: -1 } }),
+    );
+    assert.throws(() =>
+      examAnswersSchema.parse({ integrity: { printAttempts: 10_001 } }),
+    );
+  });
+
   it("rejects more than twenty answers", () => {
     const answers = Array.from({ length: 21 }, () => ({
       questionId: UUID_A,

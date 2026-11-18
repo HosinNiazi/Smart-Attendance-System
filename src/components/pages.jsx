@@ -5243,7 +5243,7 @@ export function StudentPortal({
           />
         )}
         {tab === "exams" && (
-          <StudentExams notify={setPortalToast} />
+          <StudentExams notify={setPortalToast} student={student} />
         )}
         {tab === "leave" && (
           <section className="student-help-section">

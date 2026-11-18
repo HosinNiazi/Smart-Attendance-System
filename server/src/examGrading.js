@@ -84,6 +84,9 @@ export const examAnswersSchema = z.object({
     .object({
       tabSwitches: z.number().int().min(0).max(10_000).optional(),
       fullscreenExits: z.number().int().min(0).max(10_000).optional(),
+      copyAttempts: z.number().int().min(0).max(10_000).optional(),
+      printAttempts: z.number().int().min(0).max(10_000).optional(),
+      focusLosses: z.number().int().min(0).max(10_000).optional(),
     })
     .optional()
     .default({}),

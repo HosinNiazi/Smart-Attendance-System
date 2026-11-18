@@ -105,7 +105,7 @@ function StudentResultView({ result, exam, title, onExit }) {
   );
 }
 
-function StudentRunner({ initial, onExit, notify }) {
+function StudentRunner({ initial, onExit, notify, student }) {
   const [data, setData] = useState(initial);
   const [answers, setAnswers] = useState(() => {
     const map = {};
@@ -127,11 +127,23 @@ function StudentRunner({ initial, onExit, notify }) {
   const [reportOpenId, setReportOpenId] = useState(null);
   const [reportNote, setReportNote] = useState("");
   const [reportBusy, setReportBusy] = useState(false);
+  // Anti-cheat: the paper is covered whenever the student leaves the exam
+  // context (blur, hidden tab, fullscreen exit) so screen shares and helper
+  // apps do not see the questions.
+  const [covered, setCovered] = useState(false);
+  const [watermarkAt, setWatermarkAt] = useState(() => new Date());
   const tabSwitchesRef = useRef(0);
   const fullscreenExitsRef = useRef(0);
+  const copyAttemptsRef = useRef(0);
+  const printAttemptsRef = useRef(0);
+  const focusLossesRef = useRef(0);
   const answersRef = useRef(answers);
   const submittedRef = useRef(false);
   const dirtyRef = useRef(false);
+  // A native confirm() temporarily blurs the window; it must not count as a
+  // focus loss or cover the paper.
+  const dialogRef = useRef(false);
+  const noticeAtRef = useRef(0);
 
   answersRef.current = answers;
   const questions = data.questions || [];
@@ -145,14 +157,20 @@ function StudentRunner({ initial, onExit, notify }) {
       selectedOptionId: answersRef.current[question.id] || null,
     }));
 
+  // Same shape for autosave and final submit; the server keeps the maximum.
+  const integrityPayload = () => ({
+    tabSwitches: tabSwitchesRef.current,
+    fullscreenExits: fullscreenExitsRef.current,
+    copyAttempts: copyAttemptsRef.current,
+    printAttempts: printAttemptsRef.current,
+    focusLosses: focusLossesRef.current,
+  });
+
   async function autoSave() {
     if (submittedRef.current) return;
     setSaving(true);
     try {
-      await saveExamAnswers(attempt.id, answerPayload(), {
-        tabSwitches: tabSwitchesRef.current,
-        fullscreenExits: fullscreenExitsRef.current,
-      });
+      await saveExamAnswers(attempt.id, answerPayload(), integrityPayload());
       setSavedAt(new Date().toISOString());
     } catch (saveError) {
       setError(saveError.message || "ذخیرهٔ خودکار پاسخ‌ها انجام نشد.");
@@ -188,15 +206,97 @@ function StudentRunner({ initial, onExit, notify }) {
   }, [attempt.expiresAt]);
 
   useEffect(() => {
+    function hidePaper() {
+      if (submittedRef.current || dialogRef.current) return;
+      setCovered(true);
+    }
+    function warnCopy() {
+      const now = Date.now();
+      if (now - noticeAtRef.current < 5000) return;
+      noticeAtRef.current = now;
+      notify("کپی و برداشتن متن سؤال در این آزمون غیرفعال است. این تلاش ثبت شد.");
+    }
+    function warnPrint() {
+      const now = Date.now();
+      if (now - noticeAtRef.current < 5000) return;
+      noticeAtRef.current = now;
+      notify("پرینت و ذخیرهٔ PDF برگهٔ آزمون غیرفعال است. این تلاش ثبت شد.");
+    }
+    function countCopy() {
+      if (submittedRef.current) return;
+      copyAttemptsRef.current += 1;
+      warnCopy();
+    }
+    function countPrint() {
+      if (submittedRef.current) return;
+      printAttemptsRef.current += 1;
+      warnPrint();
+    }
     function onVisibility() {
-      if (document.visibilityState === "hidden" && !submittedRef.current) {
-        tabSwitchesRef.current += 1;
-      }
+      if (submittedRef.current) return;
+      if (document.visibilityState === "hidden") tabSwitchesRef.current += 1;
+      // Returning to a tab still needs an explicit resume click, so a glance at
+      // another window never leaves the paper exposed.
+      hidePaper();
     }
     function onFullscreenChange() {
-      if (!document.fullscreenElement && !submittedRef.current) {
-        fullscreenExitsRef.current += 1;
+      if (submittedRef.current) return;
+      if (!document.fullscreenElement) fullscreenExitsRef.current += 1;
+      hidePaper();
+    }
+    function onBlur() {
+      if (submittedRef.current || dialogRef.current) return;
+      // A hidden tab also fires blur; count it once as a tab switch only.
+      if (document.visibilityState === "visible") focusLossesRef.current += 1;
+      hidePaper();
+    }
+    function onKeyDown(event) {
+      if (submittedRef.current) return;
+      const key = String(event.key || "").toLowerCase();
+      const mod = event.ctrlKey || event.metaKey;
+      if (key === "f12" || key === "printscreen") {
+        event.preventDefault();
+        countCopy();
+        return;
       }
+      if (mod && event.shiftKey && ["i", "j", "c"].includes(key)) {
+        event.preventDefault();
+        event.stopPropagation();
+        countCopy();
+        return;
+      }
+      if (!mod) return;
+      if (["c", "x", "a"].includes(key)) {
+        event.preventDefault();
+        countCopy();
+      } else if (key === "p") {
+        event.preventDefault();
+        countPrint();
+      } else if (["s", "u"].includes(key)) {
+        event.preventDefault();
+        countCopy();
+      }
+    }
+    function onCopy(event) {
+      if (submittedRef.current) return;
+      event.preventDefault();
+      try {
+        event.clipboardData?.setData(
+          "text/plain",
+          "برداشتن متن سؤال در این آزمون مجاز نیست.",
+        );
+      } catch {
+        // Some browsers keep clipboardData null; the selection is still blocked.
+      }
+      countCopy();
+    }
+    function onBlockedInteraction(event) {
+      if (submittedRef.current) return;
+      event.preventDefault();
+      countCopy();
+    }
+    function onBeforePrint() {
+      if (!submittedRef.current) printAttemptsRef.current += 1;
     }
     function onBeforeUnload(event) {
       if (submittedRef.current) return undefined;
@@ -206,12 +306,35 @@ function StudentRunner({ initial, onExit, notify }) {
     }
     document.addEventListener("visibilitychange", onVisibility);
     document.addEventListener("fullscreenchange", onFullscreenChange);
+    document.addEventListener("keydown", onKeyDown, true);
+    document.addEventListener("copy", onCopy);
+    document.addEventListener("cut", onCopy);
+    document.addEventListener("dragstart", onBlockedInteraction);
+    document.addEventListener("contextmenu", onBlockedInteraction);
+    window.addEventListener("blur", onBlur);
+    window.addEventListener("beforeprint", onBeforePrint);
     window.addEventListener("beforeunload", onBeforeUnload);
     return () => {
       document.removeEventListener("visibilitychange", onVisibility);
       document.removeEventListener("fullscreenchange", onFullscreenChange);
+      document.removeEventListener("keydown", onKeyDown, true);
+      document.removeEventListener("copy", onCopy);
+      document.removeEventListener("cut", onCopy);
+      document.removeEventListener("dragstart", onBlockedInteraction);
+      document.removeEventListener("contextmenu", onBlockedInteraction);
+      window.removeEventListener("blur", onBlur);
+      window.removeEventListener("beforeprint", onBeforePrint);
       window.removeEventListener("beforeunload", onBeforeUnload);
     };
+    // notify comes from a stable setState wrapper in the portal shell.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  // The watermark clock keeps the on-screen copy stamped with a fresh time so a
+  // leaked screenshot always carries the student identity and capture minute.
+  useEffect(() => {
+    const timer = setInterval(() => setWatermarkAt(new Date()), 30_000);
+    return () => clearInterval(timer);
   }, []);
 
   async function finish(auto = false) {
@@ -220,10 +343,7 @@ function StudentRunner({ initial, onExit, notify }) {
     setSubmitting(true);
     setError("");
     try {
-      const payload = await submitExam(attempt.id, answerPayload(), {
-        tabSwitches: tabSwitchesRef.current,
-        fullscreenExits: fullscreenExitsRef.current,
-      });
+      const payload = await submitExam(attempt.id, answerPayload(), integrityPayload());
       setResult(payload);
     } catch (submitError) {
       submittedRef.current = false;
@@ -239,7 +359,18 @@ function StudentRunner({ initial, onExit, notify }) {
     const message = unanswered
       ? `${faNumber(unanswered)} سوال بدون پاسخ است. با این حال آزمون ثبت شود؟`
       : "پاسخ‌های خود را نهایی می‌کنید؟ پس از ثبت امکان تغییر نیست.";
-    if (!window.confirm(message)) return;
+    // A native confirm() blurs the window; flag it so the anti-cheat cover and
+    // focus-loss counter ignore that temporary blur.
+    dialogRef.current = true;
+    let confirmed = false;
+    try {
+      confirmed = window.confirm(message);
+    } finally {
+      window.setTimeout(() => {
+        dialogRef.current = false;
+      }, 300);
+    }
+    if (!confirmed) return;
     finish(false);
   }
 
@@ -273,9 +404,25 @@ function StudentRunner({ initial, onExit, notify }) {
   }
 
   const danger = remaining <= 120;
+  const watermarkTime = new Intl.DateTimeFormat("fa-IR", {
+    hour: "2-digit",
+    minute: "2-digit",
+  }).format(watermarkAt);
+  const watermarkName = String(
+    student?.name || student?.fullName || "دانشجو",
+  ).trim();
+  const watermarkId = String(student?.id || student?.studentNumber || "").trim();
+  const watermarkLabel = [watermarkName, watermarkId, watermarkTime]
+    .filter(Boolean)
+    .join(" • ");
 
   return (
-    <div className="student-exam-runner">
+    <div className="student-exam-runner exam-protected">
+      <div className="exam-watermark" aria-hidden="true">
+        {Array.from({ length: 24 }).map((_, index) => (
+          <span key={index}>{watermarkLabel}</span>
+        ))}
+      </div>
       <header className="student-exam-runner-head">
         <div>
           <div className="eyebrow">در حال پاسخ‌دهی</div>
@@ -445,11 +592,31 @@ function StudentRunner({ initial, onExit, notify }) {
           </p>
         </aside>
       </div>
+
+      {covered && (
+        <div className="exam-cover" role="dialog" aria-modal="true" aria-label="ادامهٔ آزمون">
+          <div className="exam-cover-card">
+            <Icon name="bi-shield-lock" />
+            <strong>محتوا برای حفظ امنیت آزمون پنهان شد</strong>
+            <p>
+              خروج از پنجره، تغییر تب یا خروج از تمام‌صفحه ثبت شد. برای دیدن
+              دوبارهٔ سؤال‌ها دکمهٔ زیر را بزنید.
+            </p>
+            <button
+              type="button"
+              className="btn btn-primary"
+              onClick={() => setCovered(false)}
+            >
+              <Icon name="bi-eye" /> ادامهٔ آزمون
+            </button>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
 
-export function StudentExams({ notify }) {
+export function StudentExams({ notify, student }) {
   const [exams, setExams] = useState([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
@@ -552,6 +719,7 @@ export function StudentExams({ notify }) {
         <StudentRunner
           initial={runner}
           notify={notify}
+          student={student}
           onExit={() => {
             setRunner(null);
             load();

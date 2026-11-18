@@ -6465,6 +6465,18 @@ async function finalizeExamAttempt({
       0,
       Math.min(10_000, Number(integrity.fullscreenExits) || 0),
     );
+    const copyAttempts = Math.max(
+      0,
+      Math.min(10_000, Number(integrity.copyAttempts) || 0),
+    );
+    const printAttempts = Math.max(
+      0,
+      Math.min(10_000, Number(integrity.printAttempts) || 0),
+    );
+    const focusLosses = Math.max(
+      0,
+      Math.min(10_000, Number(integrity.focusLosses) || 0),
+    );
 
     const { rows: updated } = await client.query(
       `UPDATE exam_attempts
@@ -6493,7 +6505,13 @@ async function finalizeExamAttempt({
         graded.scoreOutOf20,
         graded.percent >= Number(attempt.pass_percent),
         tabSwitches,
-        JSON.stringify({ tabSwitches, fullscreenExits }),
+        JSON.stringify({
+          tabSwitches,
+          fullscreenExits,
+          copyAttempts,
+          printAttempts,
+          focusLosses,
+        }),
       ],
     );
 
