@@ -28,7 +28,6 @@ import {
   getCachedDescriptor,
   setCachedDescriptor,
 } from "../face/descriptorCache.js";
-import { sendCameraTelemetry } from "../api/client.js";
 import { buildMatcherData, euclideanDistance, matchDescriptor } from "../face/matching.js";
 import {
   detectFacesInWorker,
@@ -1435,15 +1434,6 @@ export function FaceAttendance({
   const faceApiRef = React.useRef(null);
   const scanBusyRef = React.useRef(false);
   const trackingRef = React.useRef(createTrackingState());
-  const telemetryRef = React.useRef({
-    startedAt: 0,
-    frames: 0,
-    faces: 0,
-    unknown: 0,
-    recognized: 0,
-    latencyTotal: 0,
-    lastSentAt: 0,
-  });
   const notifiedSessionRef = React.useRef(new Set());
   const notifiedLivenessRef = React.useRef(new Set());
   const attendanceRef = React.useRef(attendance);
@@ -1463,8 +1453,6 @@ export function FaceAttendance({
   studentsRef.current = students;
   markAttendanceRef.current = onMarkAttendance;
   recognitionNoticeRef.current = onRecognitionNotice;
-  const deviceIdRef = React.useRef(selectedCameraId || "camera");
-  deviceIdRef.current = selectedCameraId || "camera";
 
   // Option B: the worker owns the models and inference. The main thread loads
   // face-api lazily only as a fallback (worker crash or unsupported browser).
@@ -1610,15 +1598,6 @@ export function FaceAttendance({
     notifiedSessionRef.current.clear();
     notifiedLivenessRef.current.clear();
     trackingRef.current = createTrackingState();
-    telemetryRef.current = {
-      startedAt: Date.now(),
-      frames: 0,
-      faces: 0,
-      unknown: 0,
-      recognized: 0,
-      latencyTotal: 0,
-      lastSentAt: Date.now(),
-    };
   }, [sessionId]);
 
   useEffect(() => {
@@ -1626,16 +1605,6 @@ export function FaceAttendance({
       recognitionStreakRef.current.clear();
       livenessRef.current.clear();
       trackingRef.current = createTrackingState();
-    } else {
-      telemetryRef.current = {
-        startedAt: Date.now(),
-        frames: 0,
-        faces: 0,
-        unknown: 0,
-        recognized: 0,
-        latencyTotal: 0,
-        lastSentAt: Date.now(),
-      };
     }
   }, [cameraState]);
 
@@ -1649,56 +1618,14 @@ export function FaceAttendance({
     if (cameraState !== "live" || modelStatus !== "ready") return;
     let cancelled = false;
 
-    // Batched telemetry keeps the admin dashboard current without a request per
-    // frame. Counts are reset after each successful (or attempted) flush.
-    function flushTelemetry(force = false) {
-      const t = telemetryRef.current;
-      const now = Date.now();
-      if (!t.startedAt) {
-        t.startedAt = now;
-        t.lastSentAt = now;
-        return;
-      }
-      if (!force && now - t.lastSentAt < 15000) return;
-      if (!t.frames) {
-        t.lastSentAt = now;
-        return;
-      }
-      const elapsedSec = Math.max(0.001, (now - t.startedAt) / 1000);
-      const payload = {
-        deviceId: deviceIdRef.current,
-        sessionId: sessionId || undefined,
-        cameraState,
-        modelStatus,
-        framesScanned: t.frames,
-        facesDetected: t.faces,
-        unknownFaces: t.unknown,
-        recognizedFaces: t.recognized,
-        detectionRate: Math.min(1, t.faces / Math.max(1, t.frames)),
-        fps: Number((t.frames / elapsedSec).toFixed(2)),
-        latencyMs: Math.round(t.latencyTotal / Math.max(1, t.frames)),
-      };
-      t.startedAt = now;
-      t.lastSentAt = now;
-      t.frames = 0;
-      t.faces = 0;
-      t.unknown = 0;
-      t.recognized = 0;
-      t.latencyTotal = 0;
-      sendCameraTelemetry(payload).catch(() => {
-        // Telemetry is best-effort; losing a sample must not disturb scanning.
-      });
-    }
-
     async function scanFrame() {
       if (cancelled || scanBusyRef.current) return;
       // Phase 3: a hidden tab cannot show anything useful and the CPU budget
-      // belongs to the visible page; telemetry gaps mark the device offline.
+      // belongs to the visible page.
       if (document.hidden) return;
       const video = videoRef.current;
       if (!video || video.readyState < 2) return;
       scanBusyRef.current = true;
-      const frameStartedAt = Date.now();
       try {
         // گزینهٔ B: استنتاج سنگین در Web Worker انجام می‌شود؛ نخ اصلی فقط در
         // صورت ازکارافتادن Worker به تشخیص درجای خودش برمی‌گردد.
@@ -1728,9 +1655,6 @@ export function FaceAttendance({
             eyeRatio: averageEyeRatio(result.landmarks),
           }));
         }
-        telemetryRef.current.frames += 1;
-        telemetryRef.current.latencyTotal += Date.now() - frameStartedAt;
-        telemetryRef.current.faces += detected.length;
         const tracked = advanceTracking(
           trackingRef.current,
           detected.map((result) => result.box),
@@ -1951,12 +1875,6 @@ export function FaceAttendance({
             at: Date.now(),
           };
         }
-        telemetryRef.current.unknown += nextBoxes.filter(
-          (item) => item.tone === "unknown",
-        ).length;
-        telemetryRef.current.recognized += nextBoxes.filter(
-          (item) => item.tone === "recognized",
-        ).length;
         for (const key of recognitionStreakRef.current.keys())
           if (!currentIds.has(key)) recognitionStreakRef.current.delete(key);
         for (const [key, liveness] of livenessRef.current.entries()) {
@@ -2005,7 +1923,6 @@ export function FaceAttendance({
         }
       } finally {
         scanBusyRef.current = false;
-        flushTelemetry();
       }
     }
     // فاصلهٔ کوتاه لازم است تا پلک ۱۰۰–۴۰۰ میلی‌ثانیه‌ای بین فریم‌ها از دست نرود.

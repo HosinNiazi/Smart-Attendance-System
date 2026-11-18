@@ -184,15 +184,6 @@ export function upsertAttendance(payload) {
 export function saveSettingsPayload(payload) {
   return api('/settings', { method: 'PUT', body: JSON.stringify(payload) });
 }
-export function sendCameraTelemetry(payload) {
-  return api('/face-recognition/telemetry', {
-    method: 'POST',
-    body: JSON.stringify(payload),
-  });
-}
-export function fetchCameraHealth() {
-  return api('/face-recognition/health');
-}
 export function fetchFaceEvents(params = {}) {
   const qs = new URLSearchParams();
   if (params.sessionId) qs.set('sessionId', params.sessionId);
