@@ -207,6 +207,50 @@ test("single-candidate matches may omit margin and threshold", () => {
   assert.equal(result.threshold, 0.54);
 });
 
+test("teacher-confirmed face attendance is accepted with a single frame", () => {
+  const result = evaluateFaceAttendance({
+    method: "face",
+    verification: {
+      distance: 0.33,
+      margin: null,
+      threshold: 0.54,
+      liveness: "teacher_confirm",
+      frameCount: 1,
+    },
+  });
+  assert.equal(result.ok, true);
+  assert.equal(result.decision, "accepted");
+  assert.equal(result.liveness, "teacher_confirm");
+  assert.equal(result.frameCount, 1);
+});
+
+test("teacher confirmation still respects the distance policy", () => {
+  const result = evaluateFaceAttendance({
+    method: "face",
+    verification: {
+      distance: 0.72,
+      margin: null,
+      liveness: "teacher_confirm",
+      frameCount: 1,
+    },
+  });
+  assert.equal(result.ok, false);
+  assert.equal(result.reason, "distance_too_far");
+});
+
+test("teacher confirmation cannot bypass distance re-verification", () => {
+  // The teacher picked the wrong student: the live face is far from that
+  // student's stored gallery even though the policy distance looks fine.
+  const claim = verifyDescriptorClaim({
+    liveDescriptor: realisticDescriptor(),
+    storedDescriptors: [negatedDescriptor()],
+    claimedDistance: 0.2,
+    maxDistance: 0.54,
+  });
+  assert.equal(claim.ok, false);
+  assert.equal(claim.reason, "distance_mismatch");
+});
+
 test("classroom mode needs several consecutive frames when liveness is absent", () => {
   const oneFrame = evaluateFaceAttendance({
     method: "face",

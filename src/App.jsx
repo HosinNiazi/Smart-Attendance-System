@@ -1232,6 +1232,31 @@ export default function App() {
       })
       .catch((error) => {
         notify(error.message || "ذخیرهٔ حضور در دیتابیس انجام نشد.");
+        // Option C: a teacher-confirmed mark that the server rejected (the
+        // live descriptor did not match the chosen student's gallery) must not
+        // stay "حاضر" locally — revert to the status before the mark.
+        if (verification?.liveness === "teacher_confirm") {
+          const record = attendanceRef.current.find(
+            (item) =>
+              item.sessionId === sessionKey &&
+              String(item.id ?? item.studentId) === String(frontendStudentId),
+          );
+          if (record) {
+            const previous =
+              record.history?.[record.history.length - 1]?.from || "غایب";
+            const reverted = attendanceRef.current.map((item) =>
+              item === record
+                ? {
+                    ...item,
+                    status: previous === "ثبت‌نشده" ? "غایب" : previous,
+                    method: item.method,
+                  }
+                : item,
+            );
+            attendanceRef.current = reverted;
+            setAttendance(reverted);
+          }
+        }
         return false;
       });
   }

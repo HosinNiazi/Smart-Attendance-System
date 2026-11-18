@@ -1425,6 +1425,13 @@ export function FaceAttendance({
   const [lastRecognized, setLastRecognized] = React.useState(null);
   const [faceBoxes, setFaceBoxes] = React.useState([]);
   const [attendancePopup, setAttendancePopup] = React.useState(null);
+  // Option C: teacher-confirmed manual attendance for a face the matcher could
+  // not attribute. The live descriptor is kept so the server can still
+  // re-verify the claim against the chosen student's gallery.
+  const [manualConfirm, setManualConfirm] = React.useState(null);
+  const [manualQuery, setManualQuery] = React.useState("");
+  const [manualBusy, setManualBusy] = React.useState(false);
+  const lastUnknownRef = React.useRef(null);
   const faceApiRef = React.useRef(null);
   const scanBusyRef = React.useRef(false);
   const trackingRef = React.useRef(createTrackingState());
@@ -1755,6 +1762,7 @@ export function FaceAttendance({
         const currentIds = new Set();
         const claimed = new Set();
         let livenessHint = null;
+        let firstUnknownResult = null;
         const nextBoxes = detected.map((result, faceIndex) => {
           const trackId = tracked.faces[faceIndex]?.trackId ?? null;
           // Phase 3 matching: centroid-first ranking with per-reference
@@ -1779,6 +1787,7 @@ export function FaceAttendance({
             : null;
           let tone = "unknown";
           let label = "ناشناس";
+          if (!student && !firstUnknownResult) firstUnknownResult = result;
           if (student) {
             const key = String(student.id);
             currentIds.add(key);
@@ -1934,6 +1943,16 @@ export function FaceAttendance({
             label,
           };
         });
+        if (firstUnknownResult) {
+          // Option C: keep the newest unmatched descriptor (freshness-checked
+          // when the teacher opens the manual-confirm dialog).
+          lastUnknownRef.current = {
+            descriptor: Array.from(firstUnknownResult.descriptor).map((value) =>
+              Number(value.toFixed(5)),
+            ),
+            at: Date.now(),
+          };
+        }
         telemetryRef.current.unknown += nextBoxes.filter(
           (item) => item.tone === "unknown",
         ).length;
@@ -2103,6 +2122,84 @@ export function FaceAttendance({
     }
   }, [cameraState, videoRef, streamRef]);
 
+  const manualCandidates = React.useMemo(() => {
+    if (!manualConfirm) return [];
+    const marked = new Set(
+      attendanceRef.current
+        .filter(
+          (item) =>
+            item.sessionId === sessionId &&
+            ["حاضر", "تأخیر", "با تأخیر"].includes(item.status),
+        )
+        .map((item) => String(item.id ?? item.studentId)),
+    );
+    return (studentsRef.current || []).filter(
+      (student) => student.status !== "غیرفعال" && !marked.has(String(student.id)),
+    );
+  }, [manualConfirm, sessionId]);
+
+  function openManualConfirm() {
+    const last = lastUnknownRef.current;
+    if (!last || Date.now() - last.at > 3000) {
+      setRecognitionMessage(
+        "چهرهٔ ناشناسی در کادر نیست؛ ابتدا فرد را مقابل دوربین ببرید.",
+      );
+      return;
+    }
+    setManualQuery("");
+    setManualConfirm({ descriptor: last.descriptor });
+  }
+
+  async function confirmManualStudent(student) {
+    const descriptor = manualConfirm?.descriptor;
+    if (!descriptor) return;
+    // The teacher's pick is never taken on faith: the live descriptor is
+    // scored against the chosen student's gallery, here and again on the
+    // server (Phase 3+ A). A wrong pick is rejected on both layers.
+    const ranked = matchDescriptor(descriptor, matcherData, euclideanDistance);
+    const own = ranked.find(
+      (item) => String(item.studentId) === String(student.id),
+    );
+    if (!own) {
+      setRecognitionMessage(
+        `برای ${student.name} عکس مرجع معتبری ثبت نشده است.`,
+      );
+      return;
+    }
+    if (own.distance > faceMaxDistance) {
+      setRecognitionMessage(
+        `چهره با عکس مرجع ${student.name} تطبیق ندارد (فاصلهٔ ${own.distance
+          .toFixed(2)
+          .toLocaleString("fa-IR")}).`,
+      );
+      return;
+    }
+    setManualBusy(true);
+    try {
+      const saved = markAttendanceRef.current(student.id, PRESENT_STATUS, {
+        silent: false,
+        method: "face",
+        verification: {
+          distance: Number(own.distance.toFixed(4)),
+          threshold: faceMaxDistance,
+          liveness: "teacher_confirm",
+          frameCount: 1,
+          referenceId: own.referenceId || undefined,
+          descriptor,
+        },
+      });
+      if (saved) {
+        setLastRecognized({ studentId: student.id, name: student.name });
+        recognitionNoticeRef.current?.(
+          `حضور ${student.name} با تأیید استاد ثبت شد.`,
+        );
+        setManualConfirm(null);
+      }
+    } finally {
+      setManualBusy(false);
+    }
+  }
+
   return (
     <>
       <PanelTitle
@@ -2223,6 +2320,21 @@ export function FaceAttendance({
               </div>
             )}
           </div>
+          {cameraState === "live" && modelStatus === "ready" && (
+            <div className="manual-confirm-row">
+              <button
+                type="button"
+                className="btn btn-outline-primary btn-sm"
+                onClick={openManualConfirm}
+              >
+                <Icon name="bi-person-check" /> تأیید دستی چهرهٔ ناشناس
+              </button>
+              <small>
+                اگر تطبیق خودکار انجام نشد، استاد دانشجو را انتخاب می‌کند؛ سرور
+                فاصلهٔ زنده را با عکس مرجع همان دانشجو بازبینی می‌کند.
+              </small>
+            </div>
+          )}
           {!classroomMode && attendancePopup && (
             <div
               className="attendance-success-toast"
@@ -2247,6 +2359,92 @@ export function FaceAttendance({
                 ×
               </button>
               <i className="attendance-success-progress" />
+            </div>
+          )}
+          {manualConfirm && (
+            <div
+              className="modal-backdrop-custom"
+              onClick={(event) => {
+                if (event.target === event.currentTarget) setManualConfirm(null);
+              }}
+            >
+              <div
+                className="custom-modal manual-confirm-modal"
+                role="dialog"
+                aria-modal="true"
+              >
+                <div className="ticket-modal-head">
+                  <div>
+                    <span>تأیید استاد</span>
+                    <h3>انتخاب دانشجو برای چهرهٔ ناشناس</h3>
+                  </div>
+                  <button
+                    type="button"
+                    className="ticket-modal-close"
+                    aria-label="بستن"
+                    onClick={() => setManualConfirm(null)}
+                  >
+                    <Icon name="bi-x-lg" />
+                  </button>
+                </div>
+                <label className="form-label ticket-modal-label">
+                  جستجوی دانشجو
+                  <input
+                    className="form-control"
+                    value={manualQuery}
+                    onChange={(event) => setManualQuery(event.target.value)}
+                    placeholder="نام یا شماره دانشجویی"
+                  />
+                </label>
+                <div className="manual-confirm-list">
+                  {(() => {
+                    const query = manualQuery.trim();
+                    const list = manualCandidates.filter(
+                      (student) =>
+                        !query ||
+                        String(student.name || "").includes(query) ||
+                        String(student.studentNumber || "").includes(query),
+                    );
+                    if (!list.length)
+                      return (
+                        <EmptyState
+                          icon="bi-people"
+                          title="دانشجویی برای تأیید نیست"
+                          text="همهٔ دانشجویان این جلسه حضور ثبت‌شده دارند یا در فهرست نیستند."
+                        />
+                      );
+                    return list.map((student, index) => (
+                      <button
+                        key={student.id}
+                        type="button"
+                        className="manual-confirm-item"
+                        disabled={manualBusy}
+                        onClick={() => confirmManualStudent(student)}
+                      >
+                        <StudentAvatar
+                          name={student.name}
+                          photo={
+                            student.faceImage ||
+                            student.faceReferences?.[0]?.url ||
+                            ""
+                          }
+                          index={index}
+                        />
+                        <div>
+                          <strong>{student.name}</strong>
+                          <small>{student.studentNumber || student.id}</small>
+                        </div>
+                        <Icon name="bi-check2-circle" />
+                      </button>
+                    ));
+                  })()}
+                </div>
+                <p className="manual-confirm-note">
+                  ثبت با روش «تأیید استاد» انجام می‌شود؛ اگر چهرهٔ مقابل با عکس
+                  مرجع دانشجوی انتخابی همخوانی نداشته باشد، سرور ثبت را رد
+                  می‌کند و وضعیت به حالت قبل برمی‌گردد.
+                </p>
+              </div>
             </div>
           )}
           {classroomMode && (
