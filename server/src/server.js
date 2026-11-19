@@ -2408,7 +2408,10 @@ app.post(
       "INSERT INTO password_history (user_id, password_hash, created_at) VALUES ($1, $2, now())",
       [user.id, passwordHash],
     );
-    res.json({ ok: true, user: publicUser(updated.rows[0]) });
+    res.json({
+      ok: true,
+      user: { ...publicUser(updated.rows[0]), ...staffFields(updated.rows[0]) },
+    });
   }),
 );
 

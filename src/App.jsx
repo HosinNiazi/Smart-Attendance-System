@@ -49,6 +49,8 @@ import {
   approveRegistration,
   rejectRegistration,
   fetchBootstrap,
+  fetchMe,
+  setApiUser,
   finalizeSession as finalizeSessionApi,
   getApiUser,
   changePassword,
@@ -212,8 +214,15 @@ const PAGE_PERMISSIONS = {
   settings: "settings.view",
 };
 
-function adminPagesFromPermissions(permissions) {
-  if (!Array.isArray(permissions)) return ROLE_PERMISSIONS.admin;
+function adminPagesFromPermissions(permissions, { impersonated = false } = {}) {
+  // Platform impersonation has no staff permission list and is allowed to see the
+  // whole faculty. A regular admin without a list is treated as unhydrated and
+  // only gets the safe baseline until `/api/me` fills it in.
+  if (!Array.isArray(permissions)) {
+    return impersonated
+      ? ROLE_PERMISSIONS.admin
+      : new Set(["dashboard", "profile"]);
+  }
   const granted = new Set(permissions);
   return new Set(
     Object.entries(PAGE_PERMISSIONS)
@@ -230,9 +239,21 @@ const faDate = new Intl.DateTimeFormat("fa-IR", {
 const PRESENT_STATUS = "\u062d\u0627\u0636\u0631";
 const ABSENT_STATUS = "\u063a\u0627\u06cc\u0628";
 const ACCESS_ROLE_LABELS = {
-  admin: "\u0645\u062f\u06cc\u0631",
-  teacher: "\u0627\u0633\u062a\u0627\u062f",
-  student: "\u062f\u0627\u0646\u0634\u062c\u0648",
+  admin: "مدیر دانشکده",
+  manager: "مدیر آموزش",
+  operator: "کارمند آموزش",
+  viewer: "کارمند آموزش (فقط مشاهده)",
+  teacher: "استاد",
+  student: "دانشجو",
+};
+const STAFF_LOGIN_ROLES = new Set(["admin", "manager", "operator", "viewer"]);
+const ACCESS_ROLE_ICONS = {
+  admin: "bi-shield-check",
+  manager: "bi-mortarboard",
+  operator: "bi-clipboard-check",
+  viewer: "bi-eye",
+  teacher: "bi-easel",
+  student: "bi-mortarboard",
 };
 
 function AccessRoleSelect({ value, onChange }) {
@@ -317,15 +338,7 @@ function AccessRoleSelect({ value, onChange }) {
               }}
             >
               <span className="login-role-option-icon">
-                <Icon
-                  name={
-                    optionValue === "admin"
-                      ? "bi-shield-check"
-                      : optionValue === "teacher"
-                        ? "bi-easel"
-                        : "bi-mortarboard"
-                  }
-                />
+                <Icon name={ACCESS_ROLE_ICONS[optionValue] || "bi-person-badge"} />
               </span>
               <span>{label}</span>
               {value === optionValue && <Icon name="bi-check2" />}
@@ -718,7 +731,8 @@ export default function App() {
     return hash === "" || hash === "#/" || hash === "#/home";
   });
   const [loginRole, setLoginRole] = useState(() => {
-    const savedRole = readSessionProfile().role;
+    const savedProfile = readSessionProfile();
+    const savedRole = savedProfile.accessRole || savedProfile.role;
     return ACCESS_ROLE_LABELS[savedRole] ? savedRole : "admin";
   });
   const [profilePhoto, setProfilePhoto] = useState(
@@ -933,6 +947,25 @@ export default function App() {
     refreshTeachers();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [login, loginRole]);
+  // Sessions created before the permission layer (or by an endpoint that returned
+  // a reduced user) have no `permissions`. Reload them from the server so the menu
+  // matches the role instead of failing open.
+  useEffect(() => {
+    if (login) return;
+    if (authUser?.role !== "admin" || authUser?.impersonated) return;
+    if (Array.isArray(authUser.permissions)) return;
+    let cancelled = false;
+    fetchMe()
+      .then(({ user }) => {
+        if (cancelled || !user) return;
+        setAuthUser(user);
+        setApiUser(user);
+      })
+      .catch(() => {});
+    return () => {
+      cancelled = true;
+    };
+  }, [login, authUser]);
   const filteredStudents = useMemo(
     () =>
       students.filter(
@@ -983,7 +1016,9 @@ export default function App() {
     : [];
   const allowedPages =
     loginRole === "admin"
-      ? adminPagesFromPermissions(authUser?.permissions)
+      ? adminPagesFromPermissions(authUser?.permissions, {
+          impersonated: Boolean(authUser?.impersonated),
+        })
       : ROLE_PERMISSIONS[loginRole] || ROLE_PERMISSIONS.teacher;
   const visibleNavGroups = navGroups
     .map((group) => ({
@@ -1023,8 +1058,9 @@ export default function App() {
   // still belongs to the previous session. Teachers/students are unaffected.
   function adminHas(permission) {
     const user = getApiUser();
+    if (user?.impersonated) return true;
     if (user?.role && user.role !== "admin") return true;
-    if (!Array.isArray(user?.permissions)) return true;
+    if (!Array.isArray(user?.permissions)) return false;
     return user.permissions.includes(permission);
   }
 
@@ -1590,12 +1626,17 @@ export default function App() {
   function chooseRole(role) {
     setLoginRole(role);
     setLoginError("");
+    // The demo credentials are only a convenience; the real role and permissions
+    // always come from the account that signs in. Staff levels leave the field
+    // empty so the staff member types their own email.
     setLoginName(
       role === "admin"
         ? "admin@hozorban.local"
         : role === "teacher"
           ? "teacher@hozorban.local"
-          : "student@hozorban.local",
+          : role === "student"
+            ? "student@hozorban.local"
+            : "",
     );
   }
   async function changeFaculty(nextFacultyId) {
@@ -2566,7 +2607,26 @@ export default function App() {
   }
 
   async function finishLogin(result, email) {
-    setAuthUser(result.user);
+    let user = result.user;
+    // A staff account always carries its permission list. If an endpoint ever
+    // returns a reduced payload, reload the canonical session once instead of
+    // granting the full admin menu by accident.
+    if (
+      user?.role === "admin" &&
+      !user.impersonated &&
+      !Array.isArray(user.permissions)
+    ) {
+      try {
+        const me = await fetchMe();
+        if (me?.user) {
+          user = { ...user, ...me.user };
+          setApiUser(user);
+        }
+      } catch {
+        /* keep the login result; the API still enforces the real role */
+      }
+    }
+    setAuthUser(user);
     try {
       await loadFromServer({ silent: true });
       notify("اتصال به PostgreSQL برقرار شد و اطلاعات از دیتابیس بارگذاری شد.");
@@ -2574,18 +2634,19 @@ export default function App() {
       console.error("Bootstrap error:", apiError);
       notify("ورود موفق بود، اما دریافت اطلاعات دیتابیس با مشکل مواجه شد.");
     }
-    const signedInName = result.user.name;
-    const signedInStudentId = result.user.studentId || "";
+    const signedInName = user.name;
+    const signedInStudentId = user.studentId || "";
     setLoginName(signedInName);
-    setLoginRole(result.user.role);
+    setLoginRole(user.role);
     setStudentNumber(signedInStudentId);
-    setProfilePhoto(result.user.avatarUrl || "");
+    setProfilePhoto(user.avatarUrl || "");
     sessionStorage.setItem(
       "smart-attendance:profile",
       JSON.stringify({
         name: signedInName,
-        role: result.user.role,
-        userId: result.user.id,
+        role: user.role,
+        accessRole: user.staffRole || user.role,
+        userId: user.id,
         email: String(email || "").toLowerCase(),
         studentId: signedInStudentId,
       }),
@@ -2853,15 +2914,15 @@ export default function App() {
             </div>
             <span className="eyebrow">خوش آمدید</span>
             <h1>
-              {loginRole === "admin"
-                ? "ورود به پنل مدیریت"
+              {STAFF_LOGIN_ROLES.has(loginRole)
+                ? "ورود به پنل دانشکده"
                 : loginRole === "teacher"
                   ? "ورود به پنل استاد"
                   : "ورود به پنل دانشجویی"}
             </h1>
             <p className="login-subtitle">
-              {loginRole === "admin"
-                ? "برای مدیریت سامانه، کاربران و گزارش‌ها وارد شوید."
+              {STAFF_LOGIN_ROLES.has(loginRole)
+                ? "با حساب کارمند دانشکده وارد شوید؛ سطح دسترسی از حساب شما خوانده می‌شود."
                 : loginRole === "teacher"
                   ? "برای مدیریت جلسات و ثبت حضور و غیاب کلاس‌ها وارد شوید."
                   : "برای مشاهدهٔ وضعیت حضور و درس‌های خود وارد شوید."}

@@ -119,6 +119,11 @@ export function resetStaffPassword(userId) {
   return api(`/staff/${encodeURIComponent(userId)}/reset-password`, { method: 'POST' });
 }
 
+/* ---- Current session ---- */
+export function fetchMe() {
+  return api('/me');
+}
+
 export function browserSnapshot() {
   const read = (key, fallback) => {
     try { const value = localStorage.getItem(key); return value ? JSON.parse(value) : fallback; }
