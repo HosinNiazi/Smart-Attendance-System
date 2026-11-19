@@ -4,6 +4,7 @@ import {
   EmptyState,
   Icon,
   PanelTitle,
+  Select,
   SkeletonCards,
   SkeletonTable,
   StatCard,
@@ -216,7 +217,7 @@ export function TrendAnalysis({
         </label>
         <label className="form-label">
           بازهٔ تجمیع
-          <select
+          <Select
             className="form-select"
             value={granularity}
             onChange={(event) => setGranularity(event.target.value)}
@@ -224,11 +225,11 @@ export function TrendAnalysis({
             <option value="day">روزانه</option>
             <option value="week">هفتگی</option>
             <option value="month">ماهانه</option>
-          </select>
+          </Select>
         </label>
         <label className="form-label">
           درس
-          <select
+          <Select
             className="form-select"
             value={courseId}
             onChange={(event) => setCourseId(event.target.value)}
@@ -239,7 +240,7 @@ export function TrendAnalysis({
                 {course.title}
               </option>
             ))}
-          </select>
+          </Select>
         </label>
         <div className="trend-filter-actions">
           {[

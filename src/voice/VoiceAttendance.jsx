@@ -1,5 +1,5 @@
 import React, { useEffect, useRef, useState } from "react";
-import { Icon, PanelTitle, Badge, EmptyState, StudentAvatar } from "../components/shared.jsx";
+import { Icon, PanelTitle, Badge, EmptyState, Select, StudentAvatar } from "../components/shared.jsx";
 import { JalaliDateInput } from "../components/JalaliDateInput.jsx";
 import { saveClip } from "./audioStore.js";
 
@@ -317,7 +317,7 @@ export function VoiceAttendance({ courses, students, attendance, sessionCourse, 
         <blockquote className="voice-phrase" dir="rtl">{PHRASE}</blockquote>
         <div className="voice-session-controls">
           <MicrophoneStatus status={micStatus} />
-          <label className="form-label">درس / کلاس</label><select className="form-select" disabled={Boolean(recording) || busy} value={sessionCourse} onChange={(event) => setSessionCourse(event.target.value)}>{courses.map((course) => <option key={course.id} value={course.title}>{course.title}</option>)}</select>
+          <label className="form-label">درس / کلاس</label><Select className="form-select" disabled={Boolean(recording) || busy} value={sessionCourse} onChange={(event) => setSessionCourse(event.target.value)}>{courses.map((course) => <option key={course.id} value={course.title}>{course.title}</option>)}</Select>
           <label className="form-label" htmlFor="voice-session-date">تاریخ جلسه</label><JalaliDateInput id="voice-session-date" disabled={Boolean(recording) || busy} value={sessionDate} onChange={(next) => setSessionDate(next)} ariaLabel="تاریخ جلسه" />
           {recording === "session" ? <button className="btn btn-danger voice-record-button" onClick={() => stopRef.current?.()}><Icon name="bi-stop-circle" /> توقف ضبط · {seconds} ثانیه</button> : <button className="btn btn-primary voice-record-button" disabled={busy || micStatus === "requesting" || profiles.length === 0 || Boolean(recording)} onClick={() => startRecording()}><Icon name={micStatus === "requesting" ? "bi-hourglass-split" : "bi-mic-fill"} /> {micStatus === "requesting" ? "در انتظار دسترسی میکروفون" : "ضبط زنده و ثبت حضور"}</button>}
           {recording === "session" && <RecordingIndicator seconds={seconds} level={micLevel} />}

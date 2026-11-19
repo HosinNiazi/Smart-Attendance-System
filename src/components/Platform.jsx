@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { EmptyState, Icon, SkeletonTable, StatCard } from "./shared.jsx";
+import { EmptyState, Icon, Select, SkeletonTable, StatCard } from "./shared.jsx";
 import {
   archivePlatformFaculty,
   clearPlatformSession,
@@ -1195,7 +1195,7 @@ export default function PlatformArea({ theme, onToggleTheme, onEnterFaculty, onE
                             <div className="platform-muted">{admin.email}</div>
                           </td>
                           <td>
-                            <select
+                            <Select
                               className="form-select form-select-sm"
                               value={admin.level}
                               disabled={!isOwner || busy}
@@ -1208,7 +1208,7 @@ export default function PlatformArea({ theme, onToggleTheme, onEnterFaculty, onE
                                   {label}
                                 </option>
                               ))}
-                            </select>
+                            </Select>
                           </td>
                           <td>
                             <span className={`status-badge ${admin.isActive ? "success" : "neutral"}`}>
@@ -1269,7 +1269,7 @@ export default function PlatformArea({ theme, onToggleTheme, onEnterFaculty, onE
                 <div className="platform-filter-grid">
                   <label className="form-label">
                     دانشکده
-                    <select
+                    <Select
                       className="form-select"
                       value={auditFilters.organizationId}
                       onChange={(event) =>
@@ -1285,7 +1285,7 @@ export default function PlatformArea({ theme, onToggleTheme, onEnterFaculty, onE
                           {faculty.name}
                         </option>
                       ))}
-                    </select>
+                    </Select>
                   </label>
                   <label className="form-label">
                     نوع اقدام
@@ -1437,13 +1437,13 @@ export default function PlatformArea({ theme, onToggleTheme, onEnterFaculty, onE
                   </label>
                   <label className="form-label">
                     سطح دسترسی
-                    <select name="adminLevel" className="form-select" defaultValue="owner">
+                    <Select name="adminLevel" className="form-select" defaultValue="owner">
                       {Object.entries(FACULTY_LEVEL_LABELS).map(([value, label]) => (
                         <option key={value} value={value}>
                           {label}
                         </option>
                       ))}
-                    </select>
+                    </Select>
                   </label>
                 </div>
               </>
@@ -1486,7 +1486,7 @@ export default function PlatformArea({ theme, onToggleTheme, onEnterFaculty, onE
                       <div className="platform-muted">{admin.email}</div>
                     </td>
                     <td>
-                      <select
+                      <Select
                         className="form-select form-select-sm"
                         value={admin.level}
                         disabled={busy}
@@ -1499,7 +1499,7 @@ export default function PlatformArea({ theme, onToggleTheme, onEnterFaculty, onE
                             {label}
                           </option>
                         ))}
-                      </select>
+                      </Select>
                     </td>
                     <td>
                       <span className={`status-badge ${admin.isActive ? "success" : "neutral"}`}>
@@ -1546,13 +1546,13 @@ export default function PlatformArea({ theme, onToggleTheme, onEnterFaculty, onE
             </label>
             <label className="form-label">
               سطح دسترسی
-              <select name="level" className="form-select" defaultValue="manager">
+              <Select name="level" className="form-select" defaultValue="manager">
                 {Object.entries(FACULTY_LEVEL_LABELS).map(([value, label]) => (
                   <option key={value} value={value}>
                     {label}
                   </option>
                 ))}
-              </select>
+              </Select>
             </label>
             <div className="platform-form-action">
               <button type="submit" className="btn btn-primary" disabled={busy}>
@@ -1618,13 +1618,13 @@ export default function PlatformArea({ theme, onToggleTheme, onEnterFaculty, onE
             </label>
             <label className="form-label mt-3">
               سطح دسترسی
-              <select name="level" className="form-select" defaultValue="operator">
+              <Select name="level" className="form-select" defaultValue="operator">
                 {Object.entries(PLATFORM_LEVEL_LABELS).map(([value, label]) => (
                   <option key={value} value={value}>
                     {label}
                   </option>
                 ))}
-              </select>
+              </Select>
             </label>
             <div className="modal-actions">
               <button type="submit" className="btn btn-primary" disabled={busy}>

@@ -1,6 +1,6 @@
-﻿import React from "react";
+import React from "react";
 import { useEffect, useMemo, useRef, useState } from "react";
-import { Icon } from "./components/shared.jsx";
+import { Icon, Select } from "./components/shared.jsx";
 import {
   AdminActivity,
   AttendanceObjections,
@@ -3771,7 +3771,7 @@ export default function App() {
               </div>
               <div className="col-12 col-md-6">
                 <label className="form-label">رشته تحصیلی</label>
-                <select
+                <Select
                   className="form-select"
                   value={studentForm.major}
                   onChange={(e) =>
@@ -3781,11 +3781,11 @@ export default function App() {
                   <option>مهندسی کامپیوتر</option>
                   <option>فناوری اطلاعات</option>
                   <option>علوم کامپیوتر</option>
-                </select>
+                </Select>
               </div>
               <div className="col-12 col-md-6">
                 <label className="form-label">ترم</label>
-                <select
+                <Select
                   className="form-select"
                   value={studentForm.term}
                   onChange={(e) =>
@@ -3795,7 +3795,7 @@ export default function App() {
                   {["۱", "۲", "۳", "۴", "۵", "۶"].map((t) => (
                     <option key={t}>{t}</option>
                   ))}
-                </select>
+                </Select>
               </div>
               <div className="col-12">
                 <label className="form-label">شماره تماس</label>

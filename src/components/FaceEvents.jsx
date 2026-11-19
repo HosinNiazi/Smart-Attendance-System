@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useState } from "react";
-import { Badge, EmptyState, Icon, PanelTitle, SkeletonTable } from "./shared.jsx";
+import { Badge, EmptyState, Icon, PanelTitle, Select, SkeletonTable } from "./shared.jsx";
 import { fetchFaceEvents } from "../api/client.js";
 
 const number = new Intl.NumberFormat("fa-IR");
@@ -108,15 +108,15 @@ export function FaceEvents() {
         <div className="report-filter-grid" style={{ gridTemplateColumns: "repeat(2, minmax(0, 1fr))" }}>
           <label>
             نوع تصمیم
-            <select
-              className="filter-select"
+            <Select
+              className="form-select filter-select"
               value={decisionFilter}
               onChange={(event) => setDecisionFilter(event.target.value)}
             >
               <option value="all">همه</option>
               <option value="accepted">پذیرفته‌شده</option>
               <option value="rejected">ردشده</option>
-            </select>
+            </Select>
           </label>
         </div>
       </div>

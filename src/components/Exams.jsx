@@ -1,5 +1,5 @@
 import React, { useEffect, useMemo, useState } from "react";
-import { Badge, EmptyState, Icon, PanelTitle, StatCard } from "./shared.jsx";
+import { Badge, EmptyState, Icon, PanelTitle, Select, StatCard } from "./shared.jsx";
 import { JalaliDateInput } from "./JalaliDateInput.jsx";
 import {
   cancelExam,
@@ -501,7 +501,7 @@ function ExamEditor({ exam, questions, courses, onClose, onSaved, notify }) {
             <div className="exam-form-grid">
               <label className="form-label">
                 درس
-                <select
+                <Select
                   className="form-select"
                   value={form.courseId}
                   onChange={(event) => update({ courseId: event.target.value })}
@@ -513,7 +513,7 @@ function ExamEditor({ exam, questions, courses, onClose, onSaved, notify }) {
                       {course.title} {course.id ? `(${course.id})` : ""}
                     </option>
                   ))}
-                </select>
+                </Select>
               </label>
               <label className="form-label">
                 عنوان آزمون
@@ -611,7 +611,7 @@ function ExamEditor({ exam, questions, courses, onClose, onSaved, notify }) {
               </label>
               <label className="form-label">
                 تعداد تلاش مجاز
-                <select
+                <Select
                   className="form-select"
                   value={form.maxAttempts}
                   onChange={(event) => update({ maxAttempts: event.target.value })}
@@ -619,11 +619,11 @@ function ExamEditor({ exam, questions, courses, onClose, onSaved, notify }) {
                   <option value="1">۱ بار</option>
                   <option value="2">۲ بار</option>
                   <option value="3">۳ بار</option>
-                </select>
+                </Select>
               </label>
               <label className="form-label">
                 نمایش نتیجه به دانشجو
-                <select
+                <Select
                   className="form-select"
                   value={form.resultsVisibility}
                   onChange={(event) => update({ resultsVisibility: event.target.value })}
@@ -631,7 +631,7 @@ function ExamEditor({ exam, questions, courses, onClose, onSaved, notify }) {
                   {Object.entries(VISIBILITY_LABELS).map(([value, label]) => (
                     <option key={value} value={value}>{label}</option>
                   ))}
-                </select>
+                </Select>
               </label>
             </div>
             <div className="exam-switches">
@@ -1101,7 +1101,7 @@ function ResultsModal({ exam, onClose, notify }) {
             </label>
             <label className="form-label">
               فرصت اضافه
-              <select
+              <Select
                 className="form-select"
                 value={accommodationForm.extraAttempts}
                 onChange={(event) => setAccommodationForm((form) => ({ ...form, extraAttempts: Number(event.target.value) }))}
@@ -1110,7 +1110,7 @@ function ResultsModal({ exam, onClose, notify }) {
                 <option value={1}>۱ فرصت اضافه</option>
                 <option value={2}>۲ فرصت اضافه</option>
                 <option value={3}>۳ فرصت اضافه</option>
-              </select>
+              </Select>
             </label>
             <label className="form-label">
               توضیح (اختیاری)
@@ -1281,24 +1281,24 @@ export function Exams({ courses = [], accessRole = "teacher", notify }) {
         <div className="exam-filter-group">
           <label>
             <Icon name="bi-funnel" />
-            <select className="form-select" value={statusFilter} onChange={(event) => setStatusFilter(event.target.value)}>
+            <Select className="form-select" value={statusFilter} onChange={(event) => setStatusFilter(event.target.value)}>
               <option value="">همهٔ وضعیت‌ها</option>
               <option value="draft">پیش‌نویس</option>
               <option value="published">منتشرشده</option>
               <option value="closed">بسته شده</option>
               <option value="cancelled">لغو شده</option>
-            </select>
+            </Select>
           </label>
           <label>
             <Icon name="bi-journal-bookmark" />
-            <select className="form-select" value={courseFilter} onChange={(event) => setCourseFilter(event.target.value)}>
+            <Select className="form-select" value={courseFilter} onChange={(event) => setCourseFilter(event.target.value)}>
               <option value="">همهٔ درس‌ها</option>
               {courses.map((course) => (
                 <option key={course.databaseId || course.id} value={course.databaseId}>
                   {course.title}
                 </option>
               ))}
-            </select>
+            </Select>
           </label>
         </div>
         <button type="button" className="btn btn-light" onClick={load} disabled={loading}>

@@ -1,5 +1,5 @@
 import React, { useEffect, useRef, useState } from "react";
-import { Badge, EmptyState, Icon, PanelTitle, SkeletonCards, SkeletonTable, StatCard, StudentAvatar, TablePager } from "./shared.jsx";
+import { Badge, EmptyState, Icon, PanelTitle, Select, SkeletonCards, SkeletonTable, StatCard, StudentAvatar, TablePager } from "./shared.jsx";
 import { JalaliDateInput } from "./JalaliDateInput.jsx";
 import {
   LiveClassBanner,
@@ -870,7 +870,7 @@ export function Courses({
             {canAssignTeacher && teachers.length > 0 ? (
               <label className="form-label">
                 استاد
-                <select
+                <Select
                   className="form-select"
                   value={courseForm.teacherId}
                   onChange={(event) => {
@@ -892,7 +892,7 @@ export function Courses({
                         {teacher.fullName}
                       </option>
                     ))}
-                </select>
+                </Select>
               </label>
             ) : (
               <label className="form-label">
@@ -923,7 +923,7 @@ export function Courses({
             </label>
             <label className="form-label">
               روز هفته
-              <select
+              <Select
                 className="form-select"
                 value={courseForm.day}
                 onChange={(event) =>
@@ -941,7 +941,7 @@ export function Courses({
                 ].map((day) => (
                   <option key={day}>{day}</option>
                 ))}
-              </select>
+              </Select>
             </label>
             <label className="form-label">
               ساعت شروع
@@ -1063,7 +1063,7 @@ export function Courses({
                   ) : (
                     <label className="course-teacher-assign">
                       <span>استاد درس</span>
-                      <select
+                      <Select
                         className="form-select"
                         value={c.teacherUserId || ""}
                         onChange={(event) => {
@@ -1079,7 +1079,7 @@ export function Courses({
                               {teacher.fullName}
                             </option>
                           ))}
-                      </select>
+                      </Select>
                     </label>
                   )
                 )}
@@ -1156,7 +1156,7 @@ export function ManualAttendance({
               placeholder="جست‌وجوی نام یا شماره دانشجویی"
             />
           </div>
-          <select
+          <Select
             className="form-select filter-select"
             value={courseFilter}
             onChange={(e) => setCourseFilter(e.target.value)}
@@ -1165,7 +1165,7 @@ export function ManualAttendance({
             {courses.map((c) => (
               <option key={c.id}>{c.title}</option>
             ))}
-          </select>
+          </Select>
           <span className="result-count">
             {attendance.length.toLocaleString("fa-IR")} رکورد
           </span>
@@ -2365,7 +2365,7 @@ export function FaceAttendance({
           {classroomMode && (
             <div className="camera-picker-row">
               <label htmlFor="face-camera-select">دوربین ورودی</label>
-              <select
+              <Select
                 id="face-camera-select"
                 className="form-select"
                 value={selectedCameraId}
@@ -2381,7 +2381,7 @@ export function FaceAttendance({
                 ) : (
                   <option value="">دوربینی پیدا نشد</option>
                 )}
-              </select>
+              </Select>
               <small>
                 {cameras.length
                   ? "دوربین داخلی لپ‌تاپ در صورت شناسایی، پیش‌فرض است."
@@ -2441,7 +2441,7 @@ export function FaceAttendance({
               </span>
             </div>
             <label className="form-label">درس / کلاس</label>
-            <select
+            <Select
               className="form-select"
               value={sessionCourse}
               onChange={(e) => setSessionCourse(e.target.value)}
@@ -2449,7 +2449,7 @@ export function FaceAttendance({
               {courses.map((c) => (
                 <option key={c.id}>{c.title}</option>
               ))}
-            </select>
+            </Select>
             <label className="form-label" htmlFor="face-session-date">
               تاریخ جلسه
             </label>
@@ -2870,7 +2870,7 @@ export function Reports({
         <div className="report-filter-grid">
           <label>
             درس
-            <select
+            <Select
               className="form-select"
               value={courseId}
               onChange={(event) => setCourseId(event.target.value)}
@@ -2881,11 +2881,11 @@ export function Reports({
                   {title}
                 </option>
               ))}
-            </select>
+            </Select>
           </label>
           <label>
             دانشجو
-            <select
+            <Select
               className="form-select"
               value={studentId}
               onChange={(event) => setStudentId(event.target.value)}
@@ -2896,7 +2896,7 @@ export function Reports({
                   {student.name} · {student.id}
                 </option>
               ))}
-            </select>
+            </Select>
           </label>
           <label>
             از تاریخ
@@ -3719,7 +3719,7 @@ export function FingerprintAttendance({
             <label className="form-label" htmlFor="fingerprint-session-course">
               درس / کلاس
             </label>
-            <select
+            <Select
               id="fingerprint-session-course"
               className="form-select"
               value={sessionCourse}
@@ -3731,7 +3731,7 @@ export function FingerprintAttendance({
                   {course.title}
                 </option>
               ))}
-            </select>
+            </Select>
             <label className="form-label" htmlFor="fingerprint-session-date">
               تاریخ جلسه
             </label>
@@ -5274,7 +5274,7 @@ export function StudentPortal({
                 </div>
                 <label className="form-label">
                   نوع درخواست
-                  <select
+                  <Select
                     className="form-select"
                     value={leaveForm.type}
                     onChange={(event) =>
@@ -5286,7 +5286,7 @@ export function StudentPortal({
                   >
                     <option value="leave">مرخصی</option>
                     <option value="excuse">توجیه غیبت</option>
-                  </select>
+                  </Select>
                 </label>
                 <div className="leave-date-grid">
                   <label className="form-label">
@@ -7105,14 +7105,14 @@ function GroupLeaveModal({ students = [], busy, onClose, onSubmit }) {
           </label>
           <label className="form-label">
             نوع درخواست
-            <select
+            <Select
               className="form-select"
               value={type}
               onChange={(event) => setType(event.target.value)}
             >
               <option value="leave">مرخصی</option>
               <option value="excuse">توجیه غیبت</option>
-            </select>
+            </Select>
           </label>
           <div className="leave-date-grid">
             <label className="form-label">
@@ -7930,7 +7930,7 @@ export function AdminActivity({
       />
       <div className="content-card data-card">
         <div className="table-toolbar">
-          <select
+          <Select
             className="form-select filter-select"
             value={entityType}
             aria-label="فیلتر بر اساس نوع موجودیت"
@@ -7941,7 +7941,7 @@ export function AdminActivity({
                 {label}
               </option>
             ))}
-          </select>
+          </Select>
           <span className="result-count">
             {activity.length.toLocaleString("fa-IR")} رکورد
           </span>

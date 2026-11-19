@@ -1,4 +1,5 @@
 import React from 'react';
+import { createPortal } from 'react-dom';
 export class AppErrorBoundary extends React.Component {
   state = { failed: false };
   static getDerivedStateFromError() { return { failed: true }; }
@@ -161,3 +162,255 @@ export function StudentAvatar({ name = "", photo = "", index = 0, className = ""
   return <span className={cls}>{name.charAt(0) || "—"}</span>;
 }
 
+
+function selectOptionText(children) {
+  if (children == null || typeof children === "boolean") return "";
+  if (typeof children === "string" || typeof children === "number") return String(children);
+  if (Array.isArray(children)) return children.map(selectOptionText).join("");
+  if (React.isValidElement(children)) return selectOptionText(children.props.children);
+  return "";
+}
+
+// A dropdown that keeps the project look in both themes. Native <select>
+// popups are drawn by the operating system, so they stay light and out of
+// place in dark mode; this component renders its own accessible listbox.
+export function Select({
+  value: controlledValue,
+  defaultValue,
+  onChange,
+  children,
+  className = "form-select",
+  disabled = false,
+  name,
+  id,
+  required = false,
+  placeholder,
+  ...rest
+}) {
+  const autoId = React.useId();
+  const triggerId = id || `select-${autoId.replace(/[^a-zA-Z0-9_-]/g, "")}`;
+  const options = React.useMemo(() => {
+    const list = [];
+    React.Children.forEach(children, (child) => {
+      if (!React.isValidElement(child) || child.type !== "option") return;
+      const label = selectOptionText(child.props.children)
+        .replace(/\s+/g, " ")
+        .trim();
+      const rawValue = child.props.value;
+      list.push({
+        value: rawValue == null ? label : String(rawValue),
+        label,
+        disabled: Boolean(child.props.disabled),
+      });
+    });
+    return list;
+  }, [children]);
+
+  const uncontrolled = controlledValue === undefined;
+  const firstValue = options.length ? options[0].value : "";
+  const [innerValue, setInnerValue] = React.useState(() =>
+    defaultValue == null ? firstValue : String(defaultValue),
+  );
+  const currentValue = uncontrolled ? innerValue : String(controlledValue ?? "");
+  const selectedIndex = options.findIndex(
+    (option) => option.value === currentValue,
+  );
+  const selected = selectedIndex >= 0 ? options[selectedIndex] : null;
+  const display =
+    selected?.label || options[0]?.label || placeholder || "";
+
+  const [open, setOpen] = React.useState(false);
+  const [highlighted, setHighlighted] = React.useState(-1);
+  const [menuPos, setMenuPos] = React.useState(null);
+  const triggerRef = React.useRef(null);
+  const menuRef = React.useRef(null);
+
+  const positionMenu = React.useCallback(() => {
+    const trigger = triggerRef.current;
+    if (!trigger) return;
+    const rect = trigger.getBoundingClientRect();
+    const gap = 6;
+    const width = Math.max(rect.width, 160);
+    const left = Math.max(8, Math.min(rect.left, window.innerWidth - width - 8));
+    const below = window.innerHeight - rect.bottom - 12;
+    const above = rect.top - 12;
+    // Prefer the measured menu height; fall back to an estimate on first paint.
+    const content = menuRef.current
+      ? menuRef.current.scrollHeight
+      : Math.min(288, options.length * 42 + 10);
+    const want = Math.min(288, content);
+    const openUp = want > below && above > below;
+    const maxHeight = Math.max(96, Math.min(288, openUp ? above : below));
+    const height = Math.min(want, maxHeight);
+    const top = openUp
+      ? Math.max(8, rect.top - height - gap)
+      : Math.min(window.innerHeight - height - 8, rect.bottom + gap);
+    setMenuPos((prev) =>
+      prev &&
+      prev.left === left &&
+      prev.top === top &&
+      prev.width === width &&
+      prev.maxHeight === maxHeight
+        ? prev
+        : { left, top, width, maxHeight },
+    );
+  }, [options.length]);
+
+  // Re-measure once the listbox is mounted so the gap stays exactly `6px`.
+  React.useLayoutEffect(() => {
+    if (open && menuRef.current) positionMenu();
+  }, [open, positionMenu]);
+
+  function openMenu() {
+    if (disabled) return;
+    positionMenu();
+    setHighlighted(selectedIndex >= 0 ? selectedIndex : 0);
+    setOpen(true);
+  }
+
+  function commit(index) {
+    const option = options[index];
+    if (!option || option.disabled) return;
+    if (uncontrolled) setInnerValue(option.value);
+    onChange?.({
+      target: { value: option.value, name },
+      currentTarget: { value: option.value, name },
+    });
+    setOpen(false);
+    triggerRef.current?.focus();
+  }
+
+  React.useEffect(() => {
+    if (!open) return undefined;
+    function onPointerDown(event) {
+      if (triggerRef.current?.contains(event.target)) return;
+      if (menuRef.current?.contains(event.target)) return;
+      setOpen(false);
+    }
+    function onReposition(event) {
+      if (event?.target && menuRef.current?.contains(event.target)) return;
+      positionMenu();
+    }
+    document.addEventListener("mousedown", onPointerDown);
+    window.addEventListener("scroll", onReposition, true);
+    window.addEventListener("resize", onReposition);
+    return () => {
+      document.removeEventListener("mousedown", onPointerDown);
+      window.removeEventListener("scroll", onReposition, true);
+      window.removeEventListener("resize", onReposition);
+    };
+  }, [open, positionMenu]);
+
+  React.useEffect(() => {
+    if (!open) return;
+    menuRef.current
+      ?.querySelector(`[data-select-index="${highlighted}"]`)
+      ?.scrollIntoView({ block: "nearest" });
+  }, [open, highlighted]);
+
+  function onKeyDown(event) {
+    if (disabled) return;
+    if (!open) {
+      if (["ArrowDown", "ArrowUp", "Enter", " "].includes(event.key)) {
+        event.preventDefault();
+        openMenu();
+      }
+      return;
+    }
+    if (event.key === "Escape") {
+      event.preventDefault();
+      setOpen(false);
+      triggerRef.current?.focus();
+      return;
+    }
+    if (event.key === "Tab") {
+      setOpen(false);
+      return;
+    }
+    if (event.key === "ArrowDown") {
+      event.preventDefault();
+      setHighlighted((index) => Math.min(options.length - 1, index + 1));
+      return;
+    }
+    if (event.key === "ArrowUp") {
+      event.preventDefault();
+      setHighlighted((index) => Math.max(0, index - 1));
+      return;
+    }
+    if (event.key === "Home") {
+      event.preventDefault();
+      setHighlighted(0);
+      return;
+    }
+    if (event.key === "End") {
+      event.preventDefault();
+      setHighlighted(options.length - 1);
+      return;
+    }
+    if (event.key === "Enter" || event.key === " ") {
+      event.preventDefault();
+      commit(highlighted);
+    }
+  }
+
+  return (
+    <>
+      <button
+        {...rest}
+        ref={triggerRef}
+        type="button"
+        id={triggerId}
+        className={`select-field ${className}`.trim()}
+        role="combobox"
+        aria-haspopup="listbox"
+        aria-expanded={open}
+        aria-controls={open ? `${triggerId}-menu` : undefined}
+        aria-required={required || undefined}
+        disabled={disabled}
+        onClick={() => (open ? setOpen(false) : openMenu())}
+        onKeyDown={onKeyDown}
+      >
+        <span className="select-value">{display || "\u00a0"}</span>
+        <i className="bi bi-chevron-down select-chevron" aria-hidden="true" />
+      </button>
+      {name ? <input type="hidden" name={name} value={currentValue} /> : null}
+      {open && menuPos
+        ? createPortal(
+            <div
+              ref={menuRef}
+              id={`${triggerId}-menu`}
+              className="select-menu"
+              role="listbox"
+              dir="rtl"
+              style={{
+                left: menuPos.left,
+                top: menuPos.top,
+                width: menuPos.width,
+                maxHeight: menuPos.maxHeight,
+              }}
+            >
+              {options.map((option, index) => (
+                <button
+                  key={`${option.value}-${index}`}
+                  type="button"
+                  data-select-index={index}
+                  className={`select-option${index === selectedIndex ? " is-selected" : ""}${index === highlighted ? " is-active" : ""}`}
+                  role="option"
+                  aria-selected={index === selectedIndex}
+                  disabled={option.disabled}
+                  onMouseEnter={() => setHighlighted(index)}
+                  onClick={() => commit(index)}
+                >
+                  <span>{option.label}</span>
+                  {index === selectedIndex ? (
+                    <i className="bi bi-check2" aria-hidden="true" />
+                  ) : null}
+                </button>
+              ))}
+            </div>,
+            document.body,
+          )
+        : null}
+    </>
+  );
+}
