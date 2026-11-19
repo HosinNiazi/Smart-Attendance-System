@@ -1238,7 +1238,13 @@ const FACULTY_STATS_SELECT = `
   (SELECT count(*)::int FROM users u WHERE u.organization_id = o.id AND u.role = 'admin' AND u.is_active) AS "admins",
   (SELECT count(*)::int FROM courses c WHERE c.organization_id = o.id) AS "courses",
   (SELECT count(*)::int FROM exams e WHERE e.organization_id = o.id) AS "exams",
-  (SELECT max(al.created_at) FROM audit_logs al WHERE al.organization_id = o.id) AS "lastActivity"
+  (SELECT max(al.created_at) FROM audit_logs al WHERE al.organization_id = o.id) AS "lastActivity",
+  (SELECT u.display_name FROM users u
+    WHERE u.organization_id = o.id AND u.role = 'admin' AND u.is_active
+    ORDER BY CASE u.admin_level
+               WHEN 'owner' THEN 0 WHEN 'manager' THEN 1 WHEN 'operator' THEN 2 ELSE 3
+             END, u.created_at
+    LIMIT 1) AS "managerName"
 `;
 
 async function loadFacultyForPlatform(client, facultyId) {
@@ -2162,7 +2168,15 @@ app.get(
         LIMIT $${params.length - 1} OFFSET $${params.length}`,
       params,
     );
-    res.json({ items: rows });
+    const countParams = params.slice(0, params.length - 2);
+    const { rows: countRows } = await pool.query(
+      `SELECT count(*)::int AS total
+         FROM audit_logs al
+         JOIN organizations o ON o.id = al.organization_id
+        WHERE ${conditions.join(" AND ")}`,
+      countParams,
+    );
+    res.json({ items: rows, total: countRows[0]?.total || 0 });
   }),
 );
 

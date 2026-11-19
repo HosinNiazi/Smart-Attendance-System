@@ -1,5 +1,5 @@
-import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { EmptyState, Icon, Select, SkeletonTable, StatCard } from "./shared.jsx";
+import React, { useCallback, useEffect, useId, useMemo, useRef, useState } from "react";
+import { EmptyState, Icon, Select, SkeletonTable, StatCard, TablePager } from "./shared.jsx";
 import {
   archivePlatformFaculty,
   clearPlatformSession,
@@ -20,6 +20,7 @@ import {
   resetFacultyAdminPassword,
   resetPlatformAdminPassword,
   revokeImpersonation,
+  setPlatformSession,
   updateFacultyAdmin,
   updatePlatformAdmin,
   updatePlatformFaculty,
@@ -31,12 +32,28 @@ const FACULTY_LEVEL_LABELS = {
   operator: "کارمند آموزش",
   viewer: "کارمند آموزش (فقط مشاهده)",
 };
+const FACULTY_LEVEL_HINTS = {
+  owner: "دسترسی کامل به همهٔ بخش‌های دانشکده و مدیریت کارکنان",
+  manager: "مدیریت آموزش، کلاس‌ها، حضور و گزارش‌ها بدون تغییر تنظیمات حساس",
+  operator: "ثبت و پیگیری روزمرهٔ آموزشی و حضور، بدون حذف و تنظیمات",
+  viewer: "فقط مشاهدهٔ اطلاعات و گزارش‌ها؛ بدون هیچ تغییری",
+};
 const PLATFORM_LEVEL_LABELS = {
   owner: "مالک سامانه",
   operator: "اپراتور سامانه",
   auditor: "ناظر سامانه",
 };
 const PLATFORM_LEVEL_TONES = { owner: "success", operator: "info", auditor: "neutral" };
+const PLATFORM_LEVEL_HINTS = {
+  owner: "کنترل کامل سامانه، ساخت و تغییر مدیران و همهٔ دانشکده‌ها",
+  operator: "مدیریت و ورود به دانشکده‌ها، بدون مدیریت حساب‌های سامانه",
+  auditor: "فقط مشاهدهٔ دانشکده‌ها، نشست‌ها و گزارش فعالیت",
+};
+const PLATFORM_LEVEL_ICONS = {
+  owner: "bi-shield-check",
+  operator: "bi-sliders",
+  auditor: "bi-eye",
+};
 
 const faNumber = (value) => Number(value || 0).toLocaleString("fa-IR");
 const faDateTime = (value) =>
@@ -46,6 +63,19 @@ const faDateTime = (value) =>
         timeStyle: "short",
       })
     : "—";
+const faRelative = (value) => {
+  if (!value) return "—";
+  const diff = Date.now() - new Date(value).getTime();
+  if (!Number.isFinite(diff)) return "—";
+  const minutes = Math.floor(diff / 60000);
+  if (minutes < 1) return "همین حالا";
+  if (minutes < 60) return `${faNumber(minutes)} دقیقه پیش`;
+  const hours = Math.floor(minutes / 60);
+  if (hours < 24) return `${faNumber(hours)} ساعت پیش`;
+  const days = Math.floor(hours / 24);
+  if (days < 30) return `${faNumber(days)} روز پیش`;
+  return faDateTime(value);
+};
 
 const AUDIT_ACTION_LABELS = {
   "platform.faculty.create": "ساخت دانشکده",
@@ -60,9 +90,129 @@ const AUDIT_ACTION_LABELS = {
   "platform.admin.create": "ساخت مدیر سامانه",
   "platform.admin.update": "تغییر دسترسی مدیر سامانه",
   "platform.admin.reset_password": "بازنشانی رمز مدیر سامانه",
+  create: "ایجاد",
+  update: "ویرایش",
+  delete: "حذف",
+  publish: "انتشار",
+  cancel: "لغو",
+  close: "بستن",
+  reset_password: "بازنشانی رمز",
+  provision_account: "ساخت حساب کاربری",
+  provision_accounts: "ساخت حساب‌های کاربری",
+  grant_accommodation: "ثبت تسهیلات آموزشی",
+  "staff.create": "ساخت کارمند دانشکده",
+  "staff.update": "ویرایش کارمند دانشکده",
+  "staff.delete": "حذف کارمند دانشکده",
+  "staff.reset_password": "بازنشانی رمز کارمند دانشکده",
 };
+const AUDIT_ACTION_ICONS = {
+  create: "bi-plus-circle",
+  update: "bi-pencil-square",
+  delete: "bi-trash3",
+  publish: "bi-send-check",
+  cancel: "bi-x-circle",
+  close: "bi-lock",
+  reset_password: "bi-key",
+  provision_account: "bi-person-plus",
+  provision_accounts: "bi-people",
+  grant_accommodation: "bi-award",
+};
+const auditActionIcon = (action) => {
+  if (action?.startsWith("platform.impersonation")) return "bi-box-arrow-in-left";
+  if (action?.startsWith("platform.faculty")) return "bi-buildings";
+  if (action?.startsWith("platform.admin")) return "bi-person-gear";
+  if (action?.startsWith("staff.")) return "bi-person-badge";
+  return AUDIT_ACTION_ICONS[action] || "bi-activity";
+};
+const AUDIT_ENTITY_LABELS = {
+  faculty: "دانشکده",
+  organization: "دانشکده",
+  platform_admin: "مدیر سامانه",
+  admin: "کارمند دانشکده",
+  staff: "کارمند دانشکده",
+  user: "کاربر",
+  student: "دانشجو",
+  teacher: "استاد",
+  course: "درس",
+  session: "جلسهٔ کلاس",
+  exam: "آزمون",
+  registration: "درخواست ثبت‌نام",
+  leave_request: "درخواست مرخصی",
+  objection: "اعتراض حضور",
+  ticket: "تیکت پشتیبانی",
+  attendance: "حضور و غیاب",
+  voice_sample: "نمونهٔ صدا",
+};
+const auditEntityLabel = (value) => AUDIT_ENTITY_LABELS[value] || value || "—";
+const AUDIT_ACTION_OPTIONS = Object.entries(AUDIT_ACTION_LABELS).sort((a, b) =>
+  a[1].localeCompare(b[1], "fa"),
+);
 
-function Modal({ title, eyebrow, onClose, children, wide = false }) {
+function ModalAlert({ message, onClose }) {
+  if (!message) return null;
+  return (
+    <div className="platform-modal-alert" role="alert">
+      <Icon name="bi-exclamation-triangle" />
+      <span>{message}</span>
+      {onClose && (
+        <button type="button" aria-label="بستن پیام" onClick={onClose}>
+          <Icon name="bi-x-lg" />
+        </button>
+      )}
+    </div>
+  );
+}
+
+function useModalBehavior(onClose) {
+  const dialogRef = useRef(null);
+  const closeRef = useRef(onClose);
+  closeRef.current = onClose;
+  useEffect(() => {
+    const previous = document.activeElement;
+    const node = dialogRef.current;
+    const getFocusable = () =>
+      [...(node?.querySelectorAll(
+        'a[href],button:not([disabled]),textarea:not([disabled]),input:not([disabled]),select:not([disabled]),[tabindex]:not([tabindex="-1"])',
+      ) || [])].filter((el) => el.offsetParent !== null);
+    const focusFirst = () => {
+      const list = getFocusable();
+      (list[0] || node)?.focus?.();
+    };
+    focusFirst();
+    const handleKey = (event) => {
+      if (event.key === "Escape") {
+        event.preventDefault();
+        closeRef.current?.();
+        return;
+      }
+      if (event.key !== "Tab") return;
+      const list = getFocusable();
+      if (!list.length) return;
+      const first = list[0];
+      const last = list[list.length - 1];
+      if (event.shiftKey && document.activeElement === first) {
+        event.preventDefault();
+        last.focus();
+      } else if (!event.shiftKey && document.activeElement === last) {
+        event.preventDefault();
+        first.focus();
+      }
+    };
+    document.addEventListener("keydown", handleKey, true);
+    const previousOverflow = document.body.style.overflow;
+    document.body.style.overflow = "hidden";
+    return () => {
+      document.removeEventListener("keydown", handleKey, true);
+      document.body.style.overflow = previousOverflow;
+      previous?.focus?.();
+    };
+  }, []);
+  return dialogRef;
+}
+
+function Modal({ title, eyebrow, onClose, children, wide = false, error }) {
+  const dialogRef = useModalBehavior(onClose);
+  const titleId = useId();
   return (
     <div
       className="modal-backdrop-custom"
@@ -72,46 +222,98 @@ function Modal({ title, eyebrow, onClose, children, wide = false }) {
       }}
     >
       <section
+        ref={dialogRef}
+        tabIndex={-1}
         className={`custom-modal ${wide ? "platform-modal-wide" : ""}`}
         role="dialog"
         aria-modal="true"
-        aria-label={title}
+        aria-labelledby={titleId}
       >
         <div className="modal-head">
           <div>
             {eyebrow && <span className="eyebrow">{eyebrow}</span>}
-            <h3>{title}</h3>
+            <h3 id={titleId}>{title}</h3>
           </div>
           <button type="button" className="icon-button" onClick={onClose} aria-label="بستن">
             <Icon name="bi-x-lg" />
           </button>
         </div>
+        <ModalAlert message={error} />
         {children}
       </section>
     </div>
   );
 }
 
+function PasswordInput({ id, name, value, onChange, autoComplete, placeholder, required, defaultValue, minLength }) {
+  const [visible, setVisible] = useState(false);
+  return (
+    <div className="platform-password-field">
+      <input
+        id={id}
+        name={name}
+        className="form-control"
+        type={visible ? "text" : "password"}
+        value={value}
+        onChange={onChange}
+        autoComplete={autoComplete}
+        placeholder={placeholder}
+        required={required}
+        defaultValue={defaultValue}
+        minLength={minLength}
+        dir="ltr"
+      />
+      <button
+        type="button"
+        className="platform-password-toggle"
+        aria-label={visible ? "پنهان کردن رمز" : "نمایش رمز"}
+        title={visible ? "پنهان کردن رمز" : "نمایش رمز"}
+        onClick={() => setVisible((current) => !current)}
+        tabIndex={-1}
+      >
+        <Icon name={visible ? "bi-eye-slash" : "bi-eye"} />
+      </button>
+    </div>
+  );
+}
+
 function CredentialsModal({ title, rows, onClose }) {
+  const dialogRef = useModalBehavior(onClose);
+  const [copied, setCopied] = useState("");
+  const titleId = useId();
   const copy = (row) => {
     const text = `نام کاربری: ${row.username}\nرمز موقت: ${row.temporaryPassword}`;
-    if (!navigator.clipboard?.writeText) return;
-    navigator.clipboard.writeText(text).catch(() => {});
+    if (!navigator.clipboard?.writeText) {
+      setCopied("copy-failed");
+      return;
+    }
+    navigator.clipboard
+      .writeText(text)
+      .then(() => setCopied(row.username))
+      .catch(() => setCopied("copy-failed"));
   };
   return (
-    <div className="modal-backdrop-custom" role="presentation">
+    <div
+      className="modal-backdrop-custom"
+      role="presentation"
+      onMouseDown={(event) => {
+        if (event.target === event.currentTarget) onClose();
+      }}
+    >
       <section
-        className="custom-modal credentials-modal"
+        ref={dialogRef}
+        tabIndex={-1}
+        className="custom-modal credentials-modal platform-print-credentials"
         role="dialog"
         aria-modal="true"
-        aria-label={title}
+        aria-labelledby={titleId}
       >
         <div className="modal-head">
           <div>
             <span className="eyebrow">اعتبارنامهٔ ورود</span>
-            <h3>{title}</h3>
+            <h3 id={titleId}>{title}</h3>
           </div>
-          <button type="button" className="icon-button" onClick={onClose}>
+          <button type="button" className="icon-button" onClick={onClose} aria-label="بستن">
             <Icon name="bi-x-lg" />
           </button>
         </div>
@@ -136,12 +338,18 @@ function CredentialsModal({ title, rows, onClose }) {
                   <code>{row.temporaryPassword}</code>
                 </span>
                 <button type="button" className="btn btn-light-outline" onClick={() => copy(row)}>
-                  <Icon name="bi-clipboard" /> کپی
+                  <Icon name={copied === row.username ? "bi-check2" : "bi-clipboard"} />{" "}
+                  {copied === row.username ? "کپی شد" : "کپی"}
                 </button>
               </div>
             </div>
           ))}
         </div>
+        {copied === "copy-failed" && (
+          <p className="platform-inline-note is-danger">
+            مرورگر اجازهٔ کپی خودکار نداد؛ متن را دستی انتخاب و کپی کنید.
+          </p>
+        )}
         <div className="modal-actions">
           <button type="button" className="btn btn-primary" onClick={onClose}>
             متوجه شدم
@@ -199,26 +407,40 @@ export default function PlatformArea({ theme, onToggleTheme, onEnterFaculty, onE
   const [passwordChange, setPasswordChange] = useState(null);
   const [page, setPage] = useState("overview");
   const [error, setError] = useState("");
-  const [toast, setToast] = useState("");
+  const [modalError, setModalError] = useState("");
+  const [toast, setToast] = useState(null);
   const [loading, setLoading] = useState(true);
   const [overview, setOverview] = useState(null);
   const [faculties, setFaculties] = useState([]);
   const [platformAdmins, setPlatformAdmins] = useState([]);
+  const [adminLoading, setAdminLoading] = useState(false);
   const [activeSessions, setActiveSessions] = useState([]);
+  const [sessionsLoading, setSessionsLoading] = useState(true);
   const [auditItems, setAuditItems] = useState([]);
+  const [auditTotal, setAuditTotal] = useState(0);
+  const [auditPage, setAuditPage] = useState(1);
+  const [auditLoading, setAuditLoading] = useState(false);
   const [auditFilters, setAuditFilters] = useState({ organizationId: "", action: "" });
+  const [facultyQuery, setFacultyQuery] = useState("");
+  const [facultyStatus, setFacultyStatus] = useState("all");
+  const [facultySort, setFacultySort] = useState("newest");
+  const [facultyPage, setFacultyPage] = useState(1);
+  const [mobileNav, setMobileNav] = useState(false);
   const [facultyModal, setFacultyModal] = useState(null);
   const [adminModal, setAdminModal] = useState(null);
   const [enterModal, setEnterModal] = useState(null);
   const [platformAdminModal, setPlatformAdminModal] = useState(null);
+  const [accountModal, setAccountModal] = useState(false);
+  const [confirmState, setConfirmState] = useState(null);
+  const [confirmBusy, setConfirmBusy] = useState(false);
   const [credentials, setCredentials] = useState(null);
   const [busy, setBusy] = useState(false);
   const toastTimer = useRef(null);
 
-  const notify = useCallback((message) => {
-    setToast(message);
+  const notify = useCallback((message, tone = "success") => {
+    setToast({ message, tone });
     if (toastTimer.current) clearTimeout(toastTimer.current);
-    toastTimer.current = setTimeout(() => setToast(""), 4500);
+    toastTimer.current = setTimeout(() => setToast(null), 4500);
   }, []);
 
   useEffect(() => () => {
@@ -228,6 +450,26 @@ export default function PlatformArea({ theme, onToggleTheme, onEnterFaculty, onE
   const level = sessionUser?.platformLevel || "auditor";
   const canManage = level === "owner" || level === "operator";
   const isOwner = level === "owner";
+  const passwordRequired = Boolean(passwordChange) || Boolean(sessionUser?.mustChangePassword);
+
+  function showError(message) {
+    const text = message || "عملیات انجام نشد.";
+    const modalOpen = Boolean(
+      facultyModal || adminModal || enterModal || platformAdminModal || accountModal || confirmState,
+    );
+    if (modalOpen) setModalError(text);
+    else setError(text);
+  }
+
+  function openModal(setter, value) {
+    setModalError("");
+    setter(value);
+  }
+
+  function closeModal(setter) {
+    setModalError("");
+    setter(null);
+  }
 
   const reloadFaculties = useCallback(async () => {
     const data = await fetchPlatformFaculties();
@@ -238,37 +480,59 @@ export default function PlatformArea({ theme, onToggleTheme, onEnterFaculty, onE
     setOverview(data);
   }, []);
   const reloadAdmins = useCallback(async () => {
-    const data = await fetchPlatformAdmins();
-    setPlatformAdmins(data?.admins || []);
+    setAdminLoading(true);
+    try {
+      const data = await fetchPlatformAdmins();
+      setPlatformAdmins(data?.admins || []);
+    } finally {
+      setAdminLoading(false);
+    }
   }, []);
   const reloadSessions = useCallback(async () => {
+    setSessionsLoading(true);
     try {
       const { sessions } = await fetchPlatformImpersonations();
       setActiveSessions(sessions || []);
     } catch {
       setActiveSessions([]);
+    } finally {
+      setSessionsLoading(false);
     }
   }, []);
-  const reloadAudit = useCallback(async (filters = auditFilters) => {
-    const data = await fetchPlatformAudit({ ...filters, limit: 100 });
-    setAuditItems(data?.items || []);
-  }, [auditFilters]);
+  const loadAudit = useCallback(async (filters, pageNumber = 1) => {
+    setAuditLoading(true);
+    try {
+      const data = await fetchPlatformAudit({
+        ...filters,
+        limit: 20,
+        offset: (pageNumber - 1) * 20,
+      });
+      setAuditItems(data?.items || []);
+      setAuditTotal(Number(data?.total) || 0);
+      setAuditPage(pageNumber);
+    } finally {
+      setAuditLoading(false);
+    }
+  }, []);
 
   const refreshAll = useCallback(async () => {
     if (!token) return;
     setLoading(true);
     setError("");
     try {
-      const [overviewData, facultiesData] = await Promise.all([
+      const [overviewData, facultiesData, sessionsData] = await Promise.all([
         fetchPlatformOverview(),
         fetchPlatformFaculties(),
+        fetchPlatformImpersonations().catch(() => ({ sessions: [] })),
       ]);
       setOverview(overviewData);
       setFaculties(facultiesData?.faculties || []);
+      setActiveSessions(sessionsData?.sessions || []);
     } catch (loadError) {
       setError(loadError.message || "دریافت اطلاعات پنل سامانه انجام نشد.");
     } finally {
       setLoading(false);
+      setSessionsLoading(false);
     }
   }, [token]);
 
@@ -278,13 +542,33 @@ export default function PlatformArea({ theme, onToggleTheme, onEnterFaculty, onE
 
   useEffect(() => {
     if (!token || !sessionUser || sessionUser.mustChangePassword) return;
-    if (page === "admins") {
-      reloadAdmins().catch((e) => setError(e.message));
-      reloadSessions().catch(() => {});
+    if (page === "admins") reloadAdmins().catch((e) => setError(e.message));
+    if (page === "audit") {
+      setAuditPage(1);
+      loadAudit(auditFilters, 1).catch((e) => setError(e.message));
     }
-    if (page === "audit") reloadAudit().catch((e) => setError(e.message));
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [page, token, sessionUser]);
+
+  // A stale platform token should return the user to the sign-in screen instead
+  // of leaving an empty panel behind.
+  useEffect(() => {
+    const handleUnauthorized = () => {
+      clearPlatformSession();
+      setToken("");
+      setSessionUser(null);
+      setOverview(null);
+      setFaculties([]);
+      setActiveSessions([]);
+      setLoginError("نشست شما منقضی شده است؛ دوباره وارد شوید.");
+    };
+    window.addEventListener("platform:unauthorized", handleUnauthorized);
+    return () => window.removeEventListener("platform:unauthorized", handleUnauthorized);
+  }, []);
+
+  useEffect(() => {
+    setFacultyPage(1);
+  }, [facultyQuery, facultyStatus, facultySort]);
 
   async function submitLogin(event) {
     event.preventDefault();
@@ -296,7 +580,7 @@ export default function PlatformArea({ theme, onToggleTheme, onEnterFaculty, onE
       setSessionUser(result.user);
       setLoginPassword("");
       if (result.user?.mustChangePassword) {
-        setPasswordChange({ currentPassword: loginPassword });
+        setPasswordChange({ currentPassword: loginPassword, forced: true });
       }
     } catch (loginFailure) {
       setLoginError(loginFailure.message || "ورود به پنل سامانه انجام نشد.");
@@ -311,6 +595,14 @@ export default function PlatformArea({ theme, onToggleTheme, onEnterFaculty, onE
     const currentPassword = String(form.get("currentPassword") || "");
     const newPassword = String(form.get("newPassword") || "");
     const confirm = String(form.get("confirmPassword") || "");
+    if (!currentPassword) {
+      setError("رمز عبور فعلی را وارد کنید.");
+      return;
+    }
+    if (newPassword.length < 8) {
+      setError("رمز عبور جدید باید حداقل ۸ کاراکتر باشد.");
+      return;
+    }
     if (newPassword !== confirm) {
       setError("تکرار رمز عبور جدید مطابقت ندارد.");
       return;
@@ -321,6 +613,7 @@ export default function PlatformArea({ theme, onToggleTheme, onEnterFaculty, onE
       await platformChangePassword(currentPassword, newPassword);
       const next = { ...sessionUser, mustChangePassword: false };
       setSessionUser(next);
+      if (token) setPlatformSession(token, next);
       setPasswordChange(null);
       notify("رمز عبور سامانه تغییر کرد.");
     } catch (changeError) {
@@ -336,18 +629,47 @@ export default function PlatformArea({ theme, onToggleTheme, onEnterFaculty, onE
     setSessionUser(null);
     setOverview(null);
     setFaculties([]);
+    setActiveSessions([]);
     setPage("overview");
+    setMobileNav(false);
+    setConfirmState(null);
+    setAccountModal(false);
   };
+
+  function goTo(nextPage) {
+    setPage(nextPage);
+    setMobileNav(false);
+    setError("");
+  }
+
+  function requestConfirm(options) {
+    setModalError("");
+    setConfirmState(options);
+  }
+
+  async function runConfirm() {
+    if (!confirmState) return;
+    setConfirmBusy(true);
+    setModalError("");
+    try {
+      await confirmState.onConfirm();
+      setConfirmState(null);
+    } catch (confirmError) {
+      setModalError(confirmError.message || confirmState.errorMessage || "عملیات انجام نشد.");
+    } finally {
+      setConfirmBusy(false);
+    }
+  }
 
   async function saveFaculty(event) {
     event.preventDefault();
     const form = new FormData(event.currentTarget);
     const values = Object.fromEntries(form.entries());
     setBusy(true);
-    setError("");
+    setModalError("");
     try {
       if (facultyModal?.mode === "edit") {
-        const result = await updatePlatformFaculty(facultyModal.faculty.id, {
+        await updatePlatformFaculty(facultyModal.faculty.id, {
           name: values.name,
           code: values.code,
           contactName: values.contactName,
@@ -356,10 +678,7 @@ export default function PlatformArea({ theme, onToggleTheme, onEnterFaculty, onE
         });
         setFacultyModal(null);
         notify("اطلاعات دانشکده به‌روزرسانی شد.");
-        await reloadFaculties();
-        if (result?.faculty) {
-          setOverview((current) => current && { ...current });
-        }
+        await Promise.all([reloadFaculties(), reloadOverview()]);
       } else {
         const result = await createPlatformFaculty({
           name: values.name,
@@ -386,25 +705,25 @@ export default function PlatformArea({ theme, onToggleTheme, onEnterFaculty, onE
         await refreshAll();
       }
     } catch (saveError) {
-      setError(saveError.message || "ذخیرهٔ دانشکده انجام نشد.");
+      showError(saveError.message || "ذخیرهٔ دانشکده انجام نشد.");
     } finally {
       setBusy(false);
     }
   }
 
-  async function archiveFaculty(faculty) {
-    if (!window.confirm(`دانشکدهٔ «${faculty.name}» آرشیو شود؟ ورود همهٔ کاربران آن بسته می‌شود.`))
-      return;
-    setBusy(true);
-    try {
-      await archivePlatformFaculty(faculty.id);
-      notify("دانشکده آرشیو شد.");
-      await Promise.all([reloadFaculties(), reloadOverview()]);
-    } catch (archiveError) {
-      setError(archiveError.message || "آرشیو دانشکده انجام نشد.");
-    } finally {
-      setBusy(false);
-    }
+  function archiveFaculty(faculty) {
+    requestConfirm({
+      title: `آرشیو «${faculty.name}»`,
+      message:
+        "با آرشیو شدن این دانشکده، ورود همهٔ کاربران آن بسته می‌شود و دانشکده از فهرست فعال خارج می‌شود. بعداً می‌توانید آن را دوباره فعال کنید.",
+      confirmLabel: "آرشیو دانشکده",
+      tone: "danger",
+      onConfirm: async () => {
+        await archivePlatformFaculty(faculty.id);
+        notify("دانشکده آرشیو شد.");
+        await Promise.all([reloadFaculties(), reloadOverview()]);
+      },
+    });
   }
 
   async function restoreFaculty(faculty) {
@@ -414,7 +733,7 @@ export default function PlatformArea({ theme, onToggleTheme, onEnterFaculty, onE
       notify("دانشکده دوباره فعال شد.");
       await Promise.all([reloadFaculties(), reloadOverview()]);
     } catch (restoreError) {
-      setError(restoreError.message || "فعال‌سازی دانشکده انجام نشد.");
+      showError(restoreError.message || "فعال‌سازی دانشکده انجام نشد.");
     } finally {
       setBusy(false);
     }
@@ -423,6 +742,7 @@ export default function PlatformArea({ theme, onToggleTheme, onEnterFaculty, onE
   async function openAdmins(faculty) {
     setBusy(true);
     setError("");
+    setModalError("");
     try {
       const data = await fetchPlatformFaculty(faculty.id);
       setAdminModal({ faculty: data.faculty, admins: data.admins || [], mode: "list" });
@@ -438,6 +758,7 @@ export default function PlatformArea({ theme, onToggleTheme, onEnterFaculty, onE
     const form = new FormData(event.currentTarget);
     const values = Object.fromEntries(form.entries());
     setBusy(true);
+    setModalError("");
     try {
       const result = await createFacultyAdmin(adminModal.faculty.id, {
         fullName: values.fullName,
@@ -445,7 +766,7 @@ export default function PlatformArea({ theme, onToggleTheme, onEnterFaculty, onE
         level: values.level,
       });
       setCredentials({
-        title: "مدیر جدید دانشکده",
+        title: "کارمند جدید دانشکده",
         rows: [
           {
             fullName: result.admin?.fullName,
@@ -459,7 +780,7 @@ export default function PlatformArea({ theme, onToggleTheme, onEnterFaculty, onE
       await openAdmins(adminModal.faculty);
       await reloadFaculties();
     } catch (createError) {
-      setError(createError.message || "ساخت مدیر دانشکده انجام نشد.");
+      showError(createError.message || "ساخت کارمند دانشکده انجام نشد.");
     } finally {
       setBusy(false);
     }
@@ -467,39 +788,39 @@ export default function PlatformArea({ theme, onToggleTheme, onEnterFaculty, onE
 
   async function changeFacultyAdmin(admin, patch) {
     setBusy(true);
+    setModalError("");
     try {
       await updateFacultyAdmin(adminModal.faculty.id, admin.id, patch);
-      notify("سطح دسترسی مدیر به‌روزرسانی شد.");
+      notify("سطح دسترسی به‌روزرسانی شد.");
       await openAdmins(adminModal.faculty);
       await reloadFaculties();
     } catch (updateError) {
-      setError(updateError.message || "تغییر دسترسی انجام نشد.");
+      showError(updateError.message || "تغییر دسترسی انجام نشد.");
     } finally {
       setBusy(false);
     }
   }
 
-  async function resetFacultyAdmin(admin) {
-    if (!window.confirm(`رمز موقت جدید برای «${admin.fullName}» ساخته شود؟`)) return;
-    setBusy(true);
-    try {
-      const result = await resetFacultyAdminPassword(adminModal.faculty.id, admin.id);
-      setCredentials({
-        title: "رمز موقت جدید مدیر دانشکده",
-        rows: [
-          {
-            fullName: admin.fullName,
-            username: result.username,
-            temporaryPassword: result.temporaryPassword,
-            note: "رمز باید در اولین ورود تغییر کند.",
-          },
-        ],
-      });
-    } catch (resetError) {
-      setError(resetError.message || "بازنشانی رمز انجام نشد.");
-    } finally {
-      setBusy(false);
-    }
+  function resetFacultyAdmin(admin) {
+    requestConfirm({
+      title: "بازنشانی رمز کارمند دانشکده",
+      message: `برای «${admin.fullName}» یک رمز موقت جدید ساخته می‌شود و باید در اولین ورود آن را تغییر دهد.`,
+      confirmLabel: "ساخت رمز موقت",
+      onConfirm: async () => {
+        const result = await resetFacultyAdminPassword(adminModal.faculty.id, admin.id);
+        setCredentials({
+          title: "رمز موقت جدید کارمند دانشکده",
+          rows: [
+            {
+              fullName: admin.fullName,
+              username: result.username,
+              temporaryPassword: result.temporaryPassword,
+              note: "رمز باید در اولین ورود تغییر کند.",
+            },
+          ],
+        });
+      },
+    });
   }
 
   async function enterSelectedFaculty(event) {
@@ -507,16 +828,17 @@ export default function PlatformArea({ theme, onToggleTheme, onEnterFaculty, onE
     const form = new FormData(event.currentTarget);
     const reason = String(form.get("reason") || "").trim();
     if (reason.length < 5) {
-      setError("دلیل ورود را کامل‌تر بنویسید (حداقل ۵ کاراکتر).");
+      setModalError("دلیل ورود را کامل‌تر بنویسید (حداقل ۵ کاراکتر).");
       return;
     }
     setBusy(true);
+    setModalError("");
     try {
       const result = await enterFaculty(enterModal.id, reason);
       setEnterModal(null);
       onEnterFaculty?.(result);
     } catch (enterError) {
-      setError(enterError.message || "ورود به دانشکده انجام نشد.");
+      showError(enterError.message || "ورود به دانشکده انجام نشد.");
     } finally {
       setBusy(false);
     }
@@ -527,6 +849,7 @@ export default function PlatformArea({ theme, onToggleTheme, onEnterFaculty, onE
     const form = new FormData(event.currentTarget);
     const values = Object.fromEntries(form.entries());
     setBusy(true);
+    setModalError("");
     try {
       const result = await createPlatformAdmin({
         fullName: values.fullName,
@@ -548,7 +871,7 @@ export default function PlatformArea({ theme, onToggleTheme, onEnterFaculty, onE
       setPlatformAdminModal(null);
       await reloadAdmins();
     } catch (createError) {
-      setError(createError.message || "ساخت مدیر سامانه انجام نشد.");
+      showError(createError.message || "ساخت مدیر سامانه انجام نشد.");
     } finally {
       setBusy(false);
     }
@@ -567,65 +890,141 @@ export default function PlatformArea({ theme, onToggleTheme, onEnterFaculty, onE
     }
   }
 
-  async function resetPlatformAdmin(admin) {
-    if (!window.confirm(`رمز موقت جدید برای «${admin.fullName}» ساخته شود؟`)) return;
+  function resetPlatformAdmin(admin) {
+    requestConfirm({
+      title: "بازنشانی رمز مدیر سامانه",
+      message: `برای «${admin.fullName}» یک رمز موقت جدید ساخته می‌شود و باید در اولین ورود آن را تغییر دهد.`,
+      confirmLabel: "ساخت رمز موقت",
+      onConfirm: async () => {
+        const result = await resetPlatformAdminPassword(admin.id);
+        setCredentials({
+          title: "رمز موقت جدید مدیر سامانه",
+          rows: [
+            {
+              fullName: admin.fullName,
+              username: result.username,
+              temporaryPassword: result.temporaryPassword,
+              note: "رمز باید در اولین ورود تغییر کند.",
+            },
+          ],
+        });
+      },
+    });
+  }
+
+  function endSession(session) {
+    requestConfirm({
+      title: "پایان نشست ورود",
+      message: `نشست «${session.platformName}» در دانشکدهٔ «${session.facultyName}» پایان یابد؟`,
+      confirmLabel: "پایان نشست",
+      tone: "danger",
+      onConfirm: async () => {
+        await revokeImpersonation(session.id);
+        notify("نشست پایان یافت.");
+        await reloadSessions();
+      },
+    });
+  }
+
+  async function submitAccountPassword(event) {
+    event.preventDefault();
+    const form = new FormData(event.currentTarget);
+    const currentPassword = String(form.get("currentPassword") || "");
+    const newPassword = String(form.get("newPassword") || "");
+    const confirm = String(form.get("confirmPassword") || "");
+    if (newPassword.length < 8) {
+      setModalError("رمز عبور جدید باید حداقل ۸ کاراکتر باشد.");
+      return;
+    }
+    if (newPassword !== confirm) {
+      setModalError("تکرار رمز عبور جدید مطابقت ندارد.");
+      return;
+    }
     setBusy(true);
+    setModalError("");
     try {
-      const result = await resetPlatformAdminPassword(admin.id);
-      setCredentials({
-        title: "رمز موقت جدید مدیر سامانه",
-        rows: [
-          {
-            fullName: admin.fullName,
-            username: result.username,
-            temporaryPassword: result.temporaryPassword,
-            note: "رمز باید در اولین ورود تغییر کند.",
-          },
-        ],
-      });
-    } catch (resetError) {
-      setError(resetError.message || "بازنشانی رمز انجام نشد.");
+      await platformChangePassword(currentPassword, newPassword);
+      const next = { ...sessionUser, mustChangePassword: false };
+      setSessionUser(next);
+      if (token) setPlatformSession(token, next);
+      setAccountModal(false);
+      notify("رمز عبور شما تغییر کرد.");
+    } catch (changeError) {
+      showError(changeError.message || "تغییر رمز عبور انجام نشد.");
     } finally {
       setBusy(false);
     }
   }
 
-  async function endSession(session) {
-    if (!window.confirm("این نشست ورود به دانشکده پایان یابد؟")) return;
+  async function exportAuditCsv() {
+    setBusy(true);
+    setError("");
     try {
-      await revokeImpersonation(session.id);
-      notify("نشست پایان یافت.");
-      await reloadSessions();
-    } catch (revokeError) {
-      setError(revokeError.message || "پایان نشست انجام نشد.");
+      const data = await fetchPlatformAudit({ ...auditFilters, limit: 200, offset: 0 });
+      const items = data?.items || [];
+      if (!items.length) {
+        notify("موردی برای خروجی وجود ندارد.", "error");
+        return;
+      }
+      const rows = [
+        ["تاریخ", "دانشکده", "کاربر", "اقدام", "نوع موجودیت", "شناسه"],
+        ...items.map((item) => [
+          faDateTime(item.createdAt),
+          item.organizationName,
+          item.actorName || "—",
+          AUDIT_ACTION_LABELS[item.action] || item.action,
+          auditEntityLabel(item.entityType),
+          item.entityId || "",
+        ]),
+      ];
+      const csv =
+        "\ufeff" +
+        rows
+          .map((row) => row.map((cell) => `"${String(cell).replaceAll('"', '""')}"`).join(","))
+          .join("\n");
+      const url = URL.createObjectURL(new Blob([csv], { type: "text/csv;charset=utf-8;" }));
+      const anchor = document.createElement("a");
+      anchor.href = url;
+      anchor.download = "platform-audit.csv";
+      anchor.click();
+      URL.revokeObjectURL(url);
+      notify(
+        items.length < Number(data?.total || 0)
+          ? "خروجی CSV ساخته شد؛ برای حفظ سرعت، حداکثر ۲۰۰ ردیف اول صادر شد."
+          : "خروجی CSV ساخته شد.",
+      );
+    } catch (exportError) {
+      setError(exportError.message || "ساخت خروجی CSV انجام نشد.");
+    } finally {
+      setBusy(false);
     }
   }
 
-  function exportAuditCsv() {
-    if (!auditItems.length) return;
-    const rows = [
-      ["تاریخ", "دانشکده", "کاربر", "اقدام", "نوع موجودیت", "شناسه"],
-      ...auditItems.map((item) => [
-        faDateTime(item.createdAt),
-        item.organizationName,
-        item.actorName || "—",
-        AUDIT_ACTION_LABELS[item.action] || item.action,
-        item.entityType,
-        item.entityId || "",
-      ]),
-    ];
-    const csv =
-      "\ufeff" +
-      rows
-        .map((row) => row.map((cell) => `"${String(cell).replaceAll('"', '""')}"`).join(","))
-        .join("\n");
-    const url = URL.createObjectURL(new Blob([csv], { type: "text/csv;charset=utf-8;" }));
-    const anchor = document.createElement("a");
-    anchor.href = url;
-    anchor.download = "platform-audit.csv";
-    anchor.click();
-    URL.revokeObjectURL(url);
-  }
+  const filteredFaculties = useMemo(() => {
+    const query = facultyQuery.trim().toLocaleLowerCase("fa-IR");
+    const list = faculties.filter((faculty) => {
+      if (facultyStatus === "active" && !faculty.isActive) return false;
+      if (facultyStatus === "archived" && faculty.isActive) return false;
+      if (!query) return true;
+      return [faculty.name, faculty.code, faculty.managerName, faculty.contactName, faculty.contactEmail]
+        .filter(Boolean)
+        .some((value) => String(value).toLocaleLowerCase("fa-IR").includes(query));
+    });
+    const sorted = [...list];
+    if (facultySort === "name") sorted.sort((a, b) => a.name.localeCompare(b.name, "fa"));
+    else if (facultySort === "students") sorted.sort((a, b) => Number(b.students || 0) - Number(a.students || 0));
+    else if (facultySort === "lastActivity")
+      sorted.sort((a, b) => new Date(b.lastActivity || 0) - new Date(a.lastActivity || 0));
+    else sorted.sort((a, b) => new Date(b.createdAt || 0) - new Date(a.createdAt || 0));
+    return sorted;
+  }, [faculties, facultyQuery, facultyStatus, facultySort]);
+
+  const facultyPageCount = Math.max(1, Math.ceil(filteredFaculties.length / 10));
+  const facultyPageSafe = Math.min(facultyPage, facultyPageCount);
+  const visibleFaculties = filteredFaculties.slice(
+    (facultyPageSafe - 1) * 10,
+    facultyPageSafe * 10,
+  );
 
   const currentFacultyStats = useMemo(() => {
     const totals = { faculties: 0, active: 0, students: 0, teachers: 0 };
@@ -640,6 +1039,43 @@ export default function PlatformArea({ theme, onToggleTheme, onEnterFaculty, onE
 
   /* ------------------------------- login ------------------------------- */
 
+  const loginHero = (
+    <aside className="platform-login-hero" aria-hidden="true">
+      <div className="platform-login-hero-brand">
+        <span className="brand-mark">
+          <Icon name="bi-buildings" />
+        </span>
+        <div>
+          <strong>حضوربان</strong>
+          <small>مرکز کنترل سامانه</small>
+        </div>
+      </div>
+      <h2>یک نقطهٔ کنترل برای همهٔ دانشکده‌ها</h2>
+      <p>
+        دانشکده‌ها، کارکنان، مدیران و گزارش فعالیت سامانه را از یک پنل امن مدیریت
+        کنید.
+      </p>
+      <ul className="platform-login-points">
+        <li>
+          <span><Icon name="bi-buildings" /></span>
+          ساخت و مدیریت دانشکده‌ها و کارکنان آن‌ها
+        </li>
+        <li>
+          <span><Icon name="bi-box-arrow-in-left" /></span>
+          ورود کنترل‌شده و زمان‌دار به هر دانشکده
+        </li>
+        <li>
+          <span><Icon name="bi-clock-history" /></span>
+          گزارش کامل و قابل پیگیری همهٔ اقدامات
+        </li>
+      </ul>
+      <div className="platform-login-hero-foot">
+        <span className="status-badge success">اتصال امن</span>
+        <small>هر ورود و اقدام مدیریتی در گزارش فعالیت ثبت می‌شود.</small>
+      </div>
+    </aside>
+  );
+
   if (!token || !sessionUser) {
     return (
       <div className="platform-login-screen">
@@ -651,137 +1087,157 @@ export default function PlatformArea({ theme, onToggleTheme, onEnterFaculty, onE
         >
           <Icon name={theme === "dark" ? "bi-sun" : "bi-moon-stars"} />
         </button>
-        <form className="platform-login-card" onSubmit={submitLogin}>
-          <div className="platform-brand">
-            <span className="brand-mark">
-              <Icon name="bi-buildings" />
-            </span>
-            <div>
-              <strong>حضوربان</strong>
-              <small>پنل مدیریت سامانه</small>
+        <div className="platform-login-layout">
+          {loginHero}
+          <form className="platform-login-card" onSubmit={submitLogin}>
+            <div className="platform-brand">
+              <span className="brand-mark">
+                <Icon name="bi-buildings" />
+              </span>
+              <div>
+                <strong>حضوربان</strong>
+                <small>پنل مدیریت سامانه</small>
+              </div>
             </div>
-          </div>
-          <h1>ورود مدیر سامانه</h1>
-          <p>
-            این بخش فقط برای مدیران سامانه است و به همهٔ دانشکده‌ها دسترسی مدیریتی
-            می‌دهد.
-          </p>
-          <label className="form-label" htmlFor="platform-username">
-            ایمیل مدیر سامانه
-          </label>
-          <div className="input-icon-wrap">
-            <Icon name="bi-envelope" />
-            <input
-              id="platform-username"
-              className="form-control"
-              value={loginName}
-              onChange={(event) => setLoginName(event.target.value)}
-              type="email"
-              autoComplete="username"
-              required
-            />
-          </div>
-          <label className="form-label mt-3" htmlFor="platform-password">
-            رمز عبور
-          </label>
-          <div className="input-icon-wrap">
-            <Icon name="bi-lock" />
-            <input
+            <h1>ورود مدیر سامانه</h1>
+            <p>
+              این بخش فقط برای مدیران سامانه است و به همهٔ دانشکده‌ها دسترسی مدیریتی
+              می‌دهد.
+            </p>
+            <label className="form-label" htmlFor="platform-username">
+              ایمیل مدیر سامانه
+            </label>
+            <div className="input-icon-wrap">
+              <Icon name="bi-envelope" />
+              <input
+                id="platform-username"
+                className="form-control"
+                value={loginName}
+                onChange={(event) => setLoginName(event.target.value)}
+                type="email"
+                autoComplete="username"
+                placeholder="platform@example.com"
+                dir="ltr"
+                required
+              />
+            </div>
+            <label className="form-label mt-3" htmlFor="platform-password">
+              رمز عبور
+            </label>
+            <PasswordInput
               id="platform-password"
-              className="form-control"
-              type="password"
               value={loginPassword}
               onChange={(event) => setLoginPassword(event.target.value)}
               autoComplete="current-password"
+              placeholder="رمز عبور خود را وارد کنید"
               required
             />
-          </div>
-          {loginError && (
-            <p className="login-error" role="alert">
-              {loginError}
-            </p>
-          )}
-          <button className="btn btn-primary w-100" type="submit" disabled={loginPending}>
-            {loginPending ? "در حال ورود…" : "ورود به پنل سامانه"}
-            <Icon name="bi-arrow-left-short" />
-          </button>
-          <button
-            type="button"
-            className="login-home-link"
-            onClick={() => {
-              window.location.hash = "#/login";
-              onExitToSite?.();
-            }}
-          >
-            <Icon name="bi-arrow-right" /> بازگشت به ورود دانشکده‌ها
-          </button>
-        </form>
+            {loginError && (
+              <p className="login-error" role="alert">
+                <Icon name="bi-exclamation-circle" />
+                <span>{loginError}</span>
+              </p>
+            )}
+            <button className="btn btn-primary w-100" type="submit" disabled={loginPending}>
+              {loginPending ? "در حال ورود…" : "ورود به پنل سامانه"}
+              <Icon name="bi-arrow-left-short" />
+            </button>
+            <div className="platform-login-meta">
+              <span><Icon name="bi-shield-lock" /> نشست ۸ ساعته</span>
+              <span><Icon name="bi-journal-text" /> ثبت در گزارش فعالیت</span>
+            </div>
+            <button
+              type="button"
+              className="login-home-link"
+              onClick={() => {
+                window.location.hash = "#/login";
+                onExitToSite?.();
+              }}
+            >
+              <Icon name="bi-arrow-right" /> بازگشت به ورود دانشکده‌ها
+            </button>
+          </form>
+        </div>
       </div>
     );
   }
 
-  if (passwordChange) {
+  if (passwordRequired) {
     return (
       <div className="platform-login-screen">
-        <form className="platform-login-card" onSubmit={submitPasswordChange}>
-          <div className="platform-brand">
-            <span className="brand-mark">
-              <Icon name="bi-shield-lock" />
-            </span>
-            <div>
-              <strong>حضوربان</strong>
-              <small>پنل مدیریت سامانه</small>
+        <button
+          className="icon-button theme-toggle login-theme-toggle"
+          type="button"
+          aria-label="تغییر تم"
+          onClick={onToggleTheme}
+        >
+          <Icon name={theme === "dark" ? "bi-sun" : "bi-moon-stars"} />
+        </button>
+        <div className="platform-login-layout">
+          {loginHero}
+          <form className="platform-login-card" onSubmit={submitPasswordChange}>
+            <div className="platform-brand">
+              <span className="brand-mark">
+                <Icon name="bi-shield-lock" />
+              </span>
+              <div>
+                <strong>حضوربان</strong>
+                <small>پنل مدیریت سامانه</small>
+              </div>
             </div>
-          </div>
-          <h1>تعیین رمز عبور جدید</h1>
-          <p>برای ادامهٔ کار در پنل سامانه، رمز موقت خود را تغییر دهید.</p>
-          <label className="form-label" htmlFor="pc-current">
-            رمز موقت
-          </label>
-          <input
-            id="pc-current"
-            name="currentPassword"
-            className="form-control"
-            type="password"
-            required
-            defaultValue={passwordChange.currentPassword || ""}
-          />
-          <label className="form-label mt-3" htmlFor="pc-new">
-            رمز عبور جدید
-          </label>
-          <input
-            id="pc-new"
-            name="newPassword"
-            className="form-control"
-            type="password"
-            minLength={8}
-            autoComplete="new-password"
-            required
-          />
-          <label className="form-label mt-3" htmlFor="pc-confirm">
-            تکرار رمز عبور جدید
-          </label>
-          <input
-            id="pc-confirm"
-            name="confirmPassword"
-            className="form-control"
-            type="password"
-            minLength={8}
-            autoComplete="new-password"
-            required
-          />
-          {error && (
-            <p className="login-error" role="alert">
-              {error}
+            <span className="eyebrow">ورود اولیه</span>
+            <h1>تعیین رمز عبور جدید</h1>
+            <p>
+              برای ادامهٔ کار در پنل سامانه، رمز موقت خود را تغییر دهید. تا تکمیل این
+              مرحله، سایر بخش‌های پنل در دسترس نیست.
             </p>
-          )}
-          <button className="btn btn-primary w-100" type="submit" disabled={busy}>
-            ذخیرهٔ رمز و ادامه
-          </button>
-          <button type="button" className="login-home-link" onClick={logout}>
-            خروج
-          </button>
-        </form>
+            <label className="form-label" htmlFor="pc-current">
+              رمز موقت
+            </label>
+            <PasswordInput
+              id="pc-current"
+              name="currentPassword"
+              autoComplete="current-password"
+              defaultValue={passwordChange?.currentPassword || ""}
+              placeholder="رمز موقتی که دریافت کرده‌اید"
+              required
+            />
+            <label className="form-label mt-3" htmlFor="pc-new">
+              رمز عبور جدید
+            </label>
+            <PasswordInput
+              id="pc-new"
+              name="newPassword"
+              autoComplete="new-password"
+              placeholder="حداقل ۸ کاراکتر"
+              minLength={8}
+              required
+            />
+            <label className="form-label mt-3" htmlFor="pc-confirm">
+              تکرار رمز عبور جدید
+            </label>
+            <PasswordInput
+              id="pc-confirm"
+              name="confirmPassword"
+              autoComplete="new-password"
+              placeholder="تکرار رمز جدید"
+              minLength={8}
+              required
+            />
+            {error && (
+              <p className="login-error" role="alert">
+                <Icon name="bi-exclamation-circle" />
+                <span>{error}</span>
+              </p>
+            )}
+            <button className="btn btn-primary w-100" type="submit" disabled={busy}>
+              {busy ? "در حال ذخیره…" : "ذخیرهٔ رمز و ادامه"}
+            </button>
+            <button type="button" className="login-home-link" onClick={logout}>
+              <Icon name="bi-box-arrow-right" /> خروج از حساب
+            </button>
+          </form>
+        </div>
       </div>
     );
   }
@@ -797,7 +1253,14 @@ export default function PlatformArea({ theme, onToggleTheme, onEnterFaculty, onE
 
   return (
     <div className="app-shell platform-shell">
-      <aside className="sidebar">
+      {mobileNav && (
+        <button
+          className="mobile-overlay"
+          aria-label="بستن منو"
+          onClick={() => setMobileNav(false)}
+        />
+      )}
+      <aside className={`sidebar ${mobileNav ? "sidebar-open" : ""}`}>
         <div className="sidebar-brand">
           <span className="brand-mark platform-brand-mark">
             <Icon name="bi-buildings" />
@@ -806,6 +1269,14 @@ export default function PlatformArea({ theme, onToggleTheme, onEnterFaculty, onE
             <strong>پنل سامانه</strong>
             <small>مدیریت دانشکده‌ها</small>
           </div>
+          <button
+            type="button"
+            className="sidebar-close"
+            aria-label="بستن منو"
+            onClick={() => setMobileNav(false)}
+          >
+            <Icon name="bi-x-lg" />
+          </button>
         </div>
         <nav className="side-nav">
           <div className="nav-group">
@@ -815,7 +1286,7 @@ export default function PlatformArea({ theme, onToggleTheme, onEnterFaculty, onE
                 key={item.id}
                 type="button"
                 className={`nav-link-custom ${page === item.id ? "active" : ""}`}
-                onClick={() => setPage(item.id)}
+                onClick={() => goTo(item.id)}
               >
                 <Icon name={item.icon} />
                 <span>{item.label}</span>
@@ -831,7 +1302,18 @@ export default function PlatformArea({ theme, onToggleTheme, onEnterFaculty, onE
               <small>{PLATFORM_LEVEL_LABELS[level] || level}</small>
             </div>
           </div>
-          <button type="button" className="btn btn-light-outline w-100" onClick={logout}>
+          <button
+            type="button"
+            className="btn btn-light-outline w-100 platform-account-btn"
+            onClick={() => {
+              setModalError("");
+              setAccountModal(true);
+              setMobileNav(false);
+            }}
+          >
+            <Icon name="bi-person-circle" /> حساب من
+          </button>
+          <button type="button" className="btn btn-light w-100" onClick={logout}>
             <Icon name="bi-box-arrow-right" /> خروج از پنل سامانه
           </button>
         </div>
@@ -839,6 +1321,15 @@ export default function PlatformArea({ theme, onToggleTheme, onEnterFaculty, onE
       <main className="main-area">
         <header className="topbar">
           <div className="topbar-right">
+            <button
+              type="button"
+              className="mobile-menu-btn"
+              aria-label="باز کردن منو"
+              aria-expanded={mobileNav}
+              onClick={() => setMobileNav(true)}
+            >
+              <Icon name="bi-list" />
+            </button>
             <div className="breadcrumb-text">
               <span>پنل سامانه</span>
               <Icon name="bi-chevron-left" />
@@ -872,24 +1363,49 @@ export default function PlatformArea({ theme, onToggleTheme, onEnterFaculty, onE
 
           {page === "overview" && (
             <>
-              <div className="welcome-row">
-                <div>
-                  <div className="eyebrow">نمای کلی سامانه</div>
+              <section className="platform-hero">
+                <div className="platform-hero-copy">
+                  <span className="eyebrow">مرکز کنترل سامانه</span>
                   <h1>سلام، {sessionUser.name || "مدیر سامانه"}</h1>
-                  <p>وضعیت دانشکده‌ها و فعالیت‌های اخیر سامانه را از اینجا پیگیری کنید.</p>
+                  <p>
+                    وضعیت دانشکده‌ها، نشست‌های فعال و فعالیت‌های مدیریتی سامانه را از
+                    اینجا پیگیری کنید.
+                  </p>
+                  <div className="platform-hero-chips">
+                    <span className="status-badge success">
+                      <Icon name="bi-buildings" />{" "}
+                      {faNumber(overview?.stats?.activeFaculties ?? currentFacultyStats.active)} دانشکدهٔ فعال
+                    </span>
+                    <span className="status-badge info">
+                      <Icon name="bi-people" />{" "}
+                      {faNumber(overview?.stats?.students ?? currentFacultyStats.students)} دانشجو
+                    </span>
+                    <span className="status-badge purple">
+                      <Icon name="bi-shield-lock" />{" "}
+                      {faNumber(activeSessions.length)} نشست فعال
+                    </span>
+                  </div>
                 </div>
                 {canManage && (
-                  <div className="welcome-actions">
+                  <div className="platform-hero-actions">
                     <button
                       type="button"
                       className="btn btn-primary"
-                      onClick={() => setFacultyModal({ mode: "create" })}
+                      onClick={() => openModal(setFacultyModal, { mode: "create" })}
                     >
                       <Icon name="bi-plus-lg" /> دانشکدهٔ جدید
                     </button>
+                    <button
+                      type="button"
+                      className="btn btn-light-outline"
+                      onClick={() => goTo("faculties")}
+                    >
+                      <Icon name="bi-buildings" /> مدیریت دانشکده‌ها
+                    </button>
                   </div>
                 )}
-              </div>
+              </section>
+
               <div className="stat-grid">
                 <StatCard
                   icon="bi-buildings"
@@ -913,18 +1429,37 @@ export default function PlatformArea({ theme, onToggleTheme, onEnterFaculty, onE
                   color="amber"
                 />
                 <StatCard
-                  icon="bi-shield-lock"
-                  label="مدیران دانشکده"
+                  icon="bi-person-badge"
+                  label="کارکنان دانشکده"
                   value={faNumber(overview?.stats?.facultyAdmins)}
-                  detail="فعال"
+                  detail="مدیر و کارمند فعال"
                   color="rose"
+                />
+                <StatCard
+                  icon="bi-journal-bookmark"
+                  label="درس‌ها"
+                  value={faNumber(overview?.stats?.courses)}
+                  detail="در همهٔ دانشکده‌ها"
+                  color="purple"
+                />
+                <StatCard
+                  icon="bi-clipboard-check"
+                  label="آزمون‌ها"
+                  value={faNumber(overview?.stats?.exams)}
+                  detail="ثبت‌شده"
+                  color="orange"
                 />
               </div>
 
-              <section className="content-card" style={{ marginTop: 16 }}>
+              <section className="content-card platform-section" style={{ marginTop: 16 }}>
                 <div className="panel-title-inline" style={{ marginBottom: 12 }}>
-                  <h3 style={{ margin: 0 }}>دانشکده‌ها</h3>
-                  <button type="button" className="btn btn-light-outline" onClick={() => setPage("faculties")}>
+                  <div>
+                    <h3 style={{ margin: 0 }}>دانشکده‌ها</h3>
+                    <small className="platform-section-hint">
+                      {faNumber(faculties.length)} دانشکده در سامانه
+                    </small>
+                  </div>
+                  <button type="button" className="btn btn-light-outline" onClick={() => goTo("faculties")}>
                     همهٔ دانشکده‌ها <Icon name="bi-arrow-left" />
                   </button>
                 </div>
@@ -943,7 +1478,10 @@ export default function PlatformArea({ theme, onToggleTheme, onEnterFaculty, onE
                         key={faculty.id}
                         type="button"
                         className="platform-faculty-mini"
-                        onClick={() => setPage("faculties")}
+                        onClick={() =>
+                          canManage ? openAdmins(faculty) : goTo("faculties")
+                        }
+                        title={canManage ? `مدیران ${faculty.name}` : faculty.name}
                       >
                         <span className="platform-faculty-icon">
                           <Icon name="bi-mortarboard" />
@@ -951,6 +1489,7 @@ export default function PlatformArea({ theme, onToggleTheme, onEnterFaculty, onE
                         <span>
                           <strong>{faculty.name}</strong>
                           <small>
+                            {faculty.managerName ? `${faculty.managerName} · ` : ""}
                             {faNumber(faculty.students)} دانشجو · {faNumber(faculty.courses)} درس
                           </small>
                         </span>
@@ -963,19 +1502,29 @@ export default function PlatformArea({ theme, onToggleTheme, onEnterFaculty, onE
                 )}
               </section>
 
-              <section className="content-card" style={{ marginTop: 16 }}>
-                <h3 style={{ marginTop: 0 }}>فعالیت اخیر</h3>
+              <section className="content-card platform-section" style={{ marginTop: 16 }}>
+                <div className="panel-title-inline" style={{ marginBottom: 8 }}>
+                  <div>
+                    <h3 style={{ margin: 0 }}>فعالیت اخیر</h3>
+                    <small className="platform-section-hint">آخرین اقدامات مدیریتی ثبت‌شده</small>
+                  </div>
+                  <button type="button" className="btn btn-light-outline" onClick={() => goTo("audit")}>
+                    گزارش کامل <Icon name="bi-arrow-left" />
+                  </button>
+                </div>
                 {(overview?.recentActivity || []).length === 0 ? (
                   <EmptyState icon="bi-clock-history" title="فعالیتی ثبت نشده" text="اقدامات مدیریتی در این بخش دیده می‌شوند." />
                 ) : (
                   <ul className="platform-activity-list">
                     {overview.recentActivity.map((item) => (
                       <li key={item.id}>
-                        <span className="platform-activity-dot" />
+                        <span className="platform-activity-dot">
+                          <Icon name={auditActionIcon(item.action)} />
+                        </span>
                         <div>
                           <strong>{AUDIT_ACTION_LABELS[item.action] || item.action}</strong>
                           <small>
-                            {item.organizationName} · {item.actorName || "سامانه"} · {faDateTime(item.createdAt)}
+                            {item.organizationName} · {item.actorName || "سامانه"} · {faRelative(item.createdAt)}
                           </small>
                         </div>
                       </li>
@@ -984,18 +1533,41 @@ export default function PlatformArea({ theme, onToggleTheme, onEnterFaculty, onE
                 )}
               </section>
 
-              {activeSessions.length > 0 && (
-                <section className="content-card" style={{ marginTop: 16 }}>
-                  <h3 style={{ marginTop: 0 }}>نشست‌های فعال ورود به دانشکده</h3>
+              <section className="content-card platform-section" style={{ marginTop: 16 }}>
+                <div className="panel-title-inline" style={{ marginBottom: 8 }}>
+                  <div>
+                    <h3 style={{ margin: 0 }}>نشست‌های فعال ورود به دانشکده</h3>
+                    <small className="platform-section-hint">
+                      ورودهای زمان‌دار مدیران سامانه به دانشکده‌ها
+                    </small>
+                  </div>
+                  <button
+                    type="button"
+                    className="btn btn-light-outline"
+                    onClick={() => reloadSessions().catch(() => {})}
+                    disabled={sessionsLoading}
+                  >
+                    <Icon name="bi-arrow-clockwise" /> به‌روزرسانی
+                  </button>
+                </div>
+                {sessionsLoading ? (
+                  <SkeletonTable rows={2} columns={5} />
+                ) : activeSessions.length === 0 ? (
+                  <EmptyState
+                    icon="bi-shield-check"
+                    title="نشست فعالی وجود ندارد"
+                    text="وقتی مدیری از پنل سامانه وارد دانشکده شود، نشست او اینجا نمایش داده می‌شود."
+                  />
+                ) : (
                   <div className="table-responsive">
                     <table className="table custom-table align-middle">
                       <thead>
                         <tr>
-                          <th>دانشکده</th>
-                          <th>مدیر سامانه</th>
-                          <th>شروع</th>
-                          <th>پایان</th>
-                          <th />
+                          <th scope="col">دانشکده</th>
+                          <th scope="col">مدیر سامانه</th>
+                          <th scope="col">شروع</th>
+                          <th scope="col">پایان</th>
+                          <th scope="col" />
                         </tr>
                       </thead>
                       <tbody>
@@ -1009,7 +1581,7 @@ export default function PlatformArea({ theme, onToggleTheme, onEnterFaculty, onE
                               {canManage && (
                                 <button
                                   type="button"
-                                  className="btn btn-light-outline"
+                                  className="btn btn-light-outline btn-compact"
                                   onClick={() => endSession(session)}
                                 >
                                   پایان نشست
@@ -1021,8 +1593,8 @@ export default function PlatformArea({ theme, onToggleTheme, onEnterFaculty, onE
                       </tbody>
                     </table>
                   </div>
-                </section>
-              )}
+                )}
+              </section>
             </>
           )}
 
@@ -1032,120 +1604,209 @@ export default function PlatformArea({ theme, onToggleTheme, onEnterFaculty, onE
                 <div>
                   <div className="eyebrow">مدیریت دانشکده‌ها</div>
                   <h1>دانشکده‌ها</h1>
-                  <p>ساخت، ویرایش، ورود و آرشیو دانشکده‌ها و مدیران آن‌ها.</p>
+                  <p>ساخت، ویرایش، ورود و آرشیو دانشکده‌ها و کارکنان آن‌ها.</p>
                 </div>
                 {canManage && (
                   <div className="welcome-actions">
                     <button
                       type="button"
                       className="btn btn-primary"
-                      onClick={() => setFacultyModal({ mode: "create" })}
+                      onClick={() => openModal(setFacultyModal, { mode: "create" })}
                     >
                       <Icon name="bi-plus-lg" /> دانشکدهٔ جدید
                     </button>
                   </div>
                 )}
               </div>
+
+              <section className="content-card platform-toolbar-card">
+                <div className="platform-toolbar">
+                  <div className="platform-search">
+                    <Icon name="bi-search" />
+                    <input
+                      className="form-control"
+                      type="search"
+                      value={facultyQuery}
+                      onChange={(event) => setFacultyQuery(event.target.value)}
+                      placeholder="جست‌وجو در نام، کد یا مدیر دانشکده…"
+                      aria-label="جست‌وجوی دانشکده"
+                    />
+                    {facultyQuery && (
+                      <button
+                        type="button"
+                        className="platform-search-clear"
+                        aria-label="پاک کردن جست‌وجو"
+                        onClick={() => setFacultyQuery("")}
+                      >
+                        <Icon name="bi-x-lg" />
+                      </button>
+                    )}
+                  </div>
+                  <Select
+                    className="form-select platform-toolbar-select"
+                    value={facultyStatus}
+                    onChange={(event) => setFacultyStatus(event.target.value)}
+                    aria-label="فیلتر وضعیت دانشکده"
+                  >
+                    <option value="all">همهٔ وضعیت‌ها</option>
+                    <option value="active">فقط فعال</option>
+                    <option value="archived">فقط آرشیو</option>
+                  </Select>
+                  <Select
+                    className="form-select platform-toolbar-select"
+                    value={facultySort}
+                    onChange={(event) => setFacultySort(event.target.value)}
+                    aria-label="مرتب‌سازی دانشکده‌ها"
+                  >
+                    <option value="newest">تازه‌ترین</option>
+                    <option value="name">نام (الفبا)</option>
+                    <option value="students">بیشترین دانشجو</option>
+                    <option value="lastActivity">آخرین فعالیت</option>
+                  </Select>
+                  <span className="platform-result-count">
+                    {faNumber(filteredFaculties.length)} دانشکده
+                  </span>
+                </div>
+              </section>
+
               <section className="content-card data-card">
                 {loading ? (
-                  <SkeletonTable rows={5} columns={7} />
+                  <SkeletonTable rows={5} columns={6} />
                 ) : faculties.length === 0 ? (
                   <EmptyState icon="bi-buildings" title="دانشکده‌ای وجود ندارد" text="اولین دانشکده را بسازید." />
+                ) : filteredFaculties.length === 0 ? (
+                  <div className="platform-empty-filter">
+                    <EmptyState
+                      icon="bi-search"
+                      title="نتیجه‌ای پیدا نشد"
+                      text="عبارت جست‌وجو یا فیلتر وضعیت را تغییر دهید."
+                    />
+                    <button
+                      type="button"
+                      className="btn btn-light-outline"
+                      onClick={() => {
+                        setFacultyQuery("");
+                        setFacultyStatus("all");
+                      }}
+                    >
+                      پاک کردن فیلترها
+                    </button>
+                  </div>
                 ) : (
-                  <div className="table-responsive">
-                    <table className="table custom-table align-middle">
-                      <thead>
-                        <tr>
-                          <th>دانشکده</th>
-                          <th>کد</th>
-                          <th>وضعیت</th>
-                          <th>دانشجو</th>
-                          <th>استاد</th>
-                          <th>درس</th>
-                          <th>آخرین فعالیت</th>
-                          <th>عملیات</th>
-                        </tr>
-                      </thead>
-                      <tbody>
-                        {faculties.map((faculty) => (
-                          <tr key={faculty.id}>
-                            <td>
-                              <strong>{faculty.name}</strong>
-                              <div className="platform-muted">
-                                {faculty.contactName || faculty.contactEmail || "—"}
-                              </div>
-                            </td>
-                            <td>
-                              <code>{faculty.code}</code>
-                            </td>
-                            <td>
-                              <span className={`status-badge ${faculty.isActive ? "success" : "neutral"}`}>
-                                {faculty.isActive ? "فعال" : "آرشیو"}
-                              </span>
-                            </td>
-                            <td>{faNumber(faculty.students)}</td>
-                            <td>{faNumber(faculty.teachers)}</td>
-                            <td>{faNumber(faculty.courses)}</td>
-                            <td>{faDateTime(faculty.lastActivity)}</td>
-                            <td>
-                              <div className="table-actions">
-                                {canManage && faculty.isActive && (
-                                  <button
-                                    type="button"
-                                    className="icon-btn"
-                                    title="ورود به دانشکده"
-                                    onClick={() => setEnterModal({ id: faculty.id, name: faculty.name })}
-                                  >
-                                    <Icon name="bi-box-arrow-in-left" />
-                                  </button>
-                                )}
-                                {canManage && (
-                                  <button
-                                    type="button"
-                                    className="icon-btn"
-                                    title="مدیران دانشکده"
-                                    onClick={() => openAdmins(faculty)}
-                                  >
-                                    <Icon name="bi-people" />
-                                  </button>
-                                )}
-                                {canManage && (
-                                  <button
-                                    type="button"
-                                    className="icon-btn"
-                                    title="ویرایش"
-                                    onClick={() => setFacultyModal({ mode: "edit", faculty })}
-                                  >
-                                    <Icon name="bi-pencil" />
-                                  </button>
-                                )}
-                                {canManage &&
-                                  (faculty.isActive ? (
+                  <>
+                    <div className="table-responsive">
+                      <table className="table custom-table align-middle">
+                        <thead>
+                          <tr>
+                            <th scope="col">دانشکده</th>
+                            <th scope="col">مدیر دانشکده</th>
+                            <th scope="col">وضعیت</th>
+                            <th scope="col">آمار</th>
+                            <th scope="col">آخرین فعالیت</th>
+                            <th scope="col">عملیات</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {visibleFaculties.map((faculty) => (
+                            <tr key={faculty.id}>
+                              <td>
+                                <strong>{faculty.name}</strong>
+                                <div className="platform-muted">
+                                  <code>{faculty.code}</code>
+                                  {faculty.contactName || faculty.contactEmail
+                                    ? ` · ${faculty.contactName || faculty.contactEmail}`
+                                    : ""}
+                                </div>
+                              </td>
+                              <td>
+                                {faculty.managerName || "—"}
+                                <div className="platform-muted">
+                                  {faNumber(faculty.admins)} کارمند فعال
+                                </div>
+                              </td>
+                              <td>
+                                <span className={`status-badge ${faculty.isActive ? "success" : "neutral"}`}>
+                                  {faculty.isActive ? "فعال" : "آرشیو"}
+                                </span>
+                              </td>
+                              <td>
+                                <div className="platform-stat-chips">
+                                  <span title="دانشجو"><Icon name="bi-people" /> {faNumber(faculty.students)}</span>
+                                  <span title="استاد"><Icon name="bi-person-video3" /> {faNumber(faculty.teachers)}</span>
+                                  <span title="درس"><Icon name="bi-journal-bookmark" /> {faNumber(faculty.courses)}</span>
+                                </div>
+                              </td>
+                              <td>{faRelative(faculty.lastActivity)}</td>
+                              <td>
+                                <div className="table-actions">
+                                  {canManage && faculty.isActive && (
                                     <button
                                       type="button"
-                                      className="icon-btn danger"
-                                      title="آرشیو"
-                                      onClick={() => archiveFaculty(faculty)}
+                                      className="btn btn-light-outline btn-compact"
+                                      title="ورود به دانشکده"
+                                      onClick={() => openModal(setEnterModal, { id: faculty.id, name: faculty.name })}
                                     >
-                                      <Icon name="bi-archive" />
+                                      <Icon name="bi-box-arrow-in-left" /> ورود
                                     </button>
-                                  ) : (
+                                  )}
+                                  {canManage && (
+                                    <button
+                                      type="button"
+                                      className="btn btn-light-outline btn-compact"
+                                      title="کارکنان دانشکده"
+                                      onClick={() => openAdmins(faculty)}
+                                    >
+                                      <Icon name="bi-people" /> کارکنان
+                                    </button>
+                                  )}
+                                  {canManage && (
                                     <button
                                       type="button"
                                       className="icon-btn"
-                                      title="فعال‌سازی"
-                                      onClick={() => restoreFaculty(faculty)}
+                                      title="ویرایش دانشکده"
+                                      aria-label={`ویرایش ${faculty.name}`}
+                                      onClick={() => openModal(setFacultyModal, { mode: "edit", faculty })}
                                     >
-                                      <Icon name="bi-arrow-counterclockwise" />
+                                      <Icon name="bi-pencil" />
                                     </button>
-                                  ))}
-                              </div>
-                            </td>
-                          </tr>
-                        ))}
-                      </tbody>
-                    </table>
-                  </div>
+                                  )}
+                                  {canManage &&
+                                    (faculty.isActive ? (
+                                      <button
+                                        type="button"
+                                        className="icon-btn danger"
+                                        title="آرشیو دانشکده"
+                                        aria-label={`آرشیو ${faculty.name}`}
+                                        onClick={() => archiveFaculty(faculty)}
+                                      >
+                                        <Icon name="bi-archive" />
+                                      </button>
+                                    ) : (
+                                      <button
+                                        type="button"
+                                        className="icon-btn"
+                                        title="فعال‌سازی دانشکده"
+                                        aria-label={`فعال‌سازی ${faculty.name}`}
+                                        onClick={() => restoreFaculty(faculty)}
+                                      >
+                                        <Icon name="bi-arrow-counterclockwise" />
+                                      </button>
+                                    ))}
+                                </div>
+                              </td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                    <TablePager
+                      page={facultyPageSafe}
+                      pageSize={10}
+                      total={filteredFaculties.length}
+                      onPageChange={setFacultyPage}
+                      label="دانشکده"
+                    />
+                  </>
                 )}
               </section>
             </>
@@ -1164,89 +1825,130 @@ export default function PlatformArea({ theme, onToggleTheme, onEnterFaculty, onE
                     <button
                       type="button"
                       className="btn btn-primary"
-                      onClick={() => setPlatformAdminModal(true)}
+                      onClick={() => openModal(setPlatformAdminModal, true)}
                     >
                       <Icon name="bi-person-plus" /> مدیر سامانهٔ جدید
                     </button>
                   </div>
                 )}
               </div>
-              <div className="page-note" style={{ marginBottom: 12 }}>
-                «مالک» همه‌چیز، «اپراتور» مدیریت دانشکده‌ها و ورود به آن‌ها، و «ناظر»
-                فقط مشاهدهٔ پنل سامانه و گزارش فعالیت را دارد.
+
+              <div className="platform-level-grid">
+                {Object.keys(PLATFORM_LEVEL_LABELS).map((key) => (
+                  <div className={`platform-level-card is-${key}`} key={key}>
+                    <span className="platform-level-icon">
+                      <Icon name={PLATFORM_LEVEL_ICONS[key]} />
+                    </span>
+                    <div>
+                      <strong>{PLATFORM_LEVEL_LABELS[key]}</strong>
+                      <p>{PLATFORM_LEVEL_HINTS[key]}</p>
+                    </div>
+                  </div>
+                ))}
               </div>
+
               <section className="content-card data-card">
-                <div className="table-responsive">
-                  <table className="table custom-table align-middle">
-                    <thead>
-                      <tr>
-                        <th>مدیر</th>
-                        <th>سطح</th>
-                        <th>وضعیت</th>
-                        <th>آخرین ورود</th>
-                        <th>عملیات</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {platformAdmins.map((admin) => (
-                        <tr key={admin.id}>
-                          <td>
-                            <strong>{admin.fullName}</strong>
-                            <div className="platform-muted">{admin.email}</div>
-                          </td>
-                          <td>
-                            <Select
-                              className="form-select form-select-sm"
-                              value={admin.level}
-                              disabled={!isOwner || busy}
-                              onChange={(event) =>
-                                changePlatformAdmin(admin, { level: event.target.value })
-                              }
-                            >
-                              {Object.entries(PLATFORM_LEVEL_LABELS).map(([value, label]) => (
-                                <option key={value} value={value}>
-                                  {label}
-                                </option>
-                              ))}
-                            </Select>
-                          </td>
-                          <td>
-                            <span className={`status-badge ${admin.isActive ? "success" : "neutral"}`}>
-                              {admin.isActive ? "فعال" : "غیرفعال"}
-                            </span>
-                          </td>
-                          <td>{faDateTime(admin.lastLoginAt)}</td>
-                          <td>
-                            <div className="table-actions">
-                              {isOwner && (
-                                <>
-                                  <button
-                                    type="button"
-                                    className="icon-btn"
-                                    title="بازنشانی رمز"
-                                    onClick={() => resetPlatformAdmin(admin)}
-                                  >
-                                    <Icon name="bi-key" />
-                                  </button>
-                                  <button
-                                    type="button"
-                                    className="icon-btn"
-                                    title={admin.isActive ? "غیرفعال‌سازی" : "فعال‌سازی"}
-                                    onClick={() =>
-                                      changePlatformAdmin(admin, { isActive: !admin.isActive })
-                                    }
-                                  >
-                                    <Icon name={admin.isActive ? "bi-person-slash" : "bi-person-check"} />
-                                  </button>
-                                </>
-                              )}
-                            </div>
-                          </td>
+                {adminLoading ? (
+                  <SkeletonTable rows={3} columns={5} />
+                ) : platformAdmins.length === 0 ? (
+                  <EmptyState
+                    icon="bi-person-gear"
+                    title="مدیر سامانه‌ای ثبت نشده"
+                    text="با دکمهٔ «مدیر سامانهٔ جدید» اولین همکار را اضافه کنید."
+                  />
+                ) : (
+                  <div className="table-responsive">
+                    <table className="table custom-table align-middle">
+                      <thead>
+                        <tr>
+                          <th scope="col">مدیر</th>
+                          <th scope="col">سطح</th>
+                          <th scope="col">وضعیت</th>
+                          <th scope="col">آخرین ورود</th>
+                          <th scope="col">عملیات</th>
                         </tr>
-                      ))}
-                    </tbody>
-                  </table>
-                </div>
+                      </thead>
+                      <tbody>
+                        {platformAdmins.map((admin) => {
+                          const isSelf = admin.id === sessionUser.id;
+                          const controlsDisabled = !isOwner || busy || isSelf;
+                          return (
+                            <tr key={admin.id}>
+                              <td>
+                                <strong>{admin.fullName}</strong>
+                                {isSelf && (
+                                  <span className="status-badge info" style={{ marginInlineStart: 6 }}>
+                                    شما
+                                  </span>
+                                )}
+                                <div className="platform-muted">{admin.email}</div>
+                              </td>
+                              <td>
+                                <Select
+                                  className="form-select form-select-sm"
+                                  value={admin.level}
+                                  disabled={controlsDisabled}
+                                  onChange={(event) =>
+                                    changePlatformAdmin(admin, { level: event.target.value })
+                                  }
+                                >
+                                  {Object.entries(PLATFORM_LEVEL_LABELS).map(([value, label]) => (
+                                    <option key={value} value={value}>
+                                      {label}
+                                    </option>
+                                  ))}
+                                </Select>
+                              </td>
+                              <td>
+                                <span className={`status-badge ${admin.isActive ? "success" : "neutral"}`}>
+                                  {admin.isActive ? "فعال" : "غیرفعال"}
+                                </span>
+                              </td>
+                              <td>{faRelative(admin.lastLoginAt)}</td>
+                              <td>
+                                <div className="table-actions">
+                                  {isOwner && (
+                                    <>
+                                      <button
+                                        type="button"
+                                        className="icon-btn"
+                                        title="بازنشانی رمز"
+                                        aria-label={`بازنشانی رمز ${admin.fullName}`}
+                                        onClick={() => resetPlatformAdmin(admin)}
+                                      >
+                                        <Icon name="bi-key" />
+                                      </button>
+                                      <button
+                                        type="button"
+                                        className="icon-btn"
+                                        title={
+                                          isSelf
+                                            ? "حساب خودتان را نمی‌توانید غیرفعال کنید"
+                                            : admin.isActive
+                                              ? "غیرفعال‌سازی"
+                                              : "فعال‌سازی"
+                                        }
+                                        aria-label={
+                                          admin.isActive ? "غیرفعال‌سازی حساب" : "فعال‌سازی حساب"
+                                        }
+                                        disabled={isSelf}
+                                        onClick={() =>
+                                          changePlatformAdmin(admin, { isActive: !admin.isActive })
+                                        }
+                                      >
+                                        <Icon name={admin.isActive ? "bi-person-slash" : "bi-person-check"} />
+                                      </button>
+                                    </>
+                                  )}
+                                </div>
+                              </td>
+                            </tr>
+                          );
+                        })}
+                      </tbody>
+                    </table>
+                  </div>
+                )}
               </section>
             </>
           )}
@@ -1260,7 +1962,12 @@ export default function PlatformArea({ theme, onToggleTheme, onEnterFaculty, onE
                   <p>همهٔ اقدامات مدیریتی و ورودهای مدیر سامانه به دانشکده‌ها.</p>
                 </div>
                 <div className="welcome-actions">
-                  <button type="button" className="btn btn-light-outline" onClick={exportAuditCsv}>
+                  <button
+                    type="button"
+                    className="btn btn-light-outline"
+                    onClick={exportAuditCsv}
+                    disabled={busy}
+                  >
                     <Icon name="bi-download" /> خروجی CSV
                   </button>
                 </div>
@@ -1289,64 +1996,101 @@ export default function PlatformArea({ theme, onToggleTheme, onEnterFaculty, onE
                   </label>
                   <label className="form-label">
                     نوع اقدام
-                    <input
-                      className="form-control"
+                    <Select
+                      className="form-select"
                       value={auditFilters.action}
-                      placeholder="مثلاً platform.impersonation"
                       onChange={(event) =>
                         setAuditFilters((current) => ({
                           ...current,
                           action: event.target.value,
                         }))
                       }
-                    />
+                    >
+                      <option value="">همهٔ اقدام‌ها</option>
+                      {AUDIT_ACTION_OPTIONS.map(([value, label]) => (
+                        <option key={value} value={value}>
+                          {label}
+                        </option>
+                      ))}
+                    </Select>
                   </label>
                   <button
                     type="button"
                     className="btn btn-primary"
-                    onClick={() => reloadAudit().catch((e) => setError(e.message))}
+                    onClick={() => loadAudit(auditFilters, 1).catch((e) => setError(e.message))}
                   >
-                    <Icon name="bi-search" /> جست‌وجو
+                    <Icon name="bi-search" /> اعمال فیلتر
+                  </button>
+                  <button
+                    type="button"
+                    className="btn btn-light"
+                    onClick={() => {
+                      const cleared = { organizationId: "", action: "" };
+                      setAuditFilters(cleared);
+                      loadAudit(cleared, 1).catch((e) => setError(e.message));
+                    }}
+                  >
+                    پاک کردن
                   </button>
                 </div>
               </section>
               <section className="content-card data-card">
-                {auditItems.length === 0 ? (
-                  <EmptyState icon="bi-clock-history" title="موردی یافت نشد" text="فیلترها را تغییر دهید." />
+                {auditLoading ? (
+                  <SkeletonTable rows={6} columns={5} />
+                ) : auditItems.length === 0 ? (
+                  <EmptyState
+                    icon="bi-clock-history"
+                    title="موردی یافت نشد"
+                    text="فیلتر دانشکده یا نوع اقدام را تغییر دهید."
+                  />
                 ) : (
-                  <div className="table-responsive">
-                    <table className="table custom-table align-middle">
-                      <thead>
-                        <tr>
-                          <th>تاریخ</th>
-                          <th>دانشکده</th>
-                          <th>کاربر</th>
-                          <th>اقدام</th>
-                          <th>موجودیت</th>
-                        </tr>
-                      </thead>
-                      <tbody>
-                        {auditItems.map((item) => (
-                          <tr key={item.id}>
-                            <td>{faDateTime(item.createdAt)}</td>
-                            <td>{item.organizationName}</td>
-                            <td>
-                              {item.actorName || "سامانه"}
-                              {item.platformActor && (
-                                <span className="status-badge info" style={{ marginInlineStart: 6 }}>
-                                  مدیر سامانه
-                                </span>
-                              )}
-                            </td>
-                            <td>{AUDIT_ACTION_LABELS[item.action] || item.action}</td>
-                            <td>
-                              <code>{item.entityType}</code>
-                            </td>
+                  <>
+                    <div className="table-responsive">
+                      <table className="table custom-table align-middle">
+                        <thead>
+                          <tr>
+                            <th scope="col">تاریخ</th>
+                            <th scope="col">دانشکده</th>
+                            <th scope="col">کاربر</th>
+                            <th scope="col">اقدام</th>
+                            <th scope="col">موجودیت</th>
                           </tr>
-                        ))}
-                      </tbody>
-                    </table>
-                  </div>
+                        </thead>
+                        <tbody>
+                          {auditItems.map((item) => (
+                            <tr key={item.id}>
+                              <td title={faDateTime(item.createdAt)}>
+                                {faRelative(item.createdAt)}
+                              </td>
+                              <td>{item.organizationName}</td>
+                              <td>
+                                {item.actorName || "سامانه"}
+                                {item.platformActor && (
+                                  <span className="status-badge info" style={{ marginInlineStart: 6 }}>
+                                    مدیر سامانه
+                                  </span>
+                                )}
+                              </td>
+                              <td>
+                                <span className="platform-action-cell">
+                                  <Icon name={auditActionIcon(item.action)} />
+                                  {AUDIT_ACTION_LABELS[item.action] || item.action}
+                                </span>
+                              </td>
+                              <td>{auditEntityLabel(item.entityType)}</td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                    <TablePager
+                      page={auditPage}
+                      pageSize={20}
+                      total={auditTotal}
+                      onPageChange={(next) => loadAudit(auditFilters, next).catch((e) => setError(e.message))}
+                      label="رویداد"
+                    />
+                  </>
                 )}
               </section>
             </>
@@ -1358,7 +2102,8 @@ export default function PlatformArea({ theme, onToggleTheme, onEnterFaculty, onE
         <Modal
           title={facultyModal.mode === "edit" ? "ویرایش دانشکده" : "دانشکدهٔ جدید"}
           eyebrow="مدیریت سامانه"
-          onClose={() => setFacultyModal(null)}
+          onClose={() => closeModal(setFacultyModal)}
+          error={modalError}
           wide
         >
           <form onSubmit={saveFaculty}>
@@ -1452,7 +2197,7 @@ export default function PlatformArea({ theme, onToggleTheme, onEnterFaculty, onE
               <button type="submit" className="btn btn-primary" disabled={busy}>
                 {facultyModal.mode === "edit" ? "ذخیرهٔ تغییرات" : "ساخت دانشکده"}
               </button>
-              <button type="button" className="btn btn-light" onClick={() => setFacultyModal(null)}>
+              <button type="button" className="btn btn-light" onClick={() => closeModal(setFacultyModal)}>
                 انصراف
               </button>
             </div>
@@ -1462,79 +2207,90 @@ export default function PlatformArea({ theme, onToggleTheme, onEnterFaculty, onE
 
       {adminModal && (
         <Modal
-          title={`مدیران ${adminModal.faculty.name}`}
+          title={`کارکنان ${adminModal.faculty.name}`}
           eyebrow="دسترسی دانشکده"
-          onClose={() => setAdminModal(null)}
+          onClose={() => closeModal(setAdminModal)}
+          error={modalError}
           wide
         >
-          <div className="table-responsive">
-            <table className="table custom-table align-middle">
-              <thead>
-                <tr>
-                  <th>مدیر</th>
-                  <th>سطح</th>
-                  <th>وضعیت</th>
-                  <th>آخرین ورود</th>
-                  <th>عملیات</th>
-                </tr>
-              </thead>
-              <tbody>
-                {adminModal.admins.map((admin) => (
-                  <tr key={admin.id}>
-                    <td>
-                      <strong>{admin.fullName}</strong>
-                      <div className="platform-muted">{admin.email}</div>
-                    </td>
-                    <td>
-                      <Select
-                        className="form-select form-select-sm"
-                        value={admin.level}
-                        disabled={busy}
-                        onChange={(event) =>
-                          changeFacultyAdmin(admin, { level: event.target.value })
-                        }
-                      >
-                        {Object.entries(FACULTY_LEVEL_LABELS).map(([value, label]) => (
-                          <option key={value} value={value}>
-                            {label}
-                          </option>
-                        ))}
-                      </Select>
-                    </td>
-                    <td>
-                      <span className={`status-badge ${admin.isActive ? "success" : "neutral"}`}>
-                        {admin.isActive ? "فعال" : "غیرفعال"}
-                      </span>
-                    </td>
-                    <td>{faDateTime(admin.lastLoginAt)}</td>
-                    <td>
-                      <div className="table-actions">
-                        <button
-                          type="button"
-                          className="icon-btn"
-                          title="بازنشانی رمز"
-                          onClick={() => resetFacultyAdmin(admin)}
-                        >
-                          <Icon name="bi-key" />
-                        </button>
-                        <button
-                          type="button"
-                          className="icon-btn"
-                          title={admin.isActive ? "غیرفعال‌سازی" : "فعال‌سازی"}
-                          onClick={() =>
-                            changeFacultyAdmin(admin, { isActive: !admin.isActive })
+          {adminModal.admins.length === 0 ? (
+            <EmptyState
+              icon="bi-people"
+              title="کارمندی ثبت نشده"
+              text="با فرم پایین اولین کارمند این دانشکده را اضافه کنید."
+            />
+          ) : (
+            <div className="table-responsive">
+              <table className="table custom-table align-middle">
+                <thead>
+                  <tr>
+                    <th scope="col">کارمند</th>
+                    <th scope="col">سطح</th>
+                    <th scope="col">وضعیت</th>
+                    <th scope="col">آخرین ورود</th>
+                    <th scope="col">عملیات</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {adminModal.admins.map((admin) => (
+                    <tr key={admin.id}>
+                      <td>
+                        <strong>{admin.fullName}</strong>
+                        <div className="platform-muted">{admin.email}</div>
+                      </td>
+                      <td>
+                        <Select
+                          className="form-select form-select-sm"
+                          value={admin.level}
+                          disabled={busy}
+                          onChange={(event) =>
+                            changeFacultyAdmin(admin, { level: event.target.value })
                           }
                         >
-                          <Icon name={admin.isActive ? "bi-person-slash" : "bi-person-check"} />
-                        </button>
-                      </div>
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-          <div className="platform-section-title">افزودن مدیر جدید</div>
+                          {Object.entries(FACULTY_LEVEL_LABELS).map(([value, label]) => (
+                            <option key={value} value={value}>
+                              {label}
+                            </option>
+                          ))}
+                        </Select>
+                      </td>
+                      <td>
+                        <span className={`status-badge ${admin.isActive ? "success" : "neutral"}`}>
+                          {admin.isActive ? "فعال" : "غیرفعال"}
+                        </span>
+                      </td>
+                      <td>{faRelative(admin.lastLoginAt)}</td>
+                      <td>
+                        <div className="table-actions">
+                          <button
+                            type="button"
+                            className="icon-btn"
+                            title="بازنشانی رمز"
+                            aria-label={`بازنشانی رمز ${admin.fullName}`}
+                            onClick={() => resetFacultyAdmin(admin)}
+                          >
+                            <Icon name="bi-key" />
+                          </button>
+                          <button
+                            type="button"
+                            className="icon-btn"
+                            title={admin.isActive ? "غیرفعال‌سازی" : "فعال‌سازی"}
+                            aria-label={admin.isActive ? "غیرفعال‌سازی حساب" : "فعال‌سازی حساب"}
+                            onClick={() =>
+                              changeFacultyAdmin(admin, { isActive: !admin.isActive })
+                            }
+                          >
+                            <Icon name={admin.isActive ? "bi-person-slash" : "bi-person-check"} />
+                          </button>
+                        </div>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+          <div className="platform-section-title">افزودن کارمند جدید</div>
           <form onSubmit={addFacultyAdmin} className="platform-form-grid">
             <label className="form-label">
               نام و نام خانوادگی
@@ -1560,8 +2316,17 @@ export default function PlatformArea({ theme, onToggleTheme, onEnterFaculty, onE
               </button>
             </div>
           </form>
+          <div className="platform-level-hints">
+            {Object.keys(FACULTY_LEVEL_LABELS).map((key) => (
+              <p key={key} className="platform-inline-note">
+                <strong>{FACULTY_LEVEL_LABELS[key]}:</strong> {FACULTY_LEVEL_HINTS[key]}
+              </p>
+            ))}
+          </div>
           {adminModal.faculty.isActive === false && (
-            <p className="page-note">دانشکده آرشیو شده است؛ برای ساخت مدیر، ابتدا آن را فعال کنید.</p>
+            <p className="platform-inline-note is-danger">
+              دانشکده آرشیو شده است؛ برای ساخت کارمند، ابتدا آن را فعال کنید.
+            </p>
           )}
         </Modal>
       )}
@@ -1570,7 +2335,8 @@ export default function PlatformArea({ theme, onToggleTheme, onEnterFaculty, onE
         <Modal
           title={`ورود به ${enterModal.name}`}
           eyebrow="ورود با دسترسی مدیر"
-          onClose={() => setEnterModal(null)}
+          onClose={() => closeModal(setEnterModal)}
+          error={modalError}
         >
           <p className="page-note">
             با این ورود، همهٔ اقدامات شما با نام مدیر سامانه ثبت می‌شود و به مدیران
@@ -1593,7 +2359,7 @@ export default function PlatformArea({ theme, onToggleTheme, onEnterFaculty, onE
               <button type="submit" className="btn btn-primary" disabled={busy}>
                 <Icon name="bi-box-arrow-in-left" /> ورود به دانشکده
               </button>
-              <button type="button" className="btn btn-light" onClick={() => setEnterModal(null)}>
+              <button type="button" className="btn btn-light" onClick={() => closeModal(setEnterModal)}>
                 انصراف
               </button>
             </div>
@@ -1605,7 +2371,8 @@ export default function PlatformArea({ theme, onToggleTheme, onEnterFaculty, onE
         <Modal
           title="مدیر سامانهٔ جدید"
           eyebrow="دسترسی سامانه"
-          onClose={() => setPlatformAdminModal(null)}
+          onClose={() => closeModal(setPlatformAdminModal)}
+          error={modalError}
         >
           <form onSubmit={addPlatformAdmin}>
             <label className="form-label">
@@ -1626,6 +2393,13 @@ export default function PlatformArea({ theme, onToggleTheme, onEnterFaculty, onE
                 ))}
               </Select>
             </label>
+            <div className="platform-level-hints">
+              {Object.keys(PLATFORM_LEVEL_LABELS).map((key) => (
+                <p key={key} className="platform-inline-note">
+                  <strong>{PLATFORM_LEVEL_LABELS[key]}:</strong> {PLATFORM_LEVEL_HINTS[key]}
+                </p>
+              ))}
+            </div>
             <div className="modal-actions">
               <button type="submit" className="btn btn-primary" disabled={busy}>
                 ساخت حساب
@@ -1633,12 +2407,103 @@ export default function PlatformArea({ theme, onToggleTheme, onEnterFaculty, onE
               <button
                 type="button"
                 className="btn btn-light"
-                onClick={() => setPlatformAdminModal(null)}
+                onClick={() => closeModal(setPlatformAdminModal)}
               >
                 انصراف
               </button>
             </div>
           </form>
+        </Modal>
+      )}
+
+      {accountModal && (
+        <Modal
+          title="حساب من"
+          eyebrow="امنیت حساب سامانه"
+          onClose={() => closeModal(setAccountModal)}
+          error={modalError}
+        >
+          <div className="platform-account-summary">
+            <span className="avatar">{(sessionUser.name || "م").charAt(0)}</span>
+            <div>
+              <strong>{sessionUser.name || "مدیر سامانه"}</strong>
+              <small>{sessionUser.email}</small>
+            </div>
+            <span className={`status-badge ${PLATFORM_LEVEL_TONES[level] || "neutral"}`}>
+              {PLATFORM_LEVEL_LABELS[level] || level}
+            </span>
+          </div>
+          <div className="platform-section-title">تغییر رمز عبور</div>
+          <form onSubmit={submitAccountPassword}>
+            <label className="form-label">
+              رمز عبور فعلی
+              <PasswordInput
+                name="currentPassword"
+                autoComplete="current-password"
+                placeholder="رمز فعلی"
+                required
+              />
+            </label>
+            <label className="form-label mt-3">
+              رمز عبور جدید
+              <PasswordInput
+                name="newPassword"
+                autoComplete="new-password"
+                placeholder="حداقل ۸ کاراکتر"
+                minLength={8}
+                required
+              />
+            </label>
+            <label className="form-label mt-3">
+              تکرار رمز عبور جدید
+              <PasswordInput
+                name="confirmPassword"
+                autoComplete="new-password"
+                placeholder="تکرار رمز جدید"
+                minLength={8}
+                required
+              />
+            </label>
+            <div className="modal-actions">
+              <button type="submit" className="btn btn-primary" disabled={busy}>
+                ذخیرهٔ رمز جدید
+              </button>
+              <button type="button" className="btn btn-light" onClick={() => closeModal(setAccountModal)}>
+                انصراف
+              </button>
+            </div>
+          </form>
+        </Modal>
+      )}
+
+      {confirmState && (
+        <Modal
+          title={confirmState.title}
+          eyebrow="تأیید عملیات"
+          onClose={() => (!confirmBusy ? closeModal(setConfirmState) : null)}
+          error={modalError}
+        >
+          <p className="page-note" style={{ marginTop: 0 }}>
+            {confirmState.message}
+          </p>
+          <div className="modal-actions">
+            <button
+              type="button"
+              className={`btn ${confirmState.tone === "danger" ? "btn-danger" : "btn-primary"}`}
+              onClick={runConfirm}
+              disabled={confirmBusy}
+            >
+              {confirmBusy ? "در حال انجام…" : confirmState.confirmLabel || "تأیید"}
+            </button>
+            <button
+              type="button"
+              className="btn btn-light"
+              onClick={() => closeModal(setConfirmState)}
+              disabled={confirmBusy}
+            >
+              انصراف
+            </button>
+          </div>
         </Modal>
       )}
 
@@ -1651,8 +2516,12 @@ export default function PlatformArea({ theme, onToggleTheme, onEnterFaculty, onE
       )}
 
       {toast && (
-        <div className="toast-custom platform-toast" role="status">
-          <Icon name="bi-check-circle" /> {toast}
+        <div
+          className={`toast-custom platform-toast ${toast.tone === "error" ? "is-error" : ""}`}
+          role="status"
+        >
+          <Icon name={toast.tone === "error" ? "bi-exclamation-circle" : "bi-check-circle"} />
+          {toast.message}
         </div>
       )}
     </div>

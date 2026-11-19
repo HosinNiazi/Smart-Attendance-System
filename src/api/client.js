@@ -478,6 +478,9 @@ async function platformApi(path, options = {}) {
   });
   if (response.status === 204) return null;
   const payload = await response.json().catch(() => null);
+  if (response.status === 401 && token && typeof window !== 'undefined') {
+    window.dispatchEvent(new CustomEvent('platform:unauthorized'));
+  }
   if (!response.ok)
     throw new Error(payload?.message || 'درخواست پنل سامانه انجام نشد.');
   return payload;
