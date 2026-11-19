@@ -109,6 +109,7 @@ import { adaptBootstrap, toEnStatus } from "./api/adapter.js";
 import { HelpChat } from "./help/HelpChat.jsx";
 import { Landing } from "./components/Landing.jsx";
 import PlatformArea, { ImpersonationBanner } from "./components/Platform.jsx";
+import { Staff } from "./components/Staff.jsx";
 
 const navGroups = [
   {
@@ -151,6 +152,7 @@ const navGroups = [
       { id: "profile", label: "پروفایل من", icon: "bi-person-circle" },
       { id: "registrations", label: "پذیرش درخواست‌ها", icon: "bi-person-check" },
       { id: "teachers", label: "اساتید", icon: "bi-person-workspace" },
+      { id: "staff", label: "کارمندان و دسترسی‌ها", icon: "bi-shield-lock" },
       { id: "activity", label: "گزارش فعالیت مدیران", icon: "bi-journal-text" },
       { id: "support", label: "پشتیبانی", icon: "bi-headset" },
       { id: "tickets", label: "تیکت‌ها", icon: "bi-ticket" },
@@ -179,6 +181,46 @@ const ROLE_PERMISSIONS = {
     "support",
   ]),
 };
+
+// Each navigation entry maps to the permission the server checks for its data.
+// An admin's menu is built from `authUser.permissions`, so the UI can never offer
+// a screen the API would refuse.
+const PAGE_PERMISSIONS = {
+  dashboard: "dashboard.view",
+  students: "students.view",
+  courses: "courses.view",
+  sessions: "sessions.view",
+  exams: "exams.view",
+  manual: "attendance.manual.view",
+  voice: "attendance.voice.view",
+  face: "attendance.face.view",
+  "class-camera": "attendance.face.view",
+  "face-events": "attendance.face.view",
+  fingerprint: "attendance.fingerprint.view",
+  "class-live": "attendance.live.view",
+  trends: "attendance.trends.view",
+  reports: "reports.view",
+  "leave-requests": "leave.view",
+  objections: "objections.view",
+  profile: "profile.view",
+  registrations: "registrations.manage",
+  teachers: "teachers.view",
+  staff: "staff.manage",
+  activity: "activity.view",
+  support: "support.view",
+  tickets: "tickets.view",
+  settings: "settings.view",
+};
+
+function adminPagesFromPermissions(permissions) {
+  if (!Array.isArray(permissions)) return ROLE_PERMISSIONS.admin;
+  const granted = new Set(permissions);
+  return new Set(
+    Object.entries(PAGE_PERMISSIONS)
+      .filter(([, permission]) => granted.has(permission))
+      .map(([page]) => page),
+  );
+}
 const faDate = new Intl.DateTimeFormat("fa-IR", {
   weekday: "long",
   day: "numeric",
@@ -887,7 +929,7 @@ export default function App() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [login]);
   useEffect(() => {
-    if (login || loginRole !== "admin") return;
+    if (login || loginRole !== "admin" || !adminHas("teachers.view")) return;
     refreshTeachers();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [login, loginRole]);
@@ -939,13 +981,28 @@ export default function App() {
         (session.studentIds || []).includes(studentAccount.id),
       )
     : [];
-  const allowedPages = ROLE_PERMISSIONS[loginRole] || ROLE_PERMISSIONS.teacher;
+  const allowedPages =
+    loginRole === "admin"
+      ? adminPagesFromPermissions(authUser?.permissions)
+      : ROLE_PERMISSIONS[loginRole] || ROLE_PERMISSIONS.teacher;
   const visibleNavGroups = navGroups
     .map((group) => ({
       ...group,
       items: group.items.filter((item) => allowedPages.has(item.id)),
     }))
     .filter((group) => group.items.length > 0);
+  const allowedPagesKey = [...allowedPages].sort().join(",");
+  // A role change (or a stale deep link) may leave the current page outside the
+  // allowed set; fall back to the first permitted screen instead of a blank page.
+  useEffect(() => {
+    if (allowedPages.has(active)) return;
+    const fallback =
+      [...navGroups.flatMap((group) => group.items)]
+        .map((item) => item.id)
+        .find((id) => allowedPages.has(id)) || "dashboard";
+    setActive(fallback);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [allowedPagesKey, active]);
   const currentFaculty =
     authUser?.faculty ||
     faculties.find((faculty) => faculty.id === facultyId) ||
@@ -961,6 +1018,16 @@ export default function App() {
     setToast(message);
   }
 
+  // Faculty staff only receive the modules their role grants. Reading permissions
+  // from storage keeps this correct during the login transition, when the state
+  // still belongs to the previous session. Teachers/students are unaffected.
+  function adminHas(permission) {
+    const user = getApiUser();
+    if (user?.role && user.role !== "admin") return true;
+    if (!Array.isArray(user?.permissions)) return true;
+    return user.permissions.includes(permission);
+  }
+
   function applyServerData(adapted) {
     setStudents(adapted.students);
     setCourses(adapted.courses);
@@ -974,7 +1041,7 @@ export default function App() {
     const data = await fetchBootstrap();
     const adapted = adaptBootstrap(data);
     applyServerData(adapted);
-    if (loginRole === "admin") {
+    if (loginRole === "admin" && adminHas("registrations.manage")) {
       try {
         const regs = await fetchRegistrations();
         setRegistrations(Array.isArray(regs) ? regs : []);
@@ -2525,10 +2592,10 @@ export default function App() {
     );
     setLoginPassword("");
     setLogin(false);
-    refreshTickets().catch(() => {});
+    if (adminHas("tickets.view")) refreshTickets().catch(() => {});
     refreshNotifications().catch(() => {});
-    refreshLeaveRequests().catch(() => {});
-    refreshObjections().catch(() => {});
+    if (adminHas("leave.view")) refreshLeaveRequests().catch(() => {});
+    if (adminHas("objections.view")) refreshObjections().catch(() => {});
   }
 
   // Entering a faculty from the platform panel swaps the API token for a short
@@ -3295,7 +3362,7 @@ export default function App() {
               )}
               <span className="user-menu-copy">
                 <strong>{loginName}</strong>
-                <small>{ACCESS_ROLE_LABELS[loginRole]}</small>
+                <small>{authUser?.staffRoleLabel || ACCESS_ROLE_LABELS[loginRole]}</small>
               </span>
               <Icon name="bi-chevron-down" />
             </button>
@@ -3568,7 +3635,7 @@ export default function App() {
           {active === "profile" && (
             <Profile
               name={loginName}
-              role={ACCESS_ROLE_LABELS[loginRole]}
+              role={authUser?.staffRoleLabel || ACCESS_ROLE_LABELS[loginRole]}
               photo={profilePhoto}
               onSave={saveProfile}
               loginHistory={loginHistory}
@@ -3651,6 +3718,7 @@ export default function App() {
               }}
             />
           )}
+          {active === "staff" && <Staff onNotify={notify} />}
           {active === "activity" && (
             <AdminActivity
               activity={activity}

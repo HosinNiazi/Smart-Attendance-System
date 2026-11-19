@@ -1816,3 +1816,21 @@ html[lang="en"] body,html[lang="en"] button,html[lang="en"] input,html[lang="en"
 :root[data-theme="dark"] .select-option.is-selected{background:#26365a;color:#cdd7ff}
 @media(max-width:700px){.select-option{min-height:42px;font-size:13px}}
 :root[data-theme="dark"] .form-select.select-field,:root[data-theme="dark"] .form-select.select-field:hover,:root[data-theme="dark"] .form-select.select-field:focus{background-image:none}
+
+/* ---- Faculty staff and access levels ---- */
+.staff-role-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(210px,1fr));gap:12px;margin:0 0 18px}
+.staff-role-card{display:flex;flex-direction:column;gap:6px;padding:16px;border:1px solid var(--line);border-radius:16px;background:var(--surface);box-shadow:0 1px 2px #1018280a}
+.staff-role-card strong{font-size:14px;color:var(--ink)}
+.staff-role-card p{margin:0;font-size:12px;line-height:1.9;color:var(--muted)}
+.staff-role-icon{display:inline-flex;align-items:center;justify-content:center;width:36px;height:36px;border-radius:12px;background:#eef2ff;color:var(--primary);font-size:17px}
+.staff-hint{display:block;margin-top:4px;color:var(--muted);font-size:12px}
+.staff-person{display:flex;align-items:center;gap:10px}
+.staff-avatar{display:inline-flex;align-items:center;justify-content:center;width:34px;height:34px;border-radius:50%;background:#eef2ff;color:var(--primary-dark);font-weight:700;flex:none}
+.staff-self{display:block;margin-top:2px;font-size:11px;color:var(--muted)}
+.staff-form-hint{margin:10px 0 0;padding:10px 12px;border-radius:12px;background:#f4f6fb;color:var(--muted);font-size:12px;line-height:1.9}
+.staff-credential-box{display:flex;flex-direction:column;gap:6px;margin-top:12px;padding:14px;border:1px dashed var(--line);border-radius:14px;background:#f8faff;text-align:left}
+.staff-credential-box span{font-size:12px;color:var(--muted)}
+.staff-credential-box strong{font-size:20px;letter-spacing:1.5px;color:var(--ink)}
+:root[data-theme="dark"] .staff-role-card,:root[data-theme="dark"] .staff-form-hint,:root[data-theme="dark"] .staff-credential-box{background:#141e2c;border-color:var(--line)}
+:root[data-theme="dark"] .staff-role-icon,:root[data-theme="dark"] .staff-avatar{background:#202d48;color:#aebaff}
+:root[data-theme="dark"] .staff-credential-box strong{color:var(--ink)}

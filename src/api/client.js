@@ -102,6 +102,23 @@ export function resetTeacherPassword(userId) {
   return api(`/teachers/${encodeURIComponent(userId)}/reset-password`, { method: 'POST' });
 }
 
+/* ---- Faculty staff and their access level (dean only) ---- */
+export function fetchStaff() {
+  return api('/staff');
+}
+export function createStaff(payload) {
+  return api('/staff', { method: 'POST', body: JSON.stringify(payload) });
+}
+export function updateStaff(userId, payload) {
+  return api(`/staff/${encodeURIComponent(userId)}`, {
+    method: 'PATCH',
+    body: JSON.stringify(payload),
+  });
+}
+export function resetStaffPassword(userId) {
+  return api(`/staff/${encodeURIComponent(userId)}/reset-password`, { method: 'POST' });
+}
+
 export function browserSnapshot() {
   const read = (key, fallback) => {
     try { const value = localStorage.getItem(key); return value ? JSON.parse(value) : fallback; }

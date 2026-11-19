@@ -19,9 +19,16 @@ import {
 import {
   FACULTY_ADMIN_LEVELS,
   PLATFORM_LEVELS,
-  facultyLevelDenial,
   platformLevelAllows,
 } from "./platformAccess.js";
+import {
+  STAFF_ROLE_LABELS,
+  STAFF_ROLES,
+  normalizeStaffRole,
+  permissionForRequest,
+  permissionsForRole,
+  staffRoleAllows,
+} from "./permissions.js";
 import {
   DEFAULT_FACE_MAX_DISTANCE,
   DEFAULT_FACE_MIN_MARGIN,
@@ -336,17 +343,24 @@ async function authenticate(req, res, next) {
   return next();
 }
 
-// Faculty admin levels: the viewer level is enforced by HTTP method, which
-// makes "read only" a hard guarantee instead of a per-page convention.
+// Faculty staff permissions: the role is resolved on every request (so a
+// changed role takes effect immediately) and checked against the endpoint's
+// declared permission. Unknown endpoints are denied for non-owners, which makes
+// the default fail-closed instead of leaking a forgotten route.
 function enforceFacultyAdminLevel(req, res, next) {
   if (req.user.role !== "admin" || (req.user.plat && !req.user.imp)) return next();
+  const level = normalizeStaffRole(req.user.adminLevel);
+  if (level === "owner") return next();
   const path = req.originalUrl.split("?")[0];
-  const denial = facultyLevelDenial(
-    req.user.adminLevel || "owner",
-    req.method,
-    path,
-  );
-  if (denial) return res.status(403).json({ message: denial });
+  const permission = permissionForRequest(req.method, path);
+  if (permission === null) return next();
+  if (permission === "unmapped" || !staffRoleAllows(level, permission)) {
+    return res.status(403).json({
+      message:
+        `این بخش برای سطح دسترسی «${STAFF_ROLE_LABELS[level]}» باز نیست. ` +
+        "در صورت نیاز با مدیر دانشکده هماهنگ کنید.",
+    });
+  }
   return next();
 }
 function validate(schema, source = "body") {
@@ -623,7 +637,19 @@ async function authPayload(user, organizationId = user.organization_id) {
   const faculties = await listUserFaculties(user);
   return {
     token: tokenFor(user, organizationId),
-    user: { ...publicUser(user), faculty, faculties },
+    user: { ...publicUser(user), ...staffFields(user), faculty, faculties },
+  };
+}
+
+// The client needs the role and the exact permission list so navigation and
+// buttons can match what the API will allow.
+function staffFields(row) {
+  if (row.role !== "admin") return {};
+  const staffRole = normalizeStaffRole(row.admin_level);
+  return {
+    staffRole,
+    staffRoleLabel: STAFF_ROLE_LABELS[staffRole],
+    permissions: permissionsForRole(staffRole),
   };
 }
 
@@ -2792,6 +2818,275 @@ app.patch(
   }),
 );
 
+/* ---------------------------------------------------------------------------
+ * Faculty staff and their access level (dean only).
+ * The permission middleware already restricts these routes to `staff.manage`,
+ * which only the dean holds; the extra check below keeps that guarantee local
+ * to the handlers as well.
+ * ------------------------------------------------------------------------ */
+const staffRoleEnum = z.enum(STAFF_ROLES);
+
+function requireDean(req, res) {
+  if (normalizeStaffRole(req.user.adminLevel) !== "owner") {
+    res.status(403).json({
+      message: "تعیین سطح دسترسی کارمندان فقط برای مدیر دانشکده مجاز است.",
+    });
+    return false;
+  }
+  return true;
+}
+
+async function countActiveDeans(organizationId, exceptUserId = null) {
+  const { rows } = await pool.query(
+    `SELECT count(*)::int AS count FROM users
+      WHERE organization_id = $1 AND role = 'admin' AND is_active = true
+        AND platform_level IS NULL
+        AND COALESCE(admin_level, 'owner') = 'owner'
+        AND ($2::uuid IS NULL OR id <> $2)`,
+    [organizationId, exceptUserId],
+  );
+  return rows[0]?.count || 0;
+}
+
+async function loadStaffMember(organizationId, userId) {
+  const { rows } = await pool.query(
+    `SELECT id, display_name AS "fullName", email, is_active AS "isActive",
+            COALESCE(admin_level, 'owner') AS "level",
+            must_change_password AS "mustChangePassword",
+            created_at AS "createdAt",
+            (SELECT max(lh.login_time) FROM login_history lh
+              WHERE lh.user_id = users.id AND lh.successful = true) AS "lastLoginAt"
+       FROM users
+      WHERE id = $1 AND organization_id = $2 AND role = 'admin'
+        AND platform_level IS NULL`,
+    [userId, organizationId],
+  );
+  return rows[0] || null;
+}
+
+app.get(
+  "/api/staff",
+  authorize("admin"),
+  asyncRoute(async (req, res) => {
+    if (!requireDean(req, res)) return;
+    const { rows } = await pool.query(
+      `SELECT id, display_name AS "fullName", email, is_active AS "isActive",
+              COALESCE(admin_level, 'owner') AS "level",
+              must_change_password AS "mustChangePassword",
+              created_at AS "createdAt",
+              (SELECT max(lh.login_time) FROM login_history lh
+                WHERE lh.user_id = users.id AND lh.successful = true) AS "lastLoginAt"
+         FROM users
+        WHERE organization_id = $1 AND role = 'admin' AND platform_level IS NULL
+        ORDER BY (COALESCE(admin_level, 'owner') <> 'owner'), created_at`,
+      [req.user.org],
+    );
+    res.json({
+      staff: rows.map((row) => ({
+        ...row,
+        roleLabel: STAFF_ROLE_LABELS[normalizeStaffRole(row.level)],
+        isSelf: row.id === req.user.sub,
+      })),
+      roles: STAFF_ROLES.map((value) => ({ value, label: STAFF_ROLE_LABELS[value] })),
+    });
+  }),
+);
+
+app.post(
+  "/api/staff",
+  authorize("admin"),
+  validate(
+    z.object({
+      fullName: z.string().trim().min(2).max(120),
+      email: z.string().trim().email().max(254),
+      level: staffRoleEnum.default("operator"),
+    }),
+  ),
+  asyncRoute(async (req, res) => {
+    if (!requireDean(req, res)) return;
+    const { fullName, email, level } = req.body;
+    const client = await pool.connect();
+    try {
+      await client.query("BEGIN");
+      if (await staffEmailTaken(client, email)) {
+        await client.query("ROLLBACK");
+        return res.status(409).json({
+          message: "این ایمیل قبلاً برای حساب دیگری در سامانه ثبت شده است.",
+        });
+      }
+      const account = await createAdminAccount(client, {
+        organizationId: req.user.org,
+        fullName,
+        email,
+        level,
+        createdBy: req.user.sub,
+      });
+      await audit(
+        client,
+        req.user.org,
+        req.user.sub,
+        "staff.create",
+        "admin",
+        account.id,
+        { email, level },
+      );
+      await client.query("COMMIT");
+      const faculty = await loadFaculty(req.user.org);
+      try {
+        await notifyUsers(req.user.org, [account.id], {
+          type: "system",
+          title: "سطح دسترسی در دانشکده",
+          message: `حساب شما با نقش «${STAFF_ROLE_LABELS[level]}» در دانشکدهٔ «${faculty?.name || ""}» ساخته شد.`,
+          link: "dashboard",
+        });
+      } catch (notifyError) {
+        console.warn("[staff] notification failed:", notifyError.message);
+      }
+      sendPasswordEmail(account.email, account.temporaryPassword, fullName)
+        .then((sent) => {
+          if (!sent?.ok)
+            console.warn("[staff] password email failed:", sent?.error);
+        })
+        .catch((mailError) =>
+          console.warn("[staff] password email failed:", mailError.message),
+        );
+      res.status(201).json({
+        staff: {
+          id: account.id,
+          fullName: account.fullName,
+          email: account.email,
+          level,
+          roleLabel: STAFF_ROLE_LABELS[level],
+          isActive: true,
+        },
+        account: {
+          username: account.email,
+          temporaryPassword: account.temporaryPassword,
+        },
+      });
+    } catch (error) {
+      await client.query("ROLLBACK");
+      if (error.code === "23505")
+        return res.status(409).json({
+          message: "این ایمیل هم‌زمان ثبت شده است؛ صفحه را بروزرسانی کنید.",
+        });
+      throw error;
+    } finally {
+      client.release();
+    }
+  }),
+);
+
+app.patch(
+  "/api/staff/:userId",
+  authorize("admin"),
+  validate(
+    z
+      .object({
+        level: staffRoleEnum.optional(),
+        isActive: z.boolean().optional(),
+      })
+      .refine((body) => body.level !== undefined || body.isActive !== undefined, {
+        message: "هیچ تغییری ارسال نشده است.",
+      }),
+  ),
+  asyncRoute(async (req, res) => {
+    if (!requireDean(req, res)) return;
+    const parsed = id.safeParse(req.params.userId);
+    if (!parsed.success)
+      return res.status(400).json({ message: "شناسهٔ کارمند معتبر نیست." });
+    const target = await loadStaffMember(req.user.org, parsed.data);
+    if (!target)
+      return res.status(404).json({ message: "کارمند یافت نشد." });
+    if (target.id === req.user.sub && req.body.isActive === false)
+      return res.status(409).json({
+        message: "غیرفعال‌کردن حساب خودتان مجاز نیست.",
+      });
+
+    const nextLevel = normalizeStaffRole(req.body.level ?? target.level);
+    const nextActive = req.body.isActive ?? target.isActive;
+    const losingDean =
+      normalizeStaffRole(target.level) === "owner" &&
+      (nextLevel !== "owner" || nextActive === false);
+    if (losingDean && (await countActiveDeans(req.user.org, target.id)) === 0)
+      return res.status(409).json({
+        message: "دانشکده باید حداقل یک مدیر دانشکدهٔ فعال داشته باشد.",
+      });
+
+    const { rows } = await pool.query(
+      `UPDATE users
+          SET admin_level = $3, is_active = $4, updated_at = now()
+        WHERE id = $1 AND organization_id = $2 AND role = 'admin'
+          AND platform_level IS NULL
+        RETURNING id, display_name AS "fullName", email, is_active AS "isActive",
+                  COALESCE(admin_level, 'owner') AS "level"`,
+      [target.id, req.user.org, nextLevel, nextActive],
+    );
+    await audit(
+      pool,
+      req.user.org,
+      req.user.sub,
+      "staff.update",
+      "admin",
+      target.id,
+      { level: nextLevel, isActive: nextActive },
+    );
+    res.json({
+      staff: {
+        ...rows[0],
+        roleLabel: STAFF_ROLE_LABELS[nextLevel],
+        isSelf: target.id === req.user.sub,
+      },
+    });
+  }),
+);
+
+app.post(
+  "/api/staff/:userId/reset-password",
+  authorize("admin"),
+  asyncRoute(async (req, res) => {
+    if (!requireDean(req, res)) return;
+    const parsed = id.safeParse(req.params.userId);
+    if (!parsed.success)
+      return res.status(400).json({ message: "شناسهٔ کارمند معتبر نیست." });
+    const target = await loadStaffMember(req.user.org, parsed.data);
+    if (!target) return res.status(404).json({ message: "کارمند یافت نشد." });
+    const temporaryPassword = generateTemporaryPassword();
+    const passwordHash = await bcrypt.hash(temporaryPassword, 10);
+    await pool.query(
+      `UPDATE users
+          SET password_hash = $2, must_change_password = true,
+              password_last_changed = now(), failed_login_attempts = 0,
+              account_locked_until = NULL, updated_at = now()
+        WHERE id = $1`,
+      [target.id, passwordHash],
+    );
+    await pool.query(
+      `INSERT INTO password_history (user_id, password_hash, created_at)
+       VALUES ($1,$2,now())`,
+      [target.id, passwordHash],
+    );
+    await audit(
+      pool,
+      req.user.org,
+      req.user.sub,
+      "staff.reset_password",
+      "admin",
+      target.id,
+      {},
+    );
+    sendPasswordEmail(target.email, temporaryPassword, target.fullName)
+      .then((sent) => {
+        if (!sent?.ok)
+          console.warn("[staff] password email failed:", sent?.error);
+      })
+      .catch((mailError) =>
+        console.warn("[staff] password email failed:", mailError.message),
+      );
+    res.json({ username: target.email, temporaryPassword });
+  }),
+);
+
 app.get(
   "/api/me",
   asyncRoute(async (req, res) => {
@@ -2804,7 +3099,7 @@ app.get(
     if (!rows[0]) return res.json({ user: null });
     const faculty = await loadFaculty(req.user.org);
     const faculties = await listUserFaculties(rows[0]);
-    res.json({ user: { ...publicUser(rows[0]), faculty, faculties } });
+    res.json({ user: { ...publicUser(rows[0]), ...staffFields(rows[0]), faculty, faculties } });
   }),
 );
 app.get(
@@ -2833,6 +3128,9 @@ app.get(
              WHERE s.organization_id = $1 AND c.teacher_user_id = $2
           )`
       : "";
+    const staffCan = (permission) =>
+      req.user.role !== "admin" ||
+      staffRoleAllows(req.user.adminLevel, permission);
     const [students, courses, sessions, attendance, settings, faceImages, voiceSamples] =
       await Promise.all([
         pool.query(
@@ -2860,7 +3158,8 @@ app.get(
              FROM organization_settings WHERE organization_id=$1`,
           [req.user.org],
         ),
-        pool.query(
+        staffCan("attendance.face.view")
+          ? pool.query(
           `SELECT br.id,
                   br.student_id AS "studentId",
                   br.object_key AS "objectKey",
@@ -2875,15 +3174,18 @@ app.get(
             WHERE br.kind='face_image' AND st.organization_id=$1${studentScope}
             ORDER BY br.created_at DESC`,
           params,
-        ),
-        pool.query(
+            )
+          : Promise.resolve({ rows: [] }),
+        staffCan("attendance.voice.view")
+          ? pool.query(
           `SELECT br.student_id AS "studentId", br.features, br.feature_version AS "featureVersion", br.created_at AS "createdAt"
              FROM biometric_references br
              JOIN students st ON st.id = br.student_id
             WHERE br.kind='voice_sample' AND st.organization_id=$1 AND br.features IS NOT NULL${studentScope}
             ORDER BY br.created_at`,
           params,
-        ),
+            )
+          : Promise.resolve({ rows: [] }),
       ]);
     res.json({
       students: students.rows,

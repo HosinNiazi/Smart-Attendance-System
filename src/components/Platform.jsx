@@ -26,10 +26,10 @@ import {
 } from "../api/client.js";
 
 const FACULTY_LEVEL_LABELS = {
-  owner: "مدیر ارشد",
-  manager: "مدیر",
-  operator: "اپراتور",
-  viewer: "ناظر (فقط مشاهده)",
+  owner: "مدیر دانشکده",
+  manager: "مدیر آموزش",
+  operator: "کارمند آموزش",
+  viewer: "کارمند آموزش (فقط مشاهده)",
 };
 const PLATFORM_LEVEL_LABELS = {
   owner: "مالک سامانه",
