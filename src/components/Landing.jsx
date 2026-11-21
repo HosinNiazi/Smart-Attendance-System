@@ -1,3 +1,4 @@
+import { useRef } from "react";
 import { Icon } from "./shared.jsx";
 import {
   landingCopy,
@@ -10,6 +11,11 @@ import {
   mapEmbedUrl,
   mapOpenUrl,
 } from "../config/site.js";
+import {
+  useScrollProgress,
+  useRevealOnScroll,
+  useSpotlight,
+} from "../hooks/useLandingEffects.js";
 
 const APP_VERSION =
   typeof __APP_VERSION__ !== "undefined" ? __APP_VERSION__ : "1.0.0";
@@ -40,8 +46,20 @@ export function Landing({
     .filter((item) => Boolean(item.href));
   const buildDate = BUILD_TIME ? landingTimestamp(lang, BUILD_TIME) : "";
 
+  const rootRef = useRef(null);
+  const progressRef = useScrollProgress();
+  useRevealOnScroll(rootRef);
+  useSpotlight(rootRef);
+
   return (
-    <div className="landing" dir={rtl ? "rtl" : "ltr"}>
+    <div className="landing" ref={rootRef} dir={rtl ? "rtl" : "ltr"}>
+      <div className="landing-scroll-progress" aria-hidden="true">
+        <span
+          ref={progressRef}
+          style={{ transformOrigin: rtl ? "right" : "left" }}
+        />
+      </div>
+
       <div className="landing-bg" aria-hidden="true">
         <span className="landing-blob blob-a" />
         <span className="landing-blob blob-b" />
@@ -111,7 +129,7 @@ export function Landing({
       <main>
         <section className="landing-hero" id="top">
           <div className="landing-hero-inner">
-            <div className="landing-hero-copy">
+            <div className="landing-hero-copy" data-reveal>
               <span className="landing-badge">
                 <i className="live-dot" /> {copy.badge}
               </span>
@@ -145,7 +163,7 @@ export function Landing({
               </ul>
             </div>
 
-            <div className="landing-hero-visual" aria-hidden="true">
+            <div className="landing-hero-visual" aria-hidden="true" data-reveal>
               <div className="landing-dash">
                 <div className="landing-dash-head">
                   <span className="landing-dash-live">
@@ -204,8 +222,13 @@ export function Landing({
 
         <section className="landing-stats" aria-label={copy.statsAria}>
           <div className="landing-stats-inner">
-            {copy.stats.map((item) => (
-              <div className="landing-stat" key={item.label}>
+            {copy.stats.map((item, index) => (
+              <div
+                className="landing-stat"
+                key={item.label}
+                data-reveal
+                style={{ "--reveal-index": index }}
+              >
                 <strong>{item.value}</strong>
                 <span>{item.label}</span>
                 <small>{item.detail}</small>
@@ -215,14 +238,19 @@ export function Landing({
         </section>
 
         <section className="landing-section" id="features">
-          <div className="landing-section-head">
+          <div className="landing-section-head" data-reveal>
             <span className="landing-eyebrow">{copy.featuresHead.eyebrow}</span>
             <h2>{copy.featuresHead.title}</h2>
             <p>{copy.featuresHead.text}</p>
           </div>
           <div className="landing-features">
-            {copy.features.map((feature) => (
-              <article className="landing-feature" key={feature.title}>
+            {copy.features.map((feature, index) => (
+              <article
+                className="landing-feature"
+                key={feature.title}
+                data-reveal
+                style={{ "--reveal-index": index % 3 }}
+              >
                 <span
                   className={`landing-feature-icon landing-tone-${feature.tone}`}
                 >
@@ -236,14 +264,19 @@ export function Landing({
         </section>
 
         <section className="landing-section landing-how" id="how">
-          <div className="landing-section-head">
+          <div className="landing-section-head" data-reveal>
             <span className="landing-eyebrow">{copy.stepsHead.eyebrow}</span>
             <h2>{copy.stepsHead.title}</h2>
             <p>{copy.stepsHead.text}</p>
           </div>
           <div className="landing-steps">
             {copy.steps.map((step, index) => (
-              <article className="landing-step" key={step.title}>
+              <article
+                className="landing-step"
+                key={step.title}
+                data-reveal
+                style={{ "--reveal-index": index }}
+              >
                 <span className="landing-step-num">{digits(index + 1)}</span>
                 <span className="landing-step-icon">
                   <Icon name={step.icon} />
@@ -256,14 +289,19 @@ export function Landing({
         </section>
 
         <section className="landing-section" id="roles">
-          <div className="landing-section-head">
+          <div className="landing-section-head" data-reveal>
             <span className="landing-eyebrow">{copy.rolesHead.eyebrow}</span>
             <h2>{copy.rolesHead.title}</h2>
             <p>{copy.rolesHead.text}</p>
           </div>
           <div className="landing-roles">
-            {copy.roles.map((role) => (
-              <article className="landing-role" key={role.title}>
+            {copy.roles.map((role, index) => (
+              <article
+                className="landing-role"
+                key={role.title}
+                data-reveal
+                style={{ "--reveal-index": index % 3 }}
+              >
                 <span className={`landing-role-icon landing-tone-${role.tone}`}>
                   <Icon name={role.icon} />
                 </span>
@@ -283,14 +321,19 @@ export function Landing({
 
         <section className="landing-section landing-security" id="security">
           <div className="landing-security-inner">
-            <div className="landing-section-head align-start">
+            <div className="landing-section-head align-start" data-reveal>
               <span className="landing-eyebrow">{copy.securityHead.eyebrow}</span>
               <h2>{copy.securityHead.title}</h2>
               <p>{copy.securityHead.text}</p>
             </div>
             <div className="landing-security-grid">
-              {copy.security.map((item) => (
-                <article className="landing-security-item" key={item.title}>
+              {copy.security.map((item, index) => (
+                <article
+                  className="landing-security-item"
+                  key={item.title}
+                  data-reveal
+                  style={{ "--reveal-index": index }}
+                >
                   <span className="landing-security-icon">
                     <Icon name={item.icon} />
                   </span>
@@ -305,7 +348,7 @@ export function Landing({
         </section>
 
         <section className="landing-section" id="faq">
-          <div className="landing-section-head">
+          <div className="landing-section-head" data-reveal>
             <span className="landing-eyebrow">{copy.faqHead.eyebrow}</span>
             <h2>{copy.faqHead.title}</h2>
             <p>{copy.faqHead.text}</p>
@@ -316,6 +359,8 @@ export function Landing({
                 className="landing-faq-item"
                 key={item.q}
                 open={index === 0}
+                data-reveal
+                style={{ "--reveal-index": Math.min(index, 3) }}
               >
                 <summary>
                   <span>{item.q}</span>
@@ -328,12 +373,12 @@ export function Landing({
         </section>
 
         <section className="landing-section landing-contact" id="contact">
-          <div className="landing-section-head">
+          <div className="landing-section-head" data-reveal>
             <span className="landing-eyebrow">{copy.contactHead.eyebrow}</span>
             <h2>{copy.contactHead.title}</h2>
             <p>{copy.contactHead.text}</p>
           </div>
-          <div className="landing-contact-grid">
+          <div className="landing-contact-grid" data-reveal>
             <div className="landing-contact-cards">
               <a
                 className="landing-contact-card"
@@ -421,7 +466,7 @@ export function Landing({
           </div>
         </section>
 
-        <section className="landing-cta">
+        <section className="landing-cta" data-reveal>
           <div className="landing-cta-inner">
             <div>
               <h2>{copy.ctaTitle}</h2>
