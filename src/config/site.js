@@ -6,9 +6,9 @@
 export const siteConfig = {
   social: {
     github: "https://github.com/HosinNiazi",
-    linkedin: "",
+    linkedin: "https://www.linkedin.com/in/hosien-niazi",
     instagram: "",
-    telegram: "",
+    telegram: "https://t.me/HosienNiaziEvari",
   },
   location: {
     // عبارت جستجوی نقشه؛ برای دقت بیشتر می‌توانید آدرس کامل را جایگزین کنید.
