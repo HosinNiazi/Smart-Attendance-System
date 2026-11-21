@@ -627,11 +627,11 @@ function getLocalDate() {
 export default function App() {
   const [active, setActive] = useState("dashboard");
   const [mobileMenu, setMobileMenu] = useState(false);
-  const [theme, setTheme] = useState(() =>
-    readStoredValue("smart-attendance:theme", "light") === "dark"
-      ? "dark"
-      : "light",
-  );
+  const [theme, setTheme] = useState(() => {
+    const stored = readStoredValue("smart-attendance:theme", "light");
+    return stored === "dark" ? "dark" : "light";
+  });
+  const [rtl, setRtl] = useState(true);
   const [students, setStudents] = useState(() => {
     const saved = readStoredValue("smart-attendance:students", null);
     return Array.isArray(saved)
@@ -769,6 +769,8 @@ export default function App() {
     phone: "",
   });
   const [regPending, setRegPending] = useState(false);
+  const [regError, setRegError] = useState("");
+  const [regNotice, setRegNotice] = useState("");
   const [helpOpen, setHelpOpen] = useState(false);
   const [loginHistory, setLoginHistory] = useState([]);
   const [historyError, setHistoryError] = useState("");
@@ -794,11 +796,12 @@ export default function App() {
   }, [toast]);
   useEffect(() => {
     document.documentElement.dataset.theme = theme;
+    document.documentElement.dir = rtl ? "rtl" : "ltr";
     if (!writeStoredValue("smart-attendance:theme", theme))
       setStorageWarning(
         "فضای ذخیره‌سازی مرورگر کافی نیست؛ از اطلاعات پشتیبان بگیرید.",
       );
-  }, [theme]);
+  }, [theme, rtl]);
   // مسیریابی سبک با هش: #/ (یا خالی) صفحهٔ اصلی، #/login صفحهٔ ورود و
   // #/platform پنل مدیر سامانه.
   useEffect(() => {
@@ -2779,19 +2782,34 @@ export default function App() {
 
   if (login && showHome)
     return (
-      <Landing
-        theme={theme}
-        onToggleTheme={() =>
-          setTheme((current) => (current === "dark" ? "light" : "dark"))
-        }
-        onEnter={() => {
-          setShowHome(false);
-          if (window.location.hash !== "#/login") {
-            window.location.hash = "#/login";
+      <>
+        <Landing
+          theme={theme}
+          rtl={rtl}
+          onToggleTheme={() =>
+            setTheme((current) => (current === "dark" ? "light" : "dark"))
           }
-          window.scrollTo({ top: 0, behavior: "smooth" });
-        }}
-      />
+          onToggleRtl={() => setRtl((current) => !current)}
+          onEnter={() => {
+            setShowHome(false);
+            if (window.location.hash !== "#/login") {
+              window.location.hash = "#/login";
+            }
+            window.scrollTo({ top: 0, behavior: "smooth" });
+          }}
+        />
+        <button
+          type="button"
+          className={`help-fab${helpOpen ? " is-open" : ""}`}
+          aria-label="راهنما و گزارش مشکل"
+          title="راهنما و گزارش مشکل"
+          onClick={() => setHelpOpen((current) => !current)}
+        >
+          <Icon name={helpOpen ? "bi-x-lg" : "bi-life-preserver"} />
+          <span className="help-fab-label">راهنما / باگ</span>
+        </button>
+        <HelpChat open={helpOpen} onClose={() => setHelpOpen(false)} />
+      </>
     );
 
   if (login)
@@ -2974,6 +2992,11 @@ export default function App() {
                 required
               />
             </div>
+            {regNotice && (
+              <p className="login-success" role="status">
+                {regNotice}
+              </p>
+            )}
             {loginError && (
               <p className="login-error" role="alert">
                 {loginError}
@@ -2994,7 +3017,14 @@ export default function App() {
             <button
               className="btn btn-light-outline w-100"
               type="button"
-              onClick={() => setRegModal(true)}
+              onClick={() => {
+                // Always require a fresh, explicit faculty choice for each
+                // registration instead of reusing the last login faculty.
+                setRegForm((current) => ({ ...current, facultyId: "" }));
+                setRegError("");
+                setRegNotice("");
+                setRegModal(true);
+              }}
             >
               <Icon name="bi-person-plus" /> ثبت‌نام دانشجوی جدید
             </button>
@@ -3057,53 +3087,81 @@ export default function App() {
                 </button>
               </div>
               <label className="form-label" htmlFor="reg-faculty">
-                نام دانشکده
+                نام دانشکده <span className="text-danger">*</span>
               </label>
               <FacultySelect
                 id="reg-faculty"
-                value={regForm.facultyId || facultyId}
-                onChange={(nextFacultyId) =>
+                value={regForm.facultyId}
+                onChange={(nextFacultyId) => {
+                  setRegError("");
                   setRegForm((current) => ({
                     ...current,
                     facultyId: nextFacultyId,
-                  }))
-                }
+                  }));
+                }}
                 options={faculties}
                 disabled={regPending || !faculties.length}
               />
               <div className="course-form-grid">
                 {[
-                  ["fullName", "نام و نام خانوادگی", "text"],
-                  ["username", "نام کاربری (ایمیل)", "email"],
-                  ["password", "رمز عبور", "password"],
-                  ["nationalId", "کد ملی", "text"],
-                  ["major", "رشته", "text"],
-                  ["term", "ترم", "text"],
-                  ["phone", "تلفن", "text"],
-                ].map(([key, label, type]) => (
+                  { key: "fullName", label: "نام و نام خانوادگی", type: "text", required: true, minLength: 2 },
+                  { key: "username", label: "نام کاربری (ایمیل)", type: "text", required: true, minLength: 3 },
+                  { key: "password", label: "رمز عبور", type: "password", required: true, minLength: 8 },
+                  { key: "nationalId", label: "کد ملی", type: "text", required: true, minLength: 6, maxLength: 20 },
+                  { key: "major", label: "رشته", type: "text" },
+                  { key: "term", label: "ترم", type: "text" },
+                  { key: "phone", label: "تلفن", type: "text" },
+                ].map(({ key, label, type, required, minLength, maxLength }) => (
                   <label className="form-label" key={key}>
-                    {label}
+                    {label} {required ? <span className="text-danger">*</span> : null}
                     <input
                       className="form-control"
                       type={type}
                       value={regForm[key]}
+                      required={required}
+                      minLength={minLength}
+                      maxLength={maxLength}
+                      autoComplete={key === "password" ? "new-password" : "off"}
                       disabled={regPending}
-                      onChange={(e) =>
-                        setRegForm((c) => ({ ...c, [key]: e.target.value }))
-                      }
+                      onChange={(e) => {
+                        setRegError("");
+                        setRegForm((c) => ({ ...c, [key]: e.target.value }));
+                      }}
                     />
                   </label>
                 ))}
               </div>
+              {regError ? (
+                <div className="exam-form-error" role="alert">
+                  <Icon name="bi-exclamation-triangle-fill" />
+                  <span>{regError}</span>
+                </div>
+              ) : null}
               <div className="modal-actions" style={{ marginTop: 12 }}>
                 <button
                   className="btn btn-primary"
                   disabled={regPending}
                   onClick={async () => {
-                    const selectedRegistrationFaculty =
-                      regForm.facultyId || facultyId;
+                    setRegError("");
+                    const selectedRegistrationFaculty = regForm.facultyId;
                     if (!selectedRegistrationFaculty) {
-                      notify("لطفاً دانشکده را انتخاب کنید.");
+                      setRegError("لطفاً دانشکده را انتخاب کنید.");
+                      return;
+                    }
+                    if (!regForm.fullName.trim() || regForm.fullName.trim().length < 2) {
+                      setRegError("نام و نام خانوادگی را کامل وارد کنید.");
+                      return;
+                    }
+                    if (!regForm.username.trim() || regForm.username.trim().length < 3) {
+                      setRegError("نام کاربری را وارد کنید (حداقل ۳ نویسه).");
+                      return;
+                    }
+                    if (!regForm.password || regForm.password.length < 8) {
+                      setRegError("رمز عبور باید حداقل ۸ نویسه باشد.");
+                      return;
+                    }
+                    if (!regForm.nationalId.trim()) {
+                      setRegError("کد ملی را وارد کنید.");
                       return;
                     }
                     setRegPending(true);
@@ -3113,6 +3171,9 @@ export default function App() {
                         facultyId: selectedRegistrationFaculty,
                       });
                       notify("درخواست ثبت‌نام ارسال شد؛ پس از تأیید مدیر می‌توانید وارد شوید.");
+                      setRegNotice(
+                        "درخواست ثبت‌نام شما ثبت شد. پس از تأیید مدیر دانشکده می‌توانید با نام کاربری و رمز انتخابی وارد شوید.",
+                      );
                       setRegModal(false);
                       setRegForm({
                         fullName: "",
@@ -3125,7 +3186,7 @@ export default function App() {
                         phone: "",
                       });
                     } catch (error) {
-                      notify(error.message || "ارسال درخواست انجام نشد.");
+                      setRegError(error.message || "ارسال درخواست انجام نشد.");
                     } finally {
                       setRegPending(false);
                     }
@@ -3395,6 +3456,16 @@ export default function App() {
                 </div>
               )}
             </div>
+            <button
+              className="lang-toggle-btn topbar-lang-toggle"
+              type="button"
+              aria-label="تغییر زبان فارسی/انگلیسی"
+              title={rtl ? "Switch to English" : "تغییر به فارسی"}
+              onClick={() => setRtl((current) => !current)}
+            >
+              <Icon name="bi-translate" />
+              {rtl ? "EN" : "فا"}
+            </button>
             <button
               className="icon-button theme-toggle"
               type="button"
@@ -3713,6 +3784,7 @@ export default function App() {
                   notify("درخواست تأیید شد.");
                 } catch (error) {
                   notify(error.message || "تأیید انجام نشد.");
+                  throw error;
                 }
               }}
               onReject={async (id) => {
@@ -3722,6 +3794,7 @@ export default function App() {
                   notify("درخواست رد شد.");
                 } catch (error) {
                   notify(error.message || "رد انجام نشد.");
+                  throw error;
                 }
               }}
               onRefresh={() => loadFromServer({ silent: true })}
@@ -3845,11 +3918,31 @@ export default function App() {
             />
           )}
         </div>
-        <footer className="main-footer">
-          <span>© ۱۴۰۵ حضوربان. تمامی حقوق محفوظ است.</span>
-          <span>
-            ساخته‌شده برای مدیریت هوشمند آموزش <Icon name="bi-heart-fill" />
-          </span>
+        <footer className="main-footer main-footer-enhanced">
+          <div className="main-footer-info">
+            <span className="main-footer-brand">
+              <Icon name="bi-fingerprint" /> حضوربان
+            </span>
+            <span>© ۱۴۰۵ حضوربان. تمامی حقوق محفوظ است.</span>
+          </div>
+          <div className="main-footer-contact">
+            <a href="mailto:mohammad.hosien.n1386@gmail.com">
+              <Icon name="bi-envelope" /> mohammad.hosien.n1386@gmail.com
+            </a>
+            <a href="tel:09336988719" dir="ltr">
+              <Icon name="bi-telephone" /> 09336988719
+            </a>
+            <span>
+              <Icon name="bi-mortarboard" /> دانشجوی نرم‌افزار · دانشکده شهید شمسی‌پور تهران
+            </span>
+          </div>
+          <button
+            type="button"
+            className="main-footer-help"
+            onClick={() => setHelpOpen(true)}
+          >
+            <Icon name="bi-life-preserver" /> راهنما و گزارش مشکل
+          </button>
         </footer>
       </main>
       {modal && (
@@ -4068,6 +4161,16 @@ export default function App() {
           </button>
         </div>
       )}
+      <button
+        type="button"
+        className={`help-fab${helpOpen ? " is-open" : ""}`}
+        aria-label="راهنما و گزارش مشکل"
+        title="راهنما و گزارش مشکل"
+        onClick={() => setHelpOpen((current) => !current)}
+      >
+        <Icon name={helpOpen ? "bi-x-lg" : "bi-life-preserver"} />
+        <span className="help-fab-label">راهنما / باگ</span>
+      </button>
       <HelpChat open={helpOpen} onClose={() => setHelpOpen(false)} />
     </div>
   );

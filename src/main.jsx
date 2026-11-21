@@ -3,6 +3,7 @@ import { createRoot } from 'react-dom/client';
 import 'bootstrap/dist/css/bootstrap.rtl.min.css';
 import 'bootstrap-icons/font/bootstrap-icons.css';
 import './styles.css';
+import './styles-home.css';
 import App from './App.jsx';
 import { AppErrorBoundary } from './components/shared.jsx';
 

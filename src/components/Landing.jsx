@@ -169,9 +169,15 @@ function faDate() {
   }
 }
 
-export function Landing({ theme = "light", onToggleTheme, onEnter }) {
+export function Landing({
+  theme = "light",
+  rtl = true,
+  onToggleTheme,
+  onToggleRtl,
+  onEnter,
+}) {
   return (
-    <div className="landing" dir="rtl">
+    <div className="landing" dir={rtl ? "rtl" : "ltr"}>
       <div className="landing-bg" aria-hidden="true">
         <span className="landing-blob blob-a" />
         <span className="landing-blob blob-b" />
@@ -208,6 +214,15 @@ export function Landing({ theme = "light", onToggleTheme, onEnter }) {
           </nav>
 
           <div className="landing-header-actions">
+            <button
+              type="button"
+              className="lang-toggle-btn"
+              aria-label="تغییر زبان"
+              onClick={onToggleRtl}
+            >
+              <Icon name="bi-translate" />
+              {rtl ? "EN" : "فا"}
+            </button>
             <button
               type="button"
               className="icon-button landing-theme"
@@ -496,9 +511,11 @@ export function Landing({ theme = "light", onToggleTheme, onEnter }) {
             ))}
           </nav>
           <div className="landing-footer-meta">
-            <a href="mailto:admin@hozorban.local">
-              <Icon name="bi-envelope" /> admin@hozorban.local
+            <a href="mailto:mohammad.hosien.n1386@gmail.com">
+              <Icon name="bi-envelope" /> mohammad.hosien.n1386@gmail.com
             </a>
+            <span>09336988719</span>
+            <span>دانشجوی نرم‌افزار · دانشکده شهید شمسی‌پور</span>
             <span>نسخهٔ ۱.۰.۰</span>
           </div>
         </div>

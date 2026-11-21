@@ -519,7 +519,7 @@ function publicUser(row) {
 async function loadFaculty(organizationId) {
   if (!organizationId) return null;
   const { rows } = await pool.query(
-    "SELECT id, name, code FROM organizations WHERE id = $1 AND is_active = true",
+    "SELECT id, name, code FROM organizations WHERE id = $1 AND is_active = true AND kind = 'faculty'",
     [organizationId],
   );
   return rows[0] || null;
@@ -1138,7 +1138,7 @@ app.post(
       fullName: z.string().trim().min(2).max(120),
       username: z.string().trim().min(3).max(120),
       password: z.string().min(8).max(128),
-      facultyId: z.string().uuid().optional(),
+      facultyId: z.string().uuid(),
       nationalId: z.string().trim().max(20).optional().default(""),
       major: z.string().trim().max(120).optional().default(""),
       term: z.string().trim().max(20).optional().default(""),
@@ -1148,20 +1148,63 @@ app.post(
   asyncRoute(async (req, res) => {
     const { fullName, username, password, facultyId, nationalId, major, term, phone } =
       req.body;
-    // A registration always belongs to exactly one faculty. The dropdown value is
-    // required in the UI; fall back to the first active faculty for older clients.
-    const faculty = facultyId
-      ? await loadFaculty(facultyId)
-      : (
-          await pool.query(
-            "SELECT id, name, code FROM organizations WHERE is_active = true ORDER BY created_at LIMIT 1",
-          )
-        ).rows[0];
+    // A registration always belongs to exactly one faculty, chosen explicitly by
+    // the applicant. We never guess a default faculty.
+    const faculty = await loadFaculty(facultyId);
     if (!faculty)
       return res
         .status(400)
         .json({ message: "دانشکدهٔ انتخاب‌شده معتبر یا فعال نیست." });
     const orgId = faculty.id;
+
+    // Reject duplicates early so a conflicting request never reaches the
+    // approval queue and can never overwrite an existing account.
+    const duplicateUser = await pool.query(
+      `SELECT 1 FROM users
+        WHERE organization_id = $1 AND lower(email) = lower($2)
+        LIMIT 1`,
+      [orgId, username],
+    );
+    if (duplicateUser.rowCount)
+      return res.status(409).json({
+        message: "این نام کاربری قبلاً در این دانشکده ثبت شده است. نام کاربری دیگری انتخاب کنید.",
+      });
+
+    if (nationalId) {
+      const duplicateStudent = await pool.query(
+        `SELECT 1 FROM students
+          WHERE organization_id = $1 AND student_number = $2
+          LIMIT 1`,
+        [orgId, nationalId],
+      );
+      const duplicateStudentUser = await pool.query(
+        `SELECT 1 FROM users
+          WHERE organization_id = $1 AND student_id = $2
+          LIMIT 1`,
+        [orgId, nationalId],
+      );
+      if (duplicateStudent.rowCount || duplicateStudentUser.rowCount)
+        return res.status(409).json({
+          message: "دانشجویی با این کد ملی قبلاً در این دانشکده ثبت شده است.",
+        });
+    }
+
+    const duplicateRequest = await pool.query(
+      `SELECT 1 FROM registration_requests
+        WHERE organization_id = $1
+          AND status = 'pending'
+          AND (
+            lower(username) = lower($2)
+            OR ($3 <> '' AND national_id = $3)
+          )
+        LIMIT 1`,
+      [orgId, username, nationalId],
+    );
+    if (duplicateRequest.rowCount)
+      return res.status(409).json({
+        message: "درخواستی با این نام کاربری یا کد ملی در انتظار بررسی وجود دارد.",
+      });
+
     const passwordHash = await bcrypt.hash(password, 10);
     const { rows } = await pool.query(
       `INSERT INTO registration_requests
@@ -1170,6 +1213,20 @@ app.post(
        RETURNING id, full_name AS "fullName", username, national_id AS "nationalId", major, term, phone, status, created_at AS "createdAt"`,
       [orgId, fullName, username, passwordHash, nationalId, major, term, phone],
     );
+
+    // Let the faculty admins know a new request is waiting for review.
+    try {
+      const admins = await adminUserIds(orgId);
+      await notifyUsers(orgId, admins, {
+        type: "system",
+        title: "درخواست ثبت‌نام جدید",
+        message: `${fullName} (${username}) برای ثبت‌نام در دانشکده «${faculty.name}» درخواست داده است.`,
+        link: "registrations",
+      });
+    } catch (notifyError) {
+      console.warn("[registrations] notification failed:", notifyError.message);
+    }
+
     res.status(201).json(rows[0]);
   }),
 );
@@ -2212,11 +2269,41 @@ app.patch(
       }
       const r = rows[0];
       const studentNumber = r.national_id || r.username;
+
+      // Never overwrite or take over an existing account. If the username or
+      // national id already belongs to someone in this faculty the request must
+      // be rejected explicitly instead of silently replacing credentials.
+      const existingStudent = await client.query(
+        `SELECT id FROM students
+          WHERE organization_id = $1 AND student_number = $2
+          LIMIT 1`,
+        [req.user.org, studentNumber],
+      );
+      if (existingStudent.rowCount) {
+        await client.query("ROLLBACK");
+        return res.status(409).json({
+          message:
+            "دانشجویی با این کد ملی/شماره دانشجویی قبلاً در این دانشکده ثبت شده است.",
+        });
+      }
+      const existingUser = await client.query(
+        `SELECT id FROM users
+          WHERE organization_id = $1
+            AND (lower(email) = lower($2) OR student_id = $3)
+          LIMIT 1`,
+        [req.user.org, r.username, studentNumber],
+      );
+      if (existingUser.rowCount) {
+        await client.query("ROLLBACK");
+        return res.status(409).json({
+          message:
+            "حسابی با این نام کاربری یا کد ملی قبلاً در این دانشکده وجود دارد؛ امکان تأیید این درخواست نیست.",
+        });
+      }
+
       const studentRows = await client.query(
         `INSERT INTO students (organization_id, student_number, full_name, major, term, phone, status)
          VALUES ($1,$2,$3,$4,$5,$6,'active')
-         ON CONFLICT (organization_id, student_number) DO UPDATE
-           SET full_name=EXCLUDED.full_name, major=EXCLUDED.major, term=EXCLUDED.term, phone=EXCLUDED.phone, status='active', updated_at=now()
          RETURNING id`,
         [req.user.org, studentNumber, r.full_name, r.major, r.term, r.phone],
       );
@@ -2224,8 +2311,6 @@ app.patch(
       const userRows = await client.query(
         `INSERT INTO users (organization_id, email, password_hash, display_name, role, student_id, is_active)
          VALUES ($1,$2,$3,$4,'student',$5,true)
-         ON CONFLICT (organization_id, email) DO UPDATE
-           SET password_hash=EXCLUDED.password_hash, display_name=EXCLUDED.display_name, student_id=EXCLUDED.student_id, is_active=true, updated_at=now()
          RETURNING id`,
         [req.user.org, r.username, r.password_hash, r.full_name, studentId],
       );
@@ -2244,6 +2329,12 @@ app.patch(
       res.json({ ok: true, studentId, userId });
     } catch (error) {
       await client.query("ROLLBACK");
+      if (error.code === "23505") {
+        return res.status(409).json({
+          message:
+            "این درخواست با حساب یا دانشجوی موجود در این دانشکده تداخل دارد و قابل تأیید نیست.",
+        });
+      }
       throw error;
     } finally {
       client.release();

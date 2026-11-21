@@ -276,41 +276,69 @@ export function Dashboard({
       </div>
 
       <div className="stat-grid">
-        <StatCard
-          icon="bi-people"
-          label="کل دانشجویان"
-          value={students.length.toLocaleString("fa-IR")}
-          detail="دانشجوی ثبت‌شده"
-          trend=""
-          color="blue"
-        />
+        <div className="stat-card blue">
+          <div className="stat-card-top">
+            <div className="stat-icon">
+              <Icon name="bi-people" />
+            </div>
+            <div>
+              <h3>کل دانشجویان</h3>
+              <strong>{students.length.toLocaleString("fa-IR")}</strong>
+              <div className="stat-change positive">
+                <Icon name="bi-arrow-up-right" /> دانشجوی ثبت‌شده
+              </div>
+            </div>
+          </div>
+          <small>در دانشکده شما</small>
+        </div>
 
-        <StatCard
-          icon="bi-journal-bookmark"
-          label="درس‌های فعال"
-          value={courses.length.toLocaleString("fa-IR")}
-          detail="در این نیم‌سال"
-          trend=""
-          color="purple"
-        />
+        <div className="stat-card purple">
+          <div className="stat-card-top">
+            <div className="stat-icon">
+              <Icon name="bi-journal-bookmark" />
+            </div>
+            <div>
+              <h3>درس‌های فعال</h3>
+              <strong>{courses.length.toLocaleString("fa-IR")}</strong>
+              <div className="stat-change positive">
+                <Icon name="bi-arrow-up-right" /> در این نیم‌سال
+              </div>
+            </div>
+          </div>
+          <small>برنامه‌های آموزشی</small>
+        </div>
 
-        <StatCard
-          icon="bi-person-check"
-          label="حاضرین امروز"
-          value={todayPresent.toLocaleString("fa-IR")}
-          detail="از ثبت‌های امروز"
-          trend=""
-          color="green"
-        />
+        <div className="stat-card green">
+          <div className="stat-card-top">
+            <div className="stat-icon">
+              <Icon name="bi-person-check" />
+            </div>
+            <div>
+              <h3>حاضرین امروز</h3>
+              <strong>{todayPresent.toLocaleString("fa-IR")}</strong>
+              <div className="stat-change positive">
+                <Icon name="bi-arrow-up-right" /> از ثبت‌های امروز
+              </div>
+            </div>
+          </div>
+          <small>در جلسات کلاس</small>
+        </div>
 
-        <StatCard
-          icon="bi-clock-history"
-          label="تأخیر و غیبت امروز"
-          value={(todayLate + todayAbsent).toLocaleString("fa-IR")}
-          detail="نیازمند بررسی"
-          trend=""
-          color="orange"
-        />
+        <div className="stat-card orange">
+          <div className="stat-card-top">
+            <div className="stat-icon">
+              <Icon name="bi-clock-history" />
+            </div>
+            <div>
+              <h3>تأخیر و غیبت امروز</h3>
+              <strong>{(todayLate + todayAbsent).toLocaleString("fa-IR")}</strong>
+              <div className="stat-change negative">
+                <Icon name="bi-arrow-down-right" /> نیازمند بررسی
+              </div>
+            </div>
+          </div>
+          <small>نیاز به رسیدگی دارد</small>
+        </div>
       </div>
 
       <div className="dashboard-grid">
@@ -6086,7 +6114,25 @@ export function Teachers({
   );
 }
 
-export function Registrations({ registrations = [], onApprove, onReject, onRefresh }) {
+export function Registrations({ registrations = [], onApprove, onReject, onRefresh, busy = false }) {
+  const [confirming, setConfirming] = useState(null);
+  const [pendingAction, setPendingAction] = useState(false);
+
+  async function runConfirmed() {
+    if (!confirming) return;
+    const { request, action } = confirming;
+    setPendingAction(true);
+    try {
+      if (action === "approve") await onApprove(request.id);
+      else await onReject(request.id);
+      setConfirming(null);
+    } catch {
+      // The parent already surfaces a readable message; keep the dialog open.
+    } finally {
+      setPendingAction(false);
+    }
+  }
+
   return (
     <>
       <PanelTitle
@@ -6144,13 +6190,13 @@ export function Registrations({ registrations = [], onApprove, onReject, onRefre
                         <div className="student-actions-cell">
                           <button
                             className="btn btn-success-soft"
-                            onClick={() => onApprove(r.id)}
+                            onClick={() => setConfirming({ request: r, action: "approve" })}
                           >
                             <Icon name="bi-check-lg" /> تأیید
                           </button>
                           <button
                             className="btn btn-light-outline"
-                            onClick={() => onReject(r.id)}
+                            onClick={() => setConfirming({ request: r, action: "reject" })}
                           >
                             <Icon name="bi-x-lg" /> رد
                           </button>
@@ -6170,6 +6216,74 @@ export function Registrations({ registrations = [], onApprove, onReject, onRefre
           />
         )}
       </div>
+      {confirming && (
+        <div
+          className="modal-backdrop-custom"
+          role="presentation"
+          onMouseDown={(event) => {
+            if (event.target === event.currentTarget && !pendingAction) setConfirming(null);
+          }}
+        >
+          <section
+            className="custom-modal manual-confirm-modal"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="registration-confirm-title"
+          >
+            <div className="modal-head">
+              <div>
+                <div className="eyebrow">پذیرش درخواست</div>
+                <h3 id="registration-confirm-title">
+                  {confirming.action === "approve" ? "تأیید درخواست ثبت‌نام" : "رد درخواست ثبت‌نام"}
+                </h3>
+              </div>
+              <button
+                className="icon-button"
+                type="button"
+                aria-label="بستن"
+                disabled={pendingAction}
+                onClick={() => setConfirming(null)}
+              >
+                <Icon name="bi-x-lg" />
+              </button>
+            </div>
+            <p>
+              {confirming.action === "approve"
+                ? "با تأیید این درخواست، حساب دانشجو و پروندهٔ او در این دانشکده ساخته می‌شود و می‌تواند با نام کاربری و رمز انتخابی وارد شود."
+                : "درخواست رد می‌شود و امکان تأیید مجدد آن از این صفحه وجود ندارد."}
+            </p>
+            <div className="ticket-modal-student" style={{ marginBottom: 12 }}>
+              <Icon name="bi-person-badge" />
+              <div>
+                <strong>{confirming.request.fullName}</strong>
+                <small style={{ display: "block" }}>{confirming.request.username}</small>
+              </div>
+            </div>
+            <div className="modal-actions">
+              <button
+                className={`btn ${confirming.action === "approve" ? "btn-primary" : "btn-danger"}`}
+                type="button"
+                disabled={pendingAction || busy}
+                onClick={runConfirmed}
+              >
+                {pendingAction
+                  ? "در حال انجام…"
+                  : confirming.action === "approve"
+                    ? "بله، تأیید کن"
+                    : "بله، رد کن"}
+              </button>
+              <button
+                className="btn btn-light"
+                type="button"
+                disabled={pendingAction}
+                onClick={() => setConfirming(null)}
+              >
+                انصراف
+              </button>
+            </div>
+          </section>
+        </div>
+      )}
     </>
   );
 }

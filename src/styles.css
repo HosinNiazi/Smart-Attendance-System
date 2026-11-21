@@ -1856,6 +1856,12 @@ html[lang="en"] body,html[lang="en"] button,html[lang="en"] input,html[lang="en"
   font-size:11.5px;line-height:1.8;
 }
 .login-error i{font-size:14px;margin-top:1px}
+.login-success{
+  display:flex;align-items:flex-start;gap:8px;margin:14px 0 0;padding:10px 12px;
+  border:1px solid #bfe6d4;border-radius:10px;background:#eefaf3;color:#0f7a52;
+  font-size:11.5px;line-height:1.8;
+}
+:root[data-theme="dark"] .login-success{border-color:#1f5d45;background:#10291f;color:#7fe0b4}
 .stat-icon.amber{background:#fff5e5;color:#d98600}
 .stat-icon.rose{background:#ffecef;color:#e0447c}
 .status-badge.info{background:#e8f1ff;color:#2563eb}
