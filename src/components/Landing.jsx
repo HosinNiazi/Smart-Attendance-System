@@ -2,6 +2,12 @@ import { useRef } from "react";
 import { Icon } from "./shared.jsx";
 import { LandingAnalytics } from "./LandingAnalytics.jsx";
 import {
+  LandingComparison,
+  LandingTestimonials,
+  LandingPricing,
+  LandingNews,
+} from "./LandingContent.jsx";
+import {
   landingCopy,
   landingDate,
   landingTimestamp,
@@ -359,6 +365,14 @@ export function Landing({
             </div>
           </div>
         </section>
+
+        <LandingComparison copy={copy} />
+
+        <LandingTestimonials copy={copy} rtl={rtl} digits={digits} />
+
+        <LandingPricing copy={copy} rtl={rtl} onEnter={onEnter} />
+
+        <LandingNews copy={copy} />
 
         <section className="landing-section" id="faq">
           <div className="landing-section-head" data-reveal>

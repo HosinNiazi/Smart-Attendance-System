@@ -298,6 +298,155 @@ export const landingCopy = {
         a: "در هر سه پنل، بخش «پشتیبانی» با سوالات متداول، دستیار هوشمند و ارتباط با مدیر سامانه وجود دارد. دانشجویان و اساتید می‌توانند درخواست خود را ثبت یا پیگیری کنند.",
       },
     ],
+    comparisonHead: {
+      eyebrow: "مقایسه",
+      title: "روش سنتی یا حضوربان؟",
+      text: "تفاوت را در زمان ثبت، دقت، شفافیت و گزارش‌گیری ببینید.",
+    },
+    comparisonTraditional: "روش سنتی",
+    comparisonSmart: "حضوربان",
+    comparisonRows: [
+      {
+        label: "زمان ثبت هر کلاس",
+        traditional: "۱۰ تا ۱۵ دقیقه",
+        smart: "کمتر از ۲ دقیقه",
+      },
+      {
+        label: "دقت ثبت",
+        traditional: "خطای انسانی و امضای دستی",
+        smart: "تشخیص بیومتریک با بررسی زنده‌بودن",
+      },
+      {
+        label: "امکان تقلب",
+        traditional: "حضور با امضای همکلاسی",
+        smart: "تأیید هویت با چهره، صدا یا اثر انگشت",
+      },
+      {
+        label: "گزارش‌گیری",
+        traditional: "دفتر و فایل‌های پراکنده",
+        smart: "لحظه‌ای، قابل فیلتر و خروجی اکسل",
+      },
+      {
+        label: "تجهیزات و هزینه",
+        traditional: "فرم، پرینت و نیروی انسانی",
+        smart: "دوربین و میکروفن موجود کلاس",
+      },
+    ],
+    testimonialsHead: {
+      eyebrow: "بازخوردها",
+      title: "تجربهٔ کاربران حضوربان",
+      text: "سه نگاه از استاد، کارشناس آموزش و دانشجو به سامانه.",
+    },
+    testimonialsSample: "نظر نمونه",
+    testimonials: [
+      {
+        quote:
+          "قبلاً ابتدای هر جلسه ده دقیقه برای حضور و غیاب می‌گذشت. حالا فهرست حاضر و غایب قبل از شروع درس آماده است.",
+        role: "استاد درس پایگاه داده",
+      },
+      {
+        quote:
+          "گزارش‌های ماهانه که قبلاً چند روز طول می‌کشید، حالا با یک فیلتر و خروجی اکسل در چند دقیقه آماده می‌شود.",
+        role: "کارشناس آموزش دانشکده",
+      },
+      {
+        quote:
+          "ثبت حضور با گوشی و بدون تماس انجام می‌شود و وضعیت جلسات و مرخصی‌ها همیشه در پنل مشخص است.",
+        role: "دانشجوی کارشناسی نرم‌افزار",
+      },
+    ],
+    testimonialsPrev: "نظر قبلی",
+    testimonialsNext: "نظر بعدی",
+    testimonialsGoto: "رفتن به نظر",
+    pricingHead: {
+      eyebrow: "طرح‌ها",
+      title: "طرحی متناسب با اندازهٔ دانشکده",
+      text: "از یک کلاس آزمایشی تا استقرار در چند دانشکده؛ طرح پایه همین حالا قابل استفاده است.",
+    },
+    pricingNote:
+      "قیمت‌گذاری نسخه‌های پولی هنوز نهایی نشده است؛ این طرح‌ها برای آماده‌سازی آینده نمایش داده می‌شوند.",
+    pricingBadge: "پیشنهاد ما",
+    pricingSoon: "به‌زودی",
+    pricingContact: "تماس بگیرید",
+    pricingFree: "رایگان",
+    pricingCtaStart: "شروع کنید",
+    pricingCtaInfo: "اطلاع از عرضه",
+    pricingPlans: [
+      {
+        key: "starter",
+        name: "شروع",
+        price: "رایگان",
+        hint: "برای آشنایی و یک کلاس آزمایشی",
+        features: [
+          "تا ۳ کلاس فعال",
+          "تا ۱۰۰ دانشجو",
+          "سه روش ثبت حضور",
+          "گزارش پایهٔ روزانه",
+        ],
+        cta: "start",
+        featured: false,
+      },
+      {
+        key: "faculty",
+        name: "دانشکده",
+        price: "به‌زودی",
+        hint: "برای یک دانشکده با همهٔ کلاس‌ها",
+        features: [
+          "کلاس‌ها و دانشجویان نامحدود",
+          "پنل مدیر، استاد و دانشجو",
+          "گزارش تحلیلی و روند حضور",
+          "پشتیبانی آموزشی",
+        ],
+        cta: "info",
+        featured: true,
+      },
+      {
+        key: "enterprise",
+        name: "سازمانی",
+        price: "تماس بگیرید",
+        hint: "برای چند دانشکده و استقرار اختصاصی",
+        features: [
+          "مدیریت چند دانشکده",
+          "اتصال به سامانهٔ احراز هویت",
+          "استقرار اختصاصی و پشتیبان‌گیری",
+          "پشتیبانی ویژه",
+        ],
+        cta: "info",
+        featured: false,
+      },
+    ],
+    newsHead: {
+      eyebrow: "اخبار",
+      title: "آخرین به‌روزرسانی‌های حضوربان",
+      text: "نسخه‌های منتشرشده و قابلیت‌هایی که به سامانه اضافه شده‌اند.",
+    },
+    news: [
+      {
+        tag: "انتشار",
+        date: "آبان ۱۴۰۵",
+        title: "نسخهٔ ۱.۰ حضوربان منتشر شد",
+        text: "پنل‌های مدیر، استاد و دانشجو با ثبت حضور بیومتریک و گزارش‌های تحلیلی آمادهٔ استفاده است.",
+      },
+      {
+        tag: "به‌روزرسانی",
+        date: "آبان ۱۴۰۵",
+        title: "داشبورد تحلیلی با نمودار روند و نقشهٔ حرارتی",
+        text: "در نمای تحلیلی، روند هفتگی و ماهانه و ساعات پرتردد کلاس‌ها را یک‌جا می‌بینید.",
+      },
+      {
+        tag: "ویژگی جدید",
+        date: "مهر ۱۴۰۵",
+        title: "تشخیص صدا و اثر انگشت به روش‌های حضور اضافه شد",
+        text: "علاوه بر چهره، تأیید هویت با نمونهٔ صوتی و حسگر اثر انگشت دستگاه نیز ممکن است.",
+      },
+    ],
+    seo: {
+      title: "حضوربان | سامانه هوشمند حضور و غیاب",
+      description:
+        "حضوربان، سامانهٔ هوشمند حضور و غیاب و مدیریت آموزشی: ثبت حضور با چهره، صدا و اثر انگشت، پنل مدیر و استاد و دانشجو، گزارش‌های تحلیلی و مقایسه با روش سنتی.",
+      keywords:
+        "حضور و غیاب, سامانه حضور و غیاب, تشخیص چهره, تشخیص صدا, اثر انگشت, مدیریت کلاس, حضوربان",
+    },
     contactHead: {
       eyebrow: "تماس و موقعیت",
       title: "با ما در ارتباط باشید",
@@ -626,6 +775,155 @@ export const landingCopy = {
         a: "All three panels include a Support section with FAQs, a smart assistant and direct contact with the administrator. Students and teachers can submit and track requests.",
       },
     ],
+    comparisonHead: {
+      eyebrow: "Comparison",
+      title: "Traditional or Hozorban?",
+      text: "See the difference in recording time, accuracy, transparency and reporting.",
+    },
+    comparisonTraditional: "Traditional method",
+    comparisonSmart: "Hozorban",
+    comparisonRows: [
+      {
+        label: "Time per class",
+        traditional: "10 to 15 minutes",
+        smart: "Under 2 minutes",
+      },
+      {
+        label: "Recording accuracy",
+        traditional: "Human error and paper signatures",
+        smart: "Biometric verification with liveness checks",
+      },
+      {
+        label: "Risk of fraud",
+        traditional: "A classmate signs for you",
+        smart: "Identity confirmed by face, voice or fingerprint",
+      },
+      {
+        label: "Reporting",
+        traditional: "Notebooks and scattered files",
+        smart: "Real-time, filterable and Excel export",
+      },
+      {
+        label: "Equipment and cost",
+        traditional: "Forms, printing and staff time",
+        smart: "The classroom's existing camera and microphone",
+      },
+    ],
+    testimonialsHead: {
+      eyebrow: "Feedback",
+      title: "What Hozorban users say",
+      text: "Three perspectives from a teacher, an academic affairs officer and a student.",
+    },
+    testimonialsSample: "Sample feedback",
+    testimonials: [
+      {
+        quote:
+          "We used to lose ten minutes at the start of every session to roll call. Now the present and absent list is ready before class begins.",
+        role: "Database course teacher",
+      },
+      {
+        quote:
+          "Monthly reports that used to take days are now ready in minutes with a single filter and an Excel export.",
+        role: "Faculty academic affairs officer",
+      },
+      {
+        quote:
+          "I check in with my phone without touching anything, and my session status and leave requests are always visible in the panel.",
+        role: "Software engineering undergraduate",
+      },
+    ],
+    testimonialsPrev: "Previous feedback",
+    testimonialsNext: "Next feedback",
+    testimonialsGoto: "Go to feedback",
+    pricingHead: {
+      eyebrow: "Plans",
+      title: "A plan that fits your faculty",
+      text: "From a single trial class to deployment across several faculties; the basic plan is available right now.",
+    },
+    pricingNote:
+      "Pricing for paid plans is not final yet; these plans are shown to prepare for the future.",
+    pricingBadge: "Recommended",
+    pricingSoon: "Coming soon",
+    pricingContact: "Contact us",
+    pricingFree: "Free",
+    pricingCtaStart: "Get started",
+    pricingCtaInfo: "Notify me",
+    pricingPlans: [
+      {
+        key: "starter",
+        name: "Starter",
+        price: "Free",
+        hint: "For exploring the system with one trial class",
+        features: [
+          "Up to 3 active classes",
+          "Up to 100 students",
+          "All three attendance methods",
+          "Basic daily reports",
+        ],
+        cta: "start",
+        featured: false,
+      },
+      {
+        key: "faculty",
+        name: "Faculty",
+        price: "Coming soon",
+        hint: "For one faculty with all of its classes",
+        features: [
+          "Unlimited classes and students",
+          "Admin, teacher and student panels",
+          "Analytics and attendance trends",
+          "Academic support",
+        ],
+        cta: "info",
+        featured: true,
+      },
+      {
+        key: "enterprise",
+        name: "Enterprise",
+        price: "Contact us",
+        hint: "For multiple faculties and dedicated deployment",
+        features: [
+          "Multi-faculty management",
+          "Identity provider integration",
+          "Dedicated deployment and backups",
+          "Priority support",
+        ],
+        cta: "info",
+        featured: false,
+      },
+    ],
+    newsHead: {
+      eyebrow: "News",
+      title: "Latest Hozorban updates",
+      text: "Released versions and capabilities recently added to the system.",
+    },
+    news: [
+      {
+        tag: "Release",
+        date: "November 2026",
+        title: "Hozorban version 1.0 is out",
+        text: "Admin, teacher and student panels are ready with biometric attendance and analytical reports.",
+      },
+      {
+        tag: "Update",
+        date: "November 2026",
+        title: "Analytics dashboard with trend chart and heatmap",
+        text: "The analytics view shows weekly and monthly trends plus the busiest class hours in one place.",
+      },
+      {
+        tag: "New feature",
+        date: "October 2026",
+        title: "Voice and fingerprint added to attendance methods",
+        text: "Beyond face recognition, identity can now be confirmed with a voice sample or the device fingerprint sensor.",
+      },
+    ],
+    seo: {
+      title: "Hozorban | Smart Attendance System",
+      description:
+        "Hozorban is a smart attendance and academic management system: check-in with face, voice or fingerprint, admin, teacher and student panels, analytical reports and a traditional-method comparison.",
+      keywords:
+        "attendance system, smart attendance, face recognition, voice recognition, fingerprint, class management, Hozorban",
+    },
     contactHead: {
       eyebrow: "Contact & location",
       title: "Get in touch with us",
