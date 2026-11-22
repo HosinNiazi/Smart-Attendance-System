@@ -32,3 +32,12 @@ function hideSplash() {
 requestAnimationFrame(() => {
   window.setTimeout(hideSplash, 1100);
 });
+
+// PWA: فقط در بیلد تولیدی ثبت می‌شود تا کش سرویس‌ورکر با HMR تداخل نداشته باشد.
+if (import.meta.env.PROD && "serviceWorker" in navigator) {
+  window.addEventListener("load", () => {
+    navigator.serviceWorker.register("/sw.js").catch(() => {
+      // اگر ثبت ناموفق باشد، سامانه به‌صورت معمولی کار می‌کند.
+    });
+  });
+}

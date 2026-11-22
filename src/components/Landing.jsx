@@ -1,12 +1,12 @@
-import { useRef } from "react";
+import { lazy, Suspense, useEffect, useRef } from "react";
 import { Icon } from "./shared.jsx";
-import { LandingAnalytics } from "./LandingAnalytics.jsx";
 import {
   LandingComparison,
   LandingTestimonials,
   LandingPricing,
   LandingNews,
 } from "./LandingContent.jsx";
+import { applyLandingSeo } from "../seo/landingSeo.js";
 import {
   landingCopy,
   landingDate,
@@ -26,6 +26,12 @@ import {
   useCursorRing,
   useRipple,
 } from "../hooks/useLandingEffects.js";
+
+const LandingAnalytics = lazy(() =>
+  import("./LandingAnalytics.jsx").then((module) => ({
+    default: module.LandingAnalytics,
+  })),
+);
 
 const APP_VERSION =
   typeof __APP_VERSION__ !== "undefined" ? __APP_VERSION__ : "1.0.0";
@@ -64,6 +70,8 @@ export function Landing({
   useTiltCards(rootRef);
   useCursorRing(rootRef, cursorRef);
   useRipple(rootRef);
+
+  useEffect(() => applyLandingSeo(lang, copy), [lang, copy]);
 
   return (
     <div className="landing" ref={rootRef} dir={rtl ? "rtl" : "ltr"}>
@@ -254,7 +262,17 @@ export function Landing({
           </div>
         </section>
 
-        <LandingAnalytics copy={copy} rtl={rtl} digits={digits} />
+        <Suspense
+          fallback={
+            <div className="landing-analytics-skeleton" aria-hidden="true">
+              <span />
+              <span />
+              <span />
+            </div>
+          }
+        >
+          <LandingAnalytics copy={copy} rtl={rtl} digits={digits} />
+        </Suspense>
 
         <section className="landing-section" id="features">
           <div className="landing-section-head" data-reveal>

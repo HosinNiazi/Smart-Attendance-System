@@ -1,2 +1,5 @@
 User-agent: *
+Allow: /
 Disallow: /api/
+Disallow: /uploads/
+Disallow: /offline.html

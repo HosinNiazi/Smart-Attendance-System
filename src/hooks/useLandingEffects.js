@@ -88,6 +88,21 @@ export function useRevealOnScroll(rootRef) {
 
     targets.forEach((el) => observer.observe(el));
 
+    // محتوای lazy (مثل داشبورد تحلیلی) بعد از اولین رسم اضافه می‌شود؛
+    // بنابراین عناصر جدید دارای data-reveal هم باید مشاهده شوند.
+    const mutations = new MutationObserver((records) => {
+      records.forEach((record) => {
+        record.addedNodes.forEach((node) => {
+          if (!(node instanceof Element)) return;
+          if (node.matches("[data-reveal]")) observer.observe(node);
+          node
+            .querySelectorAll("[data-reveal]")
+            .forEach((el) => observer.observe(el));
+        });
+      });
+    });
+    mutations.observe(root, { childList: true, subtree: true });
+
     // اطمینان: اگر عنصری به هر دلیل در دید نبود (مثلاً صفحه کوتاه)، نامرئی نماند.
     const safety = window.setTimeout(() => {
       targets.forEach((el) => {
@@ -100,6 +115,7 @@ export function useRevealOnScroll(rootRef) {
 
     return () => {
       observer.disconnect();
+      mutations.disconnect();
       window.clearTimeout(safety);
     };
   }, [rootRef]);

@@ -2964,3 +2964,62 @@ a.landing-contact-card:hover {
   }
 }
 
+
+/* --- lazy loading skeleton for the analytics section --- */
+.landing-analytics-skeleton {
+  max-width: 1200px;
+  min-height: 340px;
+  margin: 78px auto 0;
+  padding: 0 24px;
+  display: grid;
+  grid-template-columns: 1.6fr 1fr;
+  gap: 16px;
+}
+
+.landing-analytics-skeleton span {
+  display: block;
+  border-radius: 20px;
+  background: linear-gradient(
+    100deg,
+    color-mix(in srgb, var(--surface) 92%, var(--line)) 30%,
+    color-mix(in srgb, var(--surface) 60%, var(--line)) 50%,
+    color-mix(in srgb, var(--surface) 92%, var(--line)) 70%
+  );
+  background-size: 220% 100%;
+  animation: landing-skeleton 1.6s ease-in-out infinite;
+}
+
+.landing-analytics-skeleton span:first-child {
+  grid-row: span 2;
+  min-height: 300px;
+}
+
+.landing-analytics-skeleton span:not(:first-child) {
+  min-height: 140px;
+}
+
+@keyframes landing-skeleton {
+  from {
+    background-position: 120% 0;
+  }
+  to {
+    background-position: -120% 0;
+  }
+}
+
+@media (max-width: 900px) {
+  .landing-analytics-skeleton {
+    grid-template-columns: 1fr;
+    padding: 0 16px;
+  }
+
+  .landing-analytics-skeleton span:first-child {
+    grid-row: auto;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .landing-analytics-skeleton span {
+    animation: none;
+  }
+}
