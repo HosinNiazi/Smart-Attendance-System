@@ -1,5 +1,6 @@
 import { useRef } from "react";
 import { Icon } from "./shared.jsx";
+import { LandingAnalytics } from "./LandingAnalytics.jsx";
 import {
   landingCopy,
   landingDate,
@@ -236,6 +237,8 @@ export function Landing({
             ))}
           </div>
         </section>
+
+        <LandingAnalytics copy={copy} rtl={rtl} digits={digits} />
 
         <section className="landing-section" id="features">
           <div className="landing-section-head" data-reveal>
