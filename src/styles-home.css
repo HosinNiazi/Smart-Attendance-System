@@ -1189,10 +1189,25 @@
   will-change: transform;
 }
 
-.landing-feature:hover,
-.landing-role:hover,
 .landing-security-item:hover {
   transform: translateY(-8px) rotateX(4deg) rotateY(-4deg) scale(1.015);
+  box-shadow: 0 26px 55px rgba(16, 24, 40, 0.14);
+  border-color: color-mix(in srgb, var(--primary) 38%, var(--line));
+}
+
+/* چرخش سه‌بعدی دنبال‌کنندهٔ نشانگر روی کارت‌های امکانات و نقش‌ها */
+.landing-feature,
+.landing-role {
+  transform: rotateX(var(--tilt-x, 0deg)) rotateY(var(--tilt-y, 0deg))
+    translateY(var(--tilt-lift, 0px)) scale(var(--tilt-scale, 1));
+}
+
+.landing-feature:hover,
+.landing-role:hover {
+  --tilt-x: 4deg;
+  --tilt-y: -4deg;
+  --tilt-lift: -8px;
+  --tilt-scale: 1.015;
   box-shadow: 0 26px 55px rgba(16, 24, 40, 0.14);
   border-color: color-mix(in srgb, var(--primary) 38%, var(--line));
 }
@@ -2113,6 +2128,298 @@ a.landing-contact-card:hover {
 
   .analytics-kpi-panel {
     transition: none;
+  }
+}
+
+/* ============================================================
+   Landing — visual design: glass, mesh, tilt, cursor, ripple
+   ============================================================ */
+
+/* --- gradient mesh background --- */
+.landing-blob {
+  animation: landing-mesh-a 26s ease-in-out infinite alternate;
+  will-change: transform;
+}
+
+.landing-blob.blob-b {
+  animation-duration: 32s;
+  animation-name: landing-mesh-b;
+  animation-delay: -6s;
+}
+
+.landing-blob.blob-c {
+  animation-duration: 38s;
+  animation-name: landing-mesh-c;
+  animation-delay: -14s;
+}
+
+@keyframes landing-mesh-a {
+  0% {
+    transform: translate3d(0, 0, 0) scale(1);
+  }
+  50% {
+    transform: translate3d(-70px, 60px, 0) scale(1.14);
+  }
+  100% {
+    transform: translate3d(30px, -40px, 0) scale(1.04);
+  }
+}
+
+@keyframes landing-mesh-b {
+  0% {
+    transform: translate3d(0, 0, 0) scale(1.05);
+  }
+  50% {
+    transform: translate3d(90px, -50px, 0) scale(0.94);
+  }
+  100% {
+    transform: translate3d(-40px, 70px, 0) scale(1.12);
+  }
+}
+
+@keyframes landing-mesh-c {
+  0% {
+    transform: translate3d(0, 0, 0) scale(1);
+  }
+  50% {
+    transform: translate3d(-100px, -70px, 0) scale(1.16);
+  }
+  100% {
+    transform: translate3d(60px, 40px, 0) scale(0.98);
+  }
+}
+
+/* --- glassmorphism cards --- */
+.landing-feature,
+.landing-role,
+.landing-step,
+.landing-security-item,
+.analytics-board,
+.analytics-card,
+.landing-contact-card,
+.landing-map-card {
+  background: color-mix(in srgb, var(--surface) 80%, transparent);
+  backdrop-filter: blur(14px) saturate(135%);
+  -webkit-backdrop-filter: blur(14px) saturate(135%);
+  border-color: color-mix(in srgb, var(--surface) 38%, var(--line));
+}
+
+.landing-role {
+  position: relative;
+  overflow: hidden;
+}
+
+.landing-role > * {
+  position: relative;
+  z-index: 1;
+}
+
+/* درخشش شیشه‌ای که هنگام hover روی کارت حرکت می‌کند */
+.landing-feature::before,
+.landing-role::before {
+  content: "";
+  position: absolute;
+  inset: -1px;
+  border-radius: inherit;
+  pointer-events: none;
+  background: linear-gradient(
+    115deg,
+    transparent 32%,
+    rgba(255, 255, 255, 0.55) 46%,
+    transparent 60%
+  );
+  transform: translateX(-130%);
+  opacity: 0;
+  transition: transform 0.9s ease, opacity 0.35s ease;
+}
+
+.landing-feature:hover::before,
+.landing-role:hover::before {
+  transform: translateX(130%);
+  opacity: 1;
+}
+
+:root[data-theme="dark"] .landing-feature,
+:root[data-theme="dark"] .landing-role,
+:root[data-theme="dark"] .landing-step,
+:root[data-theme="dark"] .landing-security-item,
+:root[data-theme="dark"] .analytics-board,
+:root[data-theme="dark"] .analytics-card,
+:root[data-theme="dark"] .landing-contact-card,
+:root[data-theme="dark"] .landing-map-card {
+  background: color-mix(in srgb, #141e2c 80%, transparent);
+}
+
+:root[data-theme="dark"] .landing-feature::before,
+:root[data-theme="dark"] .landing-role::before {
+  background: linear-gradient(
+    115deg,
+    transparent 32%,
+    rgba(160, 180, 255, 0.22) 46%,
+    transparent 60%
+  );
+}
+
+/* --- custom cursor ring --- */
+.landing-cursor-ring {
+  position: fixed;
+  top: 0;
+  left: 0;
+  width: 0;
+  height: 0;
+  pointer-events: none;
+  opacity: 0;
+  z-index: 9998;
+  transition: opacity 0.2s ease;
+}
+
+/* دایره جدا از عنصر موقعیت‌دهنده است تا بزرگ‌نمایی مرکز را جابه‌جا نکند */
+.landing-cursor-ring > i {
+  position: absolute;
+  left: -13px;
+  top: -13px;
+  width: 26px;
+  height: 26px;
+  border-radius: 50%;
+  border: 1.5px solid color-mix(in srgb, var(--primary) 72%, transparent);
+  box-shadow:
+    inset 0 0 0 1px rgba(255, 255, 255, 0.35),
+    0 0 14px color-mix(in srgb, var(--primary) 30%, transparent);
+  background: color-mix(in srgb, var(--primary) 6%, transparent);
+  transform-origin: center;
+  scale: 1;
+  transition:
+    scale 0.22s ease,
+    background 0.22s ease,
+    border-color 0.22s ease;
+}
+
+.landing-cursor-ring.is-visible {
+  opacity: 1;
+}
+
+.landing-cursor-ring.is-hover > i {
+  scale: 1.65;
+  background: color-mix(in srgb, var(--primary) 14%, transparent);
+  border-color: color-mix(in srgb, var(--primary) 92%, transparent);
+}
+
+:root[data-theme="dark"] .landing-cursor-ring > i {
+  border-color: color-mix(in srgb, #8fa2ff 78%, transparent);
+  box-shadow:
+    inset 0 0 0 1px rgba(0, 0, 0, 0.25),
+    0 0 16px rgba(129, 140, 248, 0.35);
+}
+
+/* --- ripple & micro-interactions --- */
+.landing button,
+.landing .btn,
+.landing-socials a {
+  position: relative;
+  overflow: hidden;
+}
+
+.landing-ripple {
+  position: absolute;
+  border-radius: 50%;
+  background: currentColor;
+  opacity: 0.22;
+  transform: scale(0);
+  pointer-events: none;
+  animation: landing-ripple 0.55s ease-out forwards;
+}
+
+@keyframes landing-ripple {
+  to {
+    transform: scale(1);
+    opacity: 0;
+  }
+}
+
+.landing button,
+.landing .btn {
+  transition:
+    transform 0.16s ease,
+    box-shadow 0.25s ease,
+    background 0.2s ease,
+    border-color 0.2s ease,
+    color 0.2s ease;
+}
+
+.landing button:active,
+.landing .btn:active {
+  transform: scale(0.97);
+}
+
+.landing .btn-primary:hover,
+.landing .landing-cta-sm:hover {
+  box-shadow:
+    0 12px 28px rgba(67, 97, 238, 0.36),
+    0 0 0 6px rgba(67, 97, 238, 0.12);
+}
+
+.landing .landing-brand:active .brand-mark,
+.landing .landing-theme:active {
+  transform: scale(0.94);
+}
+
+/* --- responsive / motion / fallbacks --- */
+@media (max-width: 700px) {
+  .landing-feature,
+  .landing-role,
+  .landing-step,
+  .landing-security-item,
+  .analytics-board,
+  .analytics-card,
+  .landing-contact-card,
+  .landing-map-card {
+    background: var(--surface);
+    backdrop-filter: none;
+    -webkit-backdrop-filter: none;
+  }
+
+  :root[data-theme="dark"] .landing-feature,
+  :root[data-theme="dark"] .landing-role,
+  :root[data-theme="dark"] .landing-step,
+  :root[data-theme="dark"] .landing-security-item,
+  :root[data-theme="dark"] .analytics-board,
+  :root[data-theme="dark"] .analytics-card,
+  :root[data-theme="dark"] .landing-contact-card,
+  :root[data-theme="dark"] .landing-map-card {
+    background: #141e2c;
+  }
+
+  .landing-cursor-ring {
+    display: none;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .landing-blob {
+    animation: none !important;
+  }
+
+  .landing-cursor-ring {
+    display: none;
+  }
+
+  .landing-ripple {
+    display: none;
+  }
+
+  .landing-feature::before,
+  .landing-role::before {
+    display: none;
+  }
+
+  .landing-feature,
+  .landing-role {
+    transform: none !important;
+  }
+
+  .landing button:active,
+  .landing .btn:active {
+    transform: none;
   }
 }
 

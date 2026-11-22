@@ -16,6 +16,9 @@ import {
   useScrollProgress,
   useRevealOnScroll,
   useSpotlight,
+  useTiltCards,
+  useCursorRing,
+  useRipple,
 } from "../hooks/useLandingEffects.js";
 
 const APP_VERSION =
@@ -48,12 +51,19 @@ export function Landing({
   const buildDate = BUILD_TIME ? landingTimestamp(lang, BUILD_TIME) : "";
 
   const rootRef = useRef(null);
+  const cursorRef = useRef(null);
   const progressRef = useScrollProgress();
   useRevealOnScroll(rootRef);
   useSpotlight(rootRef);
+  useTiltCards(rootRef);
+  useCursorRing(rootRef, cursorRef);
+  useRipple(rootRef);
 
   return (
     <div className="landing" ref={rootRef} dir={rtl ? "rtl" : "ltr"}>
+      <div className="landing-cursor-ring" ref={cursorRef} aria-hidden="true">
+        <i />
+      </div>
       <div className="landing-scroll-progress" aria-hidden="true">
         <span
           ref={progressRef}
