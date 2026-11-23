@@ -43,7 +43,7 @@ if (typeof document === "undefined") {
 const modelsPromise = (async () => {
   // WebGL (via OffscreenCanvas) is what the main thread already uses and is
   // orders of magnitude faster; cpu is only the last resort.
-  for (const backend of ["cpu", "webgl"]) {
+  for (const backend of ["webgl", "cpu"]) {
     try {
       const ok = await faceapi.tf.setBackend(backend);
       if (ok) break;
@@ -86,6 +86,13 @@ function eyeRatioOf(landmarks) {
   };
 }
 
+// face-api's `toNetInput` only accepts HTML media elements or tensors, and a
+// worker has no HTMLMediaElement. Converting the bitmap to a Tensor3D keeps
+// detection possible inside the worker.
+function bitmapToTensor(bitmap) {
+  return faceapi.tf.browser.fromPixels(bitmap);
+}
+
 self.onmessage = async (event) => {
   const message = event.data || {};
   try {
@@ -97,17 +104,23 @@ self.onmessage = async (event) => {
     }
 
     if (message.type === "detect") {
-      const results = await faceapi
-        .detectAllFaces(
-          message.bitmap,
-          new faceapi.TinyFaceDetectorOptions({
-            inputSize: 320,
-            scoreThreshold: 0.5,
-          }),
-        )
-        .withFaceLandmarks(true)
-        .withFaceDescriptors();
-      message.bitmap?.close?.();
+      const tensor = bitmapToTensor(message.bitmap);
+      let results = [];
+      try {
+        results = await faceapi
+          .detectAllFaces(
+            tensor,
+            new faceapi.TinyFaceDetectorOptions({
+              inputSize: 320,
+              scoreThreshold: 0.5,
+            }),
+          )
+          .withFaceLandmarks(true)
+          .withFaceDescriptors();
+      } finally {
+        tensor.dispose();
+        message.bitmap?.close?.();
+      }
       self.postMessage({
         type: "result",
         id: message.id,
@@ -121,21 +134,38 @@ self.onmessage = async (event) => {
     }
 
     if (message.type === "describe") {
-      const image = await faceapi.fetchImage(message.url);
-      const result = await faceapi
-        .detectSingleFace(
-          image,
-          new faceapi.TinyFaceDetectorOptions({
-            inputSize: 320,
-            scoreThreshold: 0.45,
-          }),
-        )
-        .withFaceLandmarks(true)
-        .withFaceDescriptor();
+      // ImageBitmap is the only image source available inside a worker. The
+      // previous fetchImage() call created a real <img>, which does not exist
+      // here, so the worker crashed on the first legacy reference photo.
+      const response = await fetch(message.url, { credentials: "same-origin" });
+      if (!response.ok) {
+        throw new Error(
+          `describe: failed to fetch photo (${response.status})`,
+        );
+      }
+      const bitmap = await createImageBitmap(await response.blob());
+      let descriptor = null;
+      const tensor = bitmapToTensor(bitmap);
+      try {
+        const result = await faceapi
+          .detectSingleFace(
+            tensor,
+            new faceapi.TinyFaceDetectorOptions({
+              inputSize: 320,
+              scoreThreshold: 0.45,
+            }),
+          )
+          .withFaceLandmarks(true)
+          .withFaceDescriptor();
+        descriptor = result ? Array.from(result.descriptor) : null;
+      } finally {
+        tensor.dispose();
+        bitmap.close?.();
+      }
       self.postMessage({
         type: "described",
         id: message.id,
-        descriptor: result ? Array.from(result.descriptor) : null,
+        descriptor,
       });
       return;
     }

@@ -106,7 +106,9 @@ function request(payload, transfer, timeoutMs = REQUEST_TIMEOUT_MS) {
         reject(error);
       },
     });
-    worker.postMessage(payload, transfer || []);
+    // The worker echoes this id back; replacing the placeholder id is what
+    // pairs each reply with its pending request.
+    worker.postMessage({ ...payload, id }, transfer || []);
   });
 }
 

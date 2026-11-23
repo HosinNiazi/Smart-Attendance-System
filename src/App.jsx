@@ -1953,14 +1953,9 @@ export default function App() {
         list.some((device) => device.deviceId === current)
       )
         return current;
-      const laptop = list.find((device) =>
-        /integrated|built.?in|internal|laptop|front camera/i.test(
-          device.label || "",
-        ),
-      );
-      const preferred = laptop || list[0];
-      const id = preferred?.deviceId || "";
-      return id;
+      // First video input, in the order the browser exposes it. This is what
+      // phones and laptops use as their default camera.
+      return list[0]?.deviceId || "";
     });
     return list;
   }
@@ -1979,7 +1974,7 @@ export default function App() {
   }, []);
   async function startCamera(
     deviceId = selectedCameraId,
-    forceLaptopCamera = false,
+    forceFirstCamera = false,
   ) {
     if (typeof deviceId !== "string") deviceId = selectedCameraId;
     const friendlyCameraError = (error) => {
@@ -2001,7 +1996,7 @@ export default function App() {
         name === "OverconstrainedError" ||
         name === "ConstraintNotSatisfiedError"
       ) {
-        return "وب‌کم داخلی شناسایی شد، اما مرورگر نتوانست آن را باز کند. صفحه را Refresh کنید و دوباره تلاش کنید.";
+        return "دوربین اول دستگاه شناسایی شد، اما مرورگر نتوانست آن را باز کند. صفحه را Refresh کنید و دوباره تلاش کنید.";
       }
       if (!window.isSecureContext || !navigator.mediaDevices?.getUserMedia) {
         return "دوربین فقط در آدرس امن کار می‌کند. پروژه را با npm run dev اجرا کنید و آدرس http://localhost:5173 را باز کنید؛ از IP شبکه یا فایل مستقیم App.jsx استفاده نکنید.";
@@ -2018,18 +2013,57 @@ export default function App() {
 
     setCameraState("connecting");
     try {
-      // مجوز دوربین را می‌گیریم تا مرورگر نام دستگاه‌ها را نشان دهد.
+      if (forceFirstCamera) {
+        // Face-recognition page: use the first video input and open it with a
+        // single getUserMedia call. Probing with `video: true` and then
+        // re-opening another device is what made phones switch cameras and
+        // could trigger an extra browser tab/download prompt.
+        let availableCameras = [];
+        try {
+          availableCameras = await refreshCameras();
+        } catch {
+          // enumeration can fail before permission; the default camera is
+          // still usable, so keep going.
+        }
+        const first = availableCameras[0];
+        const stream = await navigator.mediaDevices.getUserMedia({
+          video: {
+            ...(first?.deviceId ? { deviceId: { exact: first.deviceId } } : {}),
+            width: { ideal: 1280 },
+            height: { ideal: 720 },
+          },
+          audio: false,
+        });
+        streamRef.current?.getTracks().forEach((track) => track.stop());
+        streamRef.current = stream;
+        const track = stream.getVideoTracks()[0];
+        const activeId = track?.getSettings?.().deviceId || first?.deviceId || "";
+        if (activeId) {
+          setSelectedCameraId(activeId);
+          writeStoredValue("smart-attendance:camera-device", activeId);
+        }
+        setCameraState("live");
+        notify(
+          `دوربین متصل شد: ${first?.label || track?.label || "دوربین اول"}`,
+        );
+        // Labels become available after the permission grant.
+        refreshCameras().catch(() => {});
+        return;
+      }
+
+      // Classroom mode keeps the camera picker: ask permission once so the
+      // labels are readable, then open the chosen device explicitly.
       const permissionStream = await navigator.mediaDevices.getUserMedia({
         video: true,
         audio: false,
       });
       permissionStream.getTracks().forEach((track) => track.stop());
 
-      const hadSavedChoice =
-        !forceLaptopCamera &&
-        Boolean(readStoredValue("smart-attendance:camera-device", ""));
+      const hadSavedChoice = Boolean(
+        readStoredValue("smart-attendance:camera-device", ""),
+      );
       const availableCameras = await refreshCameras({
-        preferBuiltIn: forceLaptopCamera || (!hadSavedChoice && !deviceId),
+        preferBuiltIn: !hadSavedChoice && !deviceId,
       });
 
       if (availableCameras.length === 0) {
@@ -2039,22 +2073,15 @@ export default function App() {
         );
       }
 
-      const laptopCameraPattern =
-        /integrated|built.?in|internal|laptop|hd webcam|user.?facing|front camera/i;
       const chosenCamera =
         (hadSavedChoice &&
           availableCameras.find((camera) => camera.deviceId === deviceId)) ||
-        availableCameras.find((camera) =>
-          laptopCameraPattern.test(camera.label || ""),
-        ) ||
         availableCameras[0];
-      if (!forceLaptopCamera) {
-        setSelectedCameraId(chosenCamera.deviceId);
-        writeStoredValue(
-          "smart-attendance:camera-device",
-          chosenCamera.deviceId,
-        );
-      }
+      setSelectedCameraId(chosenCamera.deviceId);
+      writeStoredValue(
+        "smart-attendance:camera-device",
+        chosenCamera.deviceId,
+      );
 
       streamRef.current?.getTracks().forEach((track) => track.stop());
 

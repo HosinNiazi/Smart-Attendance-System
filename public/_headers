@@ -1,0 +1,11 @@
+# ثابت‌های امنیتی برای فایل‌های مدل face-api.
+# این فایل توسط Netlify / Cloudflare Pages خوانده می‌شود. اگر روی سرور دیگری
+# منتشر می‌کنید، همین هدرها را برای مسیر /models/* تنظیم کنید؛ در غیر این صورت
+# بعضی مرورگرها و مدیرهای دانلود، فایل .bin را به‌جای بارگذاری مدل دانلود می‌کنند.
+/models/*
+  Content-Disposition: inline
+  X-Content-Type-Options: nosniff
+  Cache-Control: public, max-age=31536000, immutable
+
+/models/*.bin
+  Content-Type: application/octet-stream
