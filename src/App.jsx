@@ -699,6 +699,9 @@ export default function App() {
   });
   const sessionId = `${sessionCourse}::${sessionDate}`;
   const [cameraState, setCameraState] = useState("idle");
+  // Incremented after every successful camera start so the <video> element
+  // rebinds even when the device id and state string stay the same.
+  const [cameraRevision, setCameraRevision] = useState(0);
   const [cameras, setCameras] = useState([]);
   const [selectedCameraId, setSelectedCameraId] = useState(() =>
     readStoredValue("smart-attendance:camera-device", ""),
@@ -2014,37 +2017,62 @@ export default function App() {
     setCameraState("connecting");
     try {
       if (forceFirstCamera) {
-        // Face-recognition page: use the first video input and open it with a
-        // single getUserMedia call. Probing with `video: true` and then
-        // re-opening another device is what made phones switch cameras and
-        // could trigger an extra browser tab/download prompt.
+        // Face-recognition page: always prefer the device's main/built-in
+        // camera (the laptop webcam) and bind it with as few opens as possible.
+        // `facingMode: user` picks the selfie camera on phones; on laptops it
+        // resolves to the built-in webcam on most drivers.
+        const mainCameraPattern =
+          /integrated|built.?in|internal|laptop|front|user.?facing|hd webcam/i;
+        const openMain = (video) =>
+          navigator.mediaDevices.getUserMedia({
+            video: {
+              ...video,
+              width: { ideal: 1280 },
+              height: { ideal: 720 },
+            },
+            audio: false,
+          });
+
+        let stream = await openMain({ facingMode: { ideal: "user" } });
+        let track = stream.getVideoTracks()[0];
+        let activeId = track?.getSettings?.().deviceId || "";
+
+        // Labels (and sometimes ids) only become readable after permission.
         let availableCameras = [];
         try {
           availableCameras = await refreshCameras();
         } catch {
-          // enumeration can fail before permission; the default camera is
-          // still usable, so keep going.
+          // enumeration failed; the stream we already have still works.
         }
-        const first = availableCameras[0];
-        const stream = await navigator.mediaDevices.getUserMedia({
-          video: {
-            ...(first?.deviceId ? { deviceId: { exact: first.deviceId } } : {}),
-            width: { ideal: 1280 },
-            height: { ideal: 720 },
-          },
-          audio: false,
-        });
-        streamRef.current?.getTracks().forEach((track) => track.stop());
+        const mainCamera = availableCameras.find((camera) =>
+          mainCameraPattern.test(camera.label || ""),
+        );
+
+        if (mainCamera?.deviceId && mainCamera.deviceId !== activeId) {
+          // The browser opened an external/secondary camera first. Stop it and
+          // switch to the built-in one explicitly.
+          stream.getTracks().forEach((streamTrack) => streamTrack.stop());
+          stream = await openMain({
+            deviceId: { exact: mainCamera.deviceId },
+          });
+          track = stream.getVideoTracks()[0];
+          activeId = track?.getSettings?.().deviceId || mainCamera.deviceId;
+        }
+
+        streamRef.current?.getTracks().forEach((streamTrack) =>
+          streamTrack.stop(),
+        );
         streamRef.current = stream;
-        const track = stream.getVideoTracks()[0];
-        const activeId = track?.getSettings?.().deviceId || first?.deviceId || "";
         if (activeId) {
           setSelectedCameraId(activeId);
           writeStoredValue("smart-attendance:camera-device", activeId);
         }
         setCameraState("live");
+        setCameraRevision((revision) => revision + 1);
         notify(
-          `دوربین متصل شد: ${first?.label || track?.label || "دوربین اول"}`,
+          `دوربین متصل شد: ${
+            mainCamera?.label || track?.label || "دوربین اصلی"
+          }`,
         );
         // Labels become available after the permission grant.
         refreshCameras().catch(() => {});
@@ -2097,6 +2125,7 @@ export default function App() {
 
       streamRef.current = stream;
       setCameraState("live");
+      setCameraRevision((revision) => revision + 1);
       notify(`دوربین متصل شد: ${chosenCamera.label || "دوربین انتخاب‌شده"}`);
     } catch (error) {
       streamRef.current?.getTracks().forEach((track) => track.stop());
@@ -3702,6 +3731,7 @@ export default function App() {
               onMarkAttendance={markFaceAttendance}
               onRecognitionNotice={notify}
               cameraState={cameraState}
+              cameraRevision={cameraRevision}
               cameras={cameras}
               selectedCameraId={selectedCameraId}
               onSelectCamera={selectCamera}

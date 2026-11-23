@@ -1424,6 +1424,7 @@ export function FaceAttendance({
   onMarkAttendance,
   onRecognitionNotice,
   cameraState,
+  cameraRevision = 0,
   cameras = [],
   selectedCameraId = "",
   onSelectCamera,
@@ -2063,7 +2064,7 @@ export function FaceAttendance({
       videoRef.current.srcObject = streamRef.current;
       videoRef.current.play().catch(() => {});
     }
-  }, [cameraState, videoRef, streamRef]);
+  }, [cameraState, cameraRevision, videoRef, streamRef]);
 
   const manualCandidates = React.useMemo(() => {
     if (!manualConfirm) return [];
