@@ -2050,3 +2050,37 @@ html[lang="en"] body,html[lang="en"] button,html[lang="en"] input,html[lang="en"
   .platform-print-credentials .modal-actions{display:none!important}
   .modal-backdrop-custom{position:static!important;background:none!important;padding:0!important;backdrop-filter:none!important}
 }
+
+/* Today's-session selector and class-window states (face/voice/classroom). */
+.today-session-picker{display:grid;gap:8px;margin-bottom:14px}
+.session-date-lock{display:flex;align-items:center;gap:7px;padding:8px 11px;border-radius:11px;background:linear-gradient(180deg,#f7f9ff,#eef2fb);border:1px solid #dbe3f3;color:#58627a;font-size:11px;line-height:1.7}
+.session-date-lock i{color:#4a5b86}
+.session-state-card{display:flex;align-items:center;gap:10px;padding:11px 12px;border-radius:13px;border:1px solid #dbe3f3;background:#f7f9ff;margin-top:4px}
+.session-state-icon{width:34px;height:34px;flex:0 0 34px;display:grid;place-items:center;border-radius:10px;background:#e9eef9;color:#4a5b86;font-size:16px}
+.session-state-copy{display:grid;gap:2px;min-width:0;flex:1}
+.session-state-copy strong{font-size:12px;color:#27324a}
+.session-state-copy small{font-size:11px;color:#637089;line-height:1.65}
+.session-state-card.is-success{border-color:#bfead8;background:#f1fbf6}
+.session-state-card.is-success .session-state-icon{background:#d9f6e8;color:#12865f}
+.session-state-card.is-warning{border-color:#f3d39a;background:#fff9ee}
+.session-state-card.is-warning .session-state-icon{background:#ffe9c4;color:#a86612}
+.session-state-card.is-danger{border-color:#f1c1c9;background:#fff4f6}
+.session-state-card.is-danger .session-state-icon{background:#ffdfe4;color:#bd344b}
+.session-state-card.is-neutral .session-state-icon{background:#eef1f7;color:#6a7488}
+.session-create-button{flex:0 0 auto;white-space:nowrap;font-size:11px;padding:7px 11px}
+.attendance-success-toast.is-early{background:linear-gradient(135deg,#412c0d,#553a12);border-color:#ffb84d66;color:#fff7e8}
+.attendance-success-toast.is-early .attendance-success-icon{background:#ffb84d2b;color:#ffc46b}
+.attendance-success-toast.is-early .attendance-success-copy small{color:#efd7ae}
+.attendance-success-toast.is-early .attendance-success-progress{background:linear-gradient(90deg,#ffcf7d,#e09a2b)}
+.attendance-success-toast.is-ended{background:linear-gradient(135deg,#3b141d,#4b1a24);border-color:#ff7d9266;color:#fff1f4}
+.attendance-success-toast.is-ended .attendance-success-icon{background:#ff7d922b;color:#ff9dae}
+.attendance-success-toast.is-ended .attendance-success-copy small{color:#f2c3cc}
+.attendance-success-toast.is-ended .attendance-success-progress{background:linear-gradient(90deg,#ff9dae,#c94662)}
+.face-box-early{border-color:#ffb84d;border-style:dashed;box-shadow:0 0 0 1px #1115,0 0 22px #ffb84d77}
+.face-box-early>span{background:#a86612}
+.face-box-ended{border-color:#ff7d92;border-style:dashed;box-shadow:0 0 0 1px #1115,0 0 22px #ff7d9277}
+.face-box-ended>span{background:#a83048}
+:root[data-theme="dark"] .session-date-lock{background:#141b2a;border-color:#26324a;color:#9aa6bd}
+:root[data-theme="dark"] .session-state-card{background:#151d2d;border-color:#26324a}
+:root[data-theme="dark"] .session-state-copy strong{color:#e7ecf7}
+:root[data-theme="dark"] .session-state-copy small{color:#9aa6bd}

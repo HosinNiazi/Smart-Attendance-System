@@ -1,6 +1,7 @@
 import React, { useEffect, useRef, useState } from "react";
-import { Icon, PanelTitle, Badge, EmptyState, Select, StudentAvatar } from "../components/shared.jsx";
-import { JalaliDateInput } from "../components/JalaliDateInput.jsx";
+import { Icon, PanelTitle, Badge, EmptyState, StudentAvatar } from "../components/shared.jsx";
+import { TodaySessionPicker } from "../components/TodaySessionPicker.jsx";
+import { attendanceBlockMessage } from "../sessions/attendanceWindow.js";
 import { saveClip } from "./audioStore.js";
 
 const PHRASE = "امروز برای حضور در کلاس جمله ثابت را واضح می‌خوانم";
@@ -151,7 +152,7 @@ function MicrophoneStatus({ status }) {
   return <div className={`voice-mic-status is-${status}`} role="status" aria-live="polite"><Icon name={icons[status] || icons.idle} /><span>{labels[status] || labels.idle}</span></div>;
 }
 
-export function VoiceAttendance({ courses, students, attendance, sessionCourse, setSessionCourse, sessionDate, setSessionDate, sessionId, onMarkAttendance, voiceProfiles = [], onSaveVoiceSample }) {
+export function VoiceAttendance({ courses, students, attendance, sessionCourse, setSessionCourse, sessionDate, setSessionDate, sessionId, todaySession = null, sessionWindow = null, onCreateTodaySession, sessionCreating = false, onMarkAttendance, voiceProfiles = [], onSaveVoiceSample }) {
   const profiles = voiceProfiles;
   const [recording, setRecording] = useState(null);
   const [seconds, setSeconds] = useState(0);
@@ -182,6 +183,13 @@ export function VoiceAttendance({ courses, students, attendance, sessionCourse, 
     }
   }
 
+  function voiceAttendanceFailure(result, student) {
+    const blocked = attendanceBlockMessage(result?.reason, {
+      windowInfo: sessionWindow,
+    });
+    return `${student.name}: ${blocked.title} — ${blocked.detail}`;
+  }
+
   async function handleAudioFile(file) {
     if (!file || !modalTarget) return;
     if (!file.type.startsWith("audio/") && !/\.(mp3|wav|m4a|webm|ogg|aac|flac)$/i.test(file.name)) { setMessage("لطفاً یک فایل صوتی انتخاب کنید."); return; }
@@ -196,7 +204,7 @@ export function VoiceAttendance({ courses, students, attendance, sessionCourse, 
         else if (attendance.some((item) => item.sessionId === sessionId && String(item.id ?? item.studentId) === String(student.id))) setMessage(`حضور ${student.name} قبلاً برای این جلسه ثبت شده است.`);
         else {
           const recorded = onMarkAttendance(student.id, "حاضر", { method: "voice" });
-          if (!recorded) setMessage("ثبت حضور انجام نشد؛ جلسه یا بازهٔ مجاز آن را بررسی کنید.");
+          if (!recorded?.saved) setMessage(voiceAttendanceFailure(recorded, student));
           else {
             setMessage(`حضور ${student.name} ثبت شد.`);
             try { await saveClip(`session:${sessionId}:${Date.now()}`, { kind: "session", sessionId, blob: file, savedAt: Date.now() }); }
@@ -284,7 +292,7 @@ export function VoiceAttendance({ courses, students, attendance, sessionCourse, 
             else if (attendance.some((item) => item.sessionId === sessionId && String(item.id ?? item.studentId) === String(student.id))) setMessage(`حضور ${student.name} قبلاً برای این جلسه ثبت شده است.`);
             else {
               const recorded = onMarkAttendance(student.id, "حاضر", { method: "voice" });
-              if (!recorded) setMessage("ثبت حضور انجام نشد؛ جلسه یا بازهٔ مجاز آن را بررسی کنید.");
+              if (!recorded?.saved) setMessage(voiceAttendanceFailure(recorded, student));
               else {
                 setMessage(`حضور ${student.name} ثبت شد.`);
                 try { await saveClip(`session:${sessionId}:${Date.now()}`, { kind: "session", sessionId, blob, savedAt: Date.now() }); }
@@ -317,8 +325,7 @@ export function VoiceAttendance({ courses, students, attendance, sessionCourse, 
         <blockquote className="voice-phrase" dir="rtl">{PHRASE}</blockquote>
         <div className="voice-session-controls">
           <MicrophoneStatus status={micStatus} />
-          <label className="form-label">درس / کلاس</label><Select className="form-select" disabled={Boolean(recording) || busy} value={sessionCourse} onChange={(event) => setSessionCourse(event.target.value)}>{courses.map((course) => <option key={course.id} value={course.title}>{course.title}</option>)}</Select>
-          <label className="form-label" htmlFor="voice-session-date">تاریخ جلسه</label><JalaliDateInput id="voice-session-date" disabled={Boolean(recording) || busy} value={sessionDate} onChange={(next) => setSessionDate(next)} ariaLabel="تاریخ جلسه" />
+          <TodaySessionPicker idPrefix="voice" courses={courses} course={sessionCourse} onCourseChange={setSessionCourse} session={todaySession} windowInfo={sessionWindow} date={sessionDate} disabled={Boolean(recording) || busy} onCreateSession={onCreateTodaySession} creating={sessionCreating} />
           {recording === "session" ? <button className="btn btn-danger voice-record-button" onClick={() => stopRef.current?.()}><Icon name="bi-stop-circle" /> توقف ضبط · {seconds} ثانیه</button> : <button className="btn btn-primary voice-record-button" disabled={busy || micStatus === "requesting" || profiles.length === 0 || Boolean(recording)} onClick={() => startRecording()}><Icon name={micStatus === "requesting" ? "bi-hourglass-split" : "bi-mic-fill"} /> {micStatus === "requesting" ? "در انتظار دسترسی میکروفون" : "ضبط زنده و ثبت حضور"}</button>}
           {recording === "session" && <RecordingIndicator seconds={seconds} level={micLevel} />}
           <div className="settings-warning"><Icon name="bi-info-circle" /> این تطبیق آزمایشی است و برای احراز هویت قطعی مناسب نیست. صدا در فضای محلی مرورگر ذخیره می‌شود.</div>

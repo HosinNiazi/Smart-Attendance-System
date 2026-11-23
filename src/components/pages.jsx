@@ -1,6 +1,8 @@
 import React, { useEffect, useRef, useState } from "react";
 import { Badge, EmptyState, Icon, PanelTitle, Select, SkeletonCards, SkeletonTable, StatCard, StudentAvatar, TablePager } from "./shared.jsx";
 import { JalaliDateInput } from "./JalaliDateInput.jsx";
+import { TodaySessionPicker } from "./TodaySessionPicker.jsx";
+import { attendanceBlockMessage } from "../sessions/attendanceWindow.js";
 import {
   LiveClassBanner,
   StudentCalendar,
@@ -1420,6 +1422,10 @@ export function FaceAttendance({
   sessionDate,
   setSessionDate,
   sessionId,
+  todaySession = null,
+  sessionWindow = null,
+  onCreateTodaySession,
+  sessionCreating = false,
   onSaveStudentPhoto,
   onMarkAttendance,
   onRecognitionNotice,
@@ -1465,6 +1471,7 @@ export function FaceAttendance({
   const trackingRef = React.useRef(createTrackingState());
   const notifiedSessionRef = React.useRef(new Set());
   const notifiedLivenessRef = React.useRef(new Set());
+  const timingNoticeRef = React.useRef(new Map());
   const attendanceRef = React.useRef(attendance);
   const studentsRef = React.useRef(students);
   const markAttendanceRef = React.useRef(onMarkAttendance);
@@ -1639,7 +1646,10 @@ export function FaceAttendance({
 
   useEffect(() => {
     if (!attendancePopup) return undefined;
-    const timer = window.setTimeout(() => setAttendancePopup(null), 4200);
+    const delay = attendancePopup.tone === "early" || attendancePopup.tone === "ended"
+      ? 6500
+      : 4200;
+    const timer = window.setTimeout(() => setAttendancePopup(null), delay);
     return () => window.clearTimeout(timer);
   }, [attendancePopup]);
 
@@ -1714,6 +1724,12 @@ export function FaceAttendance({
         const claimed = new Set();
         let livenessHint = null;
         let firstUnknownResult = null;
+        const blockedState =
+          sessionWindow?.state === "not_started"
+            ? "before_start"
+            : sessionWindow?.state === "ended"
+              ? "after_end"
+              : null;
         const nextBoxes = detected.map((result, faceIndex) => {
           const trackId = tracked.faces[faceIndex]?.trackId ?? null;
           // Phase 3 matching: centroid-first ranking with per-reference
@@ -1786,6 +1802,30 @@ export function FaceAttendance({
                   time: existing.time || "",
                 });
               }
+            } else if (blockedState) {
+              // Recognise the student but never write attendance outside the
+              // class window. The orange/red box explains why.
+              tone = blockedState === "before_start" ? "early" : "ended";
+              label = `${student.name} · ${
+                blockedState === "before_start"
+                  ? "کلاس شروع نشده"
+                  : "زمان ثبت تمام شده"
+              }`;
+              const noticeKey = `${sessionId}:${student.id}:${blockedState}`;
+              const lastAt = timingNoticeRef.current.get(noticeKey) || 0;
+              if (!classroomMode && Date.now() - lastAt > 15_000) {
+                timingNoticeRef.current.set(noticeKey, Date.now());
+                const blocked = attendanceBlockMessage(blockedState, {
+                  name: student.name,
+                  windowInfo: sessionWindow,
+                });
+                setAttendancePopup({
+                  name: student.name,
+                  status: blocked.title,
+                  time: blocked.detail,
+                  tone: blocked.tone,
+                });
+              }
             } else if (
               !classroomMode &&
               personalLivenessRequired &&
@@ -1815,13 +1855,12 @@ export function FaceAttendance({
             ) {
               const noticeKey = `${sessionId}:${student.id}`;
               if (!notifiedSessionRef.current.has(noticeKey)) {
-                notifiedSessionRef.current.add(noticeKey);
-                const saved = markAttendanceRef.current(
+                const markResult = markAttendanceRef.current(
                   student.id,
                   PRESENT_STATUS,
                   {
                     silent: !classroomMode,
-                    method: "face",
+                    method: classroomMode ? "class_camera" : "face",
                     verification: {
                       distance: Number(nearest.toFixed(4)),
                       margin: Number.isFinite(second)
@@ -1843,6 +1882,14 @@ export function FaceAttendance({
                     },
                   },
                 );
+                const saved = markResult?.saved === true;
+                const retryable = [
+                  "before_start",
+                  "after_end",
+                  "no_session",
+                  "storage",
+                ].includes(markResult?.reason);
+                if (!retryable) notifiedSessionRef.current.add(noticeKey);
                 if (saved) {
                   tone = "recognized";
                   label = `${student.name} · ثبت شد`;
@@ -1855,19 +1902,31 @@ export function FaceAttendance({
                     `حضور ${student.name} با موفقیت در این جلسه ثبت شد.`,
                   );
                   if (!classroomMode) {
-                    const time = new Intl.DateTimeFormat("fa-IR", {
-                      hour: "2-digit",
-                      minute: "2-digit",
-                    }).format(new Date());
                     setAttendancePopup({
                       name: student.name,
                       status: "حضور این جلسه ثبت شد",
-                      time,
+                      time: markResult.time || "",
+                      tone: "success",
                     });
                   }
                 } else {
-                  tone = "review";
-                  label = `${student.name} · ثبت نشد`;
+                  const blocked = attendanceBlockMessage(markResult?.reason, {
+                    name: student.name,
+                    windowInfo: sessionWindow,
+                  });
+                  tone =
+                    blocked.tone === "early" || blocked.tone === "ended"
+                      ? blocked.tone
+                      : "review";
+                  label = `${student.name} · ${blocked.title}`;
+                  if (!classroomMode) {
+                    setAttendancePopup({
+                      name: student.name,
+                      status: blocked.title,
+                      time: blocked.detail,
+                      tone: blocked.tone,
+                    });
+                  }
                 }
               } else {
                 tone = "review";
@@ -1976,12 +2035,13 @@ export function FaceAttendance({
     faceMinMargin,
     faceMinFrames,
     personalLivenessRequired,
+    sessionWindow?.state,
   ]);
 
   const usableReferenceCount = new Set(
     faceDescriptors.map((item) => item.studentId),
   ).size;
-  const sessionReady = Boolean(sessionCourse && sessionDate);
+  const sessionReady = Boolean(todaySession?.databaseId);
   const referenceError =
     descriptorsStatus === "ready" &&
     faceDescriptors.length === 0 &&
@@ -2092,6 +2152,18 @@ export function FaceAttendance({
     }
     setManualQuery("");
     setManualConfirm({ descriptor: last.descriptor });
+  }
+
+  function markRoster(student, status) {
+    const result = onMarkAttendance(student.id, status, { method: "manual" });
+    if (result && result.saved === false) {
+      const blocked = attendanceBlockMessage(result.reason, {
+        windowInfo: sessionWindow,
+      });
+      recognitionNoticeRef.current?.(
+        `${student.name}: ${blocked.title} — ${blocked.detail}`,
+      );
+    }
   }
 
   async function confirmManualStudent(student) {
@@ -2281,12 +2353,24 @@ export function FaceAttendance({
           )}
           {!classroomMode && attendancePopup && (
             <div
-              className="attendance-success-toast"
+              className={`attendance-success-toast ${
+                attendancePopup.tone && attendancePopup.tone !== "success"
+                  ? `is-${attendancePopup.tone}`
+                  : ""
+              }`}
               role="status"
               aria-live="polite"
             >
               <span className="attendance-success-icon">
-                <Icon name="bi-check-lg" />
+                <Icon
+                  name={
+                    attendancePopup.tone === "early"
+                      ? "bi-hourglass-split"
+                      : attendancePopup.tone === "ended"
+                        ? "bi-clock-history"
+                        : "bi-check-lg"
+                  }
+                />
               </span>
               <span className="attendance-success-copy">
                 <strong>{attendancePopup.status}</strong>
@@ -2469,24 +2553,16 @@ export function FaceAttendance({
                 <Icon name="bi-sliders" />
               </span>
             </div>
-            <label className="form-label">درس / کلاس</label>
-            <Select
-              className="form-select"
-              value={sessionCourse}
-              onChange={(e) => setSessionCourse(e.target.value)}
-            >
-              {courses.map((c) => (
-                <option key={c.id}>{c.title}</option>
-              ))}
-            </Select>
-            <label className="form-label" htmlFor="face-session-date">
-              تاریخ جلسه
-            </label>
-            <JalaliDateInput
-              id="face-session-date"
-              value={sessionDate}
-              onChange={(next) => setSessionDate(next)}
-              ariaLabel="تاریخ جلسه"
+            <TodaySessionPicker
+              idPrefix={classroomMode ? "classroom" : "face"}
+              courses={courses}
+              course={sessionCourse}
+              onCourseChange={setSessionCourse}
+              session={todaySession}
+              windowInfo={sessionWindow}
+              date={sessionDate}
+              onCreateSession={onCreateTodaySession}
+              creating={sessionCreating}
             />
             <div className="face-info-row">
               <span>
@@ -2732,9 +2808,7 @@ export function FaceAttendance({
                           attendanceStatusKind(shownStatus) === "present"
                         }
                         onClick={() =>
-                          onMarkAttendance(student.id, PRESENT_STATUS, {
-                            method: "manual",
-                          })
+                          markRoster(student, PRESENT_STATUS)
                         }
                       >
                         حاضر
@@ -2746,9 +2820,7 @@ export function FaceAttendance({
                           attendanceStatusKind(shownStatus) === "absent"
                         }
                         onClick={() =>
-                          onMarkAttendance(student.id, ABSENT_STATUS, {
-                            method: "manual",
-                          })
+                          markRoster(student, ABSENT_STATUS)
                         }
                       >
                         غایب

@@ -25,6 +25,7 @@ import { FaceEvents } from "./components/FaceEvents.jsx";
 import { VoiceAttendance } from "./voice/VoiceAttendance.jsx";
 import { Exams } from "./components/Exams.jsx";
 import { LiveClass, TrendAnalysis } from "./components/phase2.jsx";
+import { resolveSessionWindow } from "./sessions/attendanceWindow.js";
 import {
   exportAudioProfiles,
   restoreAudioProfiles,
@@ -698,6 +699,41 @@ export default function App() {
       : {};
   });
   const sessionId = `${sessionCourse}::${sessionDate}`;
+  const [sessionClock, setSessionClock] = useState(() => Date.now());
+  const [sessionCreating, setSessionCreating] = useState(false);
+  const selectedCourse = useMemo(
+    () => courses.find((course) => course.title === sessionCourse) || null,
+    [courses, sessionCourse],
+  );
+  const selectedSession = sessionHistory[sessionId] || null;
+  const sessionWindowInfo = useMemo(
+    () =>
+      resolveSessionWindow({
+        session: selectedSession,
+        course: selectedCourse,
+        date: sessionDate,
+        now: new Date(sessionClock),
+      }),
+    [selectedSession, selectedCourse, sessionDate, sessionClock],
+  );
+
+  // Attendance cameras can run for a whole lesson; keep the open/ended state
+  // fresh without re-rendering the scan loop on every frame.
+  useEffect(() => {
+    const timer = window.setInterval(
+      () => setSessionClock(Date.now()),
+      15_000,
+    );
+    return () => window.clearInterval(timer);
+  }, []);
+
+  // The three automatic-attendance pages only ever register today's session.
+  useEffect(() => {
+    if (!["face", "voice", "class-camera"].includes(active)) return;
+    const today = getLocalDate();
+    if (sessionDate !== today) setSessionDate(today);
+  }, [active, sessionDate]);
+
   const [cameraState, setCameraState] = useState("idle");
   // Incremented after every successful camera start so the <video> element
   // rebinds even when the device id and state string stay the same.
@@ -2183,36 +2219,55 @@ export default function App() {
     const student = students.find(
       (item) => String(item.id) === String(studentId),
     );
-    if (!student) return false;
+    if (!student) return { saved: false, reason: "unknown_student" };
     const session = sessionHistory[sessionId];
     if (
       session?.studentIds?.length &&
       !session.studentIds.some((id) => String(id) === String(studentId))
     ) {
       notify(`${student.name} در فهرست این جلسه نیست.`);
-      return false;
+      return { saved: false, reason: "not_in_roster" };
     }
+
+    const course = courses.find((item) => item.title === sessionCourse);
+    const windowInfo = resolveSessionWindow({
+      session,
+      course,
+      date: sessionDate,
+      now: new Date(),
+    });
+    const isManual = !["face", "voice", "class_camera"].includes(method);
+
+    // Without a real class_sessions row the record cannot be written to the
+    // database; previously the UI marked it locally and only showed an error.
+    if (!session?.databaseId) {
+      return {
+        saved: false,
+        reason: "no_session",
+        windowInfo,
+        studentName: student.name,
+      };
+    }
+
+    if (!isManual && !windowInfo.canRecord) {
+      const reason =
+        windowInfo.state === "not_started"
+          ? "before_start"
+          : windowInfo.state === "ended"
+            ? "after_end"
+            : windowInfo.state === "cancelled"
+              ? "session_cancelled"
+              : windowInfo.state === "finalized"
+                ? "session_finalized"
+                : "no_session";
+      return { saved: false, reason, windowInfo, studentName: student.name };
+    }
+
     const now = new Date();
-    const [year, month, day] = sessionDate.split("-").map(Number);
-    const [startHour = 0, startMinute = 0] = (session?.startTime || "00:00")
-      .split(":")
-      .map(Number);
-    const [endHour = 23, endMinute = 59] = (session?.endTime || "23:59")
-      .split(":")
-      .map(Number);
-    const start = new Date(year, month - 1, day, startHour, startMinute);
-    const end = new Date(year, month - 1, day, endHour, endMinute);
-    const openAt = new Date(
-      start.getTime() - Number(session?.openBeforeMinutes ?? 15) * 60_000,
+    const start = windowInfo.start || now;
+    const grace = Number(
+      windowInfo.graceMinutes ?? session?.graceMinutes ?? settings.lateAfter ?? 10,
     );
-    const closeAt = new Date(
-      end.getTime() + Number(session?.closeAfterMinutes ?? 30) * 60_000,
-    );
-    if (now < openAt || now > closeAt) {
-      notify("ثبت خودکار حضور خارج از بازهٔ مجاز این جلسه است.");
-      return false;
-    }
-    const grace = Number(session?.graceMinutes ?? settings.lateAfter ?? 10);
     const finalStatus =
       status === PRESENT_STATUS &&
       now > new Date(start.getTime() + grace * 60_000)
@@ -2264,7 +2319,7 @@ export default function App() {
       notify(
         "ثبت حضور در ذخیره‌ساز مرورگر انجام نشد؛ فضای ذخیره‌سازی را بررسی کنید.",
       );
-      return false;
+      return { saved: false, reason: "storage" };
     }
     setSessionHistory((current) => ({
       ...current,
@@ -2296,7 +2351,7 @@ export default function App() {
                 ? "ثبت با تشخیص صدا"
                 : method === "fingerprint"
                   ? "ثبت با اثر انگشت"
-                  : method === "face"
+                  : method === "face" || method === "class_camera"
                     ? "ثبت با تشخیص چهره"
                     : "ثبت خودکار حضور",
             method,
@@ -2320,8 +2375,70 @@ export default function App() {
               ? "ثبت با تشخیص چهره"
               : "ثبت دستی",
     });
-    return true;
+    return { saved: true, status: finalStatus, studentName: student.name, time };
   }
+
+  async function createTodaySessionForCourse() {
+    if (sessionCreating) return false;
+    const course = courses.find((item) => item.title === sessionCourse);
+    if (!course) {
+      notify("درس انتخاب‌شده پیدا نشد.");
+      return false;
+    }
+    if (!course.databaseId) {
+      notify("این درس در دیتابیس ثبت نشده است.");
+      return false;
+    }
+    const today = getLocalDate();
+    if (sessionHistory[`${course.title}::${today}`]?.databaseId) {
+      notify("جلسهٔ امروز این درس قبلاً ایجاد شده است.");
+      return true;
+    }
+    const startTime = course.startTime || "";
+    const endTime = course.endTime || "";
+    if (!/^\d{2}:\d{2}$/.test(startTime) || !/^\d{2}:\d{2}$/.test(endTime)) {
+      notify("ساعت شروع و پایان این درس در تنظیمات درس کامل نیست.");
+      return false;
+    }
+    const memberDatabaseIds = [
+      ...new Set(
+        (course.studentIds || [])
+          .map((id) => studentDatabaseId(id))
+          .filter(Boolean),
+      ),
+    ];
+    if (!memberDatabaseIds.length) {
+      notify("فهرست دانشجویان این درس خالی است؛ ابتدا دانشجو اضافه کنید.");
+      return false;
+    }
+    const confirmed = window.confirm(
+      `جلسهٔ امروز درس «${course.title}» از ساعت ${startTime} تا ${endTime} ایجاد شود؟`,
+    );
+    if (!confirmed) return false;
+    setSessionCreating(true);
+    try {
+      await createSession({
+        courseId: course.databaseId,
+        date: today,
+        teacherName: course.teacher || loginName || "استاد",
+        startTime,
+        endTime,
+        graceMinutes: Number(settings.lateAfter ?? 10),
+        openBeforeMinutes: 15,
+        closeAfterMinutes: 30,
+        studentIds: memberDatabaseIds,
+      });
+      await loadFromServer({ silent: true });
+      notify(`جلسهٔ امروز «${course.title}» ایجاد شد و ثبت حضور فعال است.`);
+      return true;
+    } catch (error) {
+      notify(error.message || "ایجاد جلسهٔ امروز انجام نشد.");
+      return false;
+    } finally {
+      setSessionCreating(false);
+    }
+  }
+
   function studentsForActiveSession() {
     const course = courses.find((item) => item.title === sessionCourse);
     const sessionRoster = sessionHistory[sessionId]?.studentIds;
@@ -3727,6 +3844,10 @@ export default function App() {
               sessionDate={sessionDate}
               setSessionDate={setSessionDate}
               sessionId={sessionId}
+              todaySession={selectedSession}
+              sessionWindow={sessionWindowInfo}
+              onCreateTodaySession={createTodaySessionForCourse}
+              sessionCreating={sessionCreating}
               onSaveStudentPhoto={saveStudentPhoto}
               onMarkAttendance={markFaceAttendance}
               onRecognitionNotice={notify}
@@ -3785,6 +3906,10 @@ export default function App() {
               sessionDate={sessionDate}
               setSessionDate={setSessionDate}
               sessionId={sessionId}
+              todaySession={selectedSession}
+              sessionWindow={sessionWindowInfo}
+              onCreateTodaySession={createTodaySessionForCourse}
+              sessionCreating={sessionCreating}
               onMarkAttendance={markFaceAttendance}
               onNotice={notify}
               voiceProfiles={voiceProfiles}

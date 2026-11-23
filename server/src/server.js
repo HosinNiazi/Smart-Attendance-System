@@ -4414,6 +4414,54 @@ app.put(
     const { sessionId, studentId, status, method, reason, faceVerification } =
       req.body;
 
+    // Automatic biometrics may only write while the class is actually running.
+    // Manual corrections keep the old behaviour. Times are compared in Iran
+    // local time because session_date/session_time are stored without a zone.
+    if (["face", "voice", "class_camera"].includes(method)) {
+      const timing = (
+        await pool.query(
+          `SELECT s.status,
+                  to_char(s.start_time,'HH24:MI') AS "startTime",
+                  to_char(s.end_time,'HH24:MI') AS "endTime",
+                  to_char(s.end_time + make_interval(mins => s.close_after_minutes),'HH24:MI') AS "closeTime",
+                  ((s.session_date + s.start_time) AT TIME ZONE 'Asia/Tehran') > now() AS "notStarted",
+                  (((s.session_date + s.end_time) + make_interval(mins => s.close_after_minutes)) AT TIME ZONE 'Asia/Tehran') < now() AS "closed"
+             FROM class_sessions s
+            WHERE s.id=$1 AND s.organization_id=$2`,
+          [sessionId, req.user.org],
+        )
+      ).rows[0];
+      if (!timing) {
+        return res.status(404).json({ message: "جلسهٔ انتخاب‌شده پیدا نشد." });
+      }
+      if (timing.status === "cancelled") {
+        return res.status(409).json({
+          code: "SESSION_CANCELLED",
+          message: "این جلسه لغو شده است و ثبت حضور در آن ممکن نیست.",
+        });
+      }
+      if (timing.status === "finalized") {
+        return res.status(409).json({
+          code: "SESSION_FINALIZED",
+          message: "این جلسه نهایی شده است و ثبت جدید در آن ممکن نیست.",
+        });
+      }
+      if (timing.notStarted) {
+        return res.status(409).json({
+          code: "BEFORE_SESSION_START",
+          message: `کلاس هنوز شروع نشده است؛ شروع ساعت ${timing.startTime}.`,
+          startsAt: timing.startTime,
+        });
+      }
+      if (timing.closed) {
+        return res.status(409).json({
+          code: "AFTER_SESSION_END",
+          message: `زمان ثبت این جلسه تمام شده است؛ پایان ساعت ${timing.endTime}.`,
+          endedAt: timing.endTime,
+        });
+      }
+    }
+
     // Face attendance is only accepted when the client supplies a plausible
     // verification payload and the faculty has the feature enabled.
     const faceDecision = evaluateFaceAttendance({
