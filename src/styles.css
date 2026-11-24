@@ -2084,3 +2084,14 @@ html[lang="en"] body,html[lang="en"] button,html[lang="en"] input,html[lang="en"
 :root[data-theme="dark"] .session-state-card{background:#151d2d;border-color:#26324a}
 :root[data-theme="dark"] .session-state-copy strong{color:#e7ecf7}
 :root[data-theme="dark"] .session-state-copy small{color:#9aa6bd}
+
+/* Session-restore splash shown while the stored token is verified. */
+.app-boot{min-height:100vh;display:grid;place-items:center;gap:14px;background:radial-gradient(circle at 50% 0%,#eef3ff,#f7f9fc 55%,#eef2f8);direction:rtl}
+.app-boot>span:last-child{display:grid;gap:4px;text-align:center}
+.app-boot>span:last-child strong{font-size:18px;color:#24324b;letter-spacing:.02em}
+.app-boot>span:last-child small{font-size:12px;color:#6b7891}
+.app-boot-mark{width:64px;height:64px;display:grid;place-items:center;border-radius:20px;background:linear-gradient(135deg,#3b82f6,#6366f1);color:#fff;font-size:28px;box-shadow:0 18px 40px #3b82f655;animation:appBootPulse 1.6s ease-in-out infinite}
+@keyframes appBootPulse{0%,100%{transform:translateY(0);box-shadow:0 18px 40px #3b82f655}50%{transform:translateY(-4px);box-shadow:0 24px 46px #3b82f677}}
+:root[data-theme="dark"] .app-boot{background:radial-gradient(circle at 50% 0%,#111a2b,#0b1220 60%,#080d16)}
+:root[data-theme="dark"] .app-boot>span:last-child strong{color:#e8eefb}
+:root[data-theme="dark"] .app-boot>span:last-child small{color:#93a1bb}

@@ -397,7 +397,7 @@ export function ImpersonationBanner({ impersonation, remainingSeconds, onExit, e
   );
 }
 
-export default function PlatformArea({ theme, onToggleTheme, onEnterFaculty, onExitToSite }) {
+export default function PlatformArea({ theme, onToggleTheme, onEnterFaculty, onExitToSite, page: routePage = "overview", onNavigate }) {
   const [token, setToken] = useState(() => getPlatformToken());
   const [sessionUser, setSessionUser] = useState(() => getPlatformUser());
   const [loginName, setLoginName] = useState("");
@@ -405,7 +405,7 @@ export default function PlatformArea({ theme, onToggleTheme, onEnterFaculty, onE
   const [loginError, setLoginError] = useState("");
   const [loginPending, setLoginPending] = useState(false);
   const [passwordChange, setPasswordChange] = useState(null);
-  const [page, setPage] = useState("overview");
+  const [page, setPage] = useState(routePage || "overview");
   const [error, setError] = useState("");
   const [modalError, setModalError] = useState("");
   const [toast, setToast] = useState(null);
@@ -446,6 +446,13 @@ export default function PlatformArea({ theme, onToggleTheme, onEnterFaculty, onE
   useEffect(() => () => {
     if (toastTimer.current) clearTimeout(toastTimer.current);
   }, []);
+
+  // The active page is also part of the URL (#/platform/<page>); keep the
+  // local state in step with back/forward navigation.
+  useEffect(() => {
+    if (routePage && routePage !== page) setPage(routePage);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [routePage]);
 
   const level = sessionUser?.platformLevel || "auditor";
   const canManage = level === "owner" || level === "operator";
@@ -631,6 +638,7 @@ export default function PlatformArea({ theme, onToggleTheme, onEnterFaculty, onE
     setFaculties([]);
     setActiveSessions([]);
     setPage("overview");
+    onNavigate?.("overview");
     setMobileNav(false);
     setConfirmState(null);
     setAccountModal(false);
@@ -638,6 +646,7 @@ export default function PlatformArea({ theme, onToggleTheme, onEnterFaculty, onE
 
   function goTo(nextPage) {
     setPage(nextPage);
+    onNavigate?.(nextPage);
     setMobileNav(false);
     setError("");
   }

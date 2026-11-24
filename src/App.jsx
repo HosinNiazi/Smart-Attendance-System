@@ -1,5 +1,5 @@
 import React from "react";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Icon, Select } from "./components/shared.jsx";
 import {
   AdminActivity,
@@ -54,6 +54,7 @@ import {
   setApiUser,
   finalizeSession as finalizeSessionApi,
   getApiUser,
+  getApiToken,
   changePassword,
   clearApiToken,
   exitImpersonation,
@@ -163,6 +164,13 @@ const navGroups = [
     ],
   },
 ];
+
+const NAV_PAGE_LABELS = Object.fromEntries(
+  navGroups.flatMap((group) =>
+    group.items.map((item) => [item.id, item.label]),
+  ),
+);
+
 const ROLE_PERMISSIONS = {
   admin: new Set(
     navGroups.flatMap((group) => group.items.map((item) => item.id)),
@@ -625,8 +633,72 @@ function getLocalDate() {
     .slice(0, 10);
 }
 
+const PLATFORM_PAGES = new Set(["overview", "faculties", "admins", "audit"]);
+
+// The app uses hash routing so a static host needs no rewrite rules:
+//   #/            landing
+//   #/login       faculty/student sign-in
+//   #/app/<page>  faculty panel section
+//   #/portal      student portal
+//   #/platform/<page>  system admin panel
+function parseRoute(hash = typeof window === "undefined" ? "" : window.location.hash) {
+  const raw = String(hash || "")
+    .replace(/^#\/?/, "")
+    .replace(/\/+$/, "");
+  const [head, ...rest] = raw.split("/").filter(Boolean);
+  if (!head || head === "home") return { area: "home" };
+  if (head === "login") return { area: "login" };
+  if (head === "app") return { area: "app", page: rest[0] || "dashboard" };
+  if (head === "portal") return { area: "portal" };
+  if (head === "platform") return { area: "platform", page: rest[0] || "overview" };
+  return { area: "unknown", raw: head };
+}
+
+function routeHash(area, page) {
+  switch (area) {
+    case "login":
+      return "#/login";
+    case "app":
+      return `#/app/${page || "dashboard"}`;
+    case "portal":
+      return "#/portal";
+    case "platform":
+      return page && page !== "overview"
+        ? `#/platform/${page}`
+        : "#/platform";
+    default:
+      return "#/";
+  }
+}
+
 export default function App() {
-  const [active, setActive] = useState("dashboard");
+  const [route, setRoute] = useState(() => parseRoute());
+  // A stored API token is restored once on startup; the splash below keeps the
+  // login screen from flashing while the session is checked.
+  const [authChecking, setAuthChecking] = useState(
+    () => Boolean(getApiToken()) && !getImpersonation(),
+  );
+  const [login, setLogin] = useState(() => !getImpersonation());
+
+  const showHome = route.area === "home";
+  const platformMode = route.area === "platform";
+  // The current panel section lives in the URL; `active` mirrors it once the
+  // user is signed in. While logged out it stays on the safe dashboard default
+  // so deep links cannot trigger page data fetching.
+  const active =
+    !login && route.area === "app" ? route.page || "dashboard" : "dashboard";
+
+  const navigate = useCallback((area, page, { replace = false } = {}) => {
+    const hash = routeHash(area, page);
+    const current =
+      typeof window === "undefined" ? "" : window.location.hash;
+    if (replace) {
+      if (current !== hash) window.history.replaceState(null, "", hash);
+    } else if (current !== hash) {
+      window.location.hash = hash;
+    }
+    setRoute(parseRoute(hash));
+  }, []);
   const [mobileMenu, setMobileMenu] = useState(false);
   const [theme, setTheme] = useState(() => {
     const stored = readStoredValue("smart-attendance:theme", "light");
@@ -756,19 +828,9 @@ export default function App() {
     faceMinFrames: 3,
     faceLiveness: true,
   });
-  const [login, setLogin] = useState(() => !getImpersonation());
-  const [platformMode, setPlatformMode] = useState(() => {
-    if (typeof window === "undefined") return false;
-    return window.location.hash === "#/platform";
-  });
   const [impersonation, setImpersonationState] = useState(() => getImpersonation());
   const [impersonationRemaining, setImpersonationRemaining] = useState(0);
   const [impersonationExiting, setImpersonationExiting] = useState(false);
-  const [showHome, setShowHome] = useState(() => {
-    if (typeof window === "undefined") return true;
-    const hash = window.location.hash;
-    return hash === "" || hash === "#/" || hash === "#/home";
-  });
   const [loginRole, setLoginRole] = useState(() => {
     const savedProfile = readSessionProfile();
     const savedRole = savedProfile.accessRole || savedProfile.role;
@@ -841,17 +903,102 @@ export default function App() {
         "فضای ذخیره‌سازی مرورگر کافی نیست؛ از اطلاعات پشتیبان بگیرید.",
       );
   }, [theme, rtl]);
-  // مسیریابی سبک با هش: #/ (یا خالی) صفحهٔ اصلی، #/login صفحهٔ ورود و
-  // #/platform پنل مدیر سامانه.
+  // Hash routing: browser back/forward and direct links are the source of
+  // truth, so the state is re-read on every `hashchange` event.
   useEffect(() => {
-    const syncHomeFromHash = () => {
-      const hash = window.location.hash;
-      setShowHome(hash === "" || hash === "#/" || hash === "#/home");
-      setPlatformMode(hash === "#/platform");
+    const syncRouteFromHash = () => setRoute(parseRoute());
+    syncRouteFromHash();
+    window.addEventListener("hashchange", syncRouteFromHash);
+    return () => window.removeEventListener("hashchange", syncRouteFromHash);
+  }, []);
+
+  // Keep the address bar honest: unknown routes, panel links while signed out
+  // and auth screens while signed in are corrected with a history replace.
+  useEffect(() => {
+    if (authChecking) return;
+    if (route.area === "unknown") {
+      navigate(login ? "login" : "home", undefined, { replace: true });
+      return;
+    }
+    if (route.area === "app" && login) {
+      navigate("login", undefined, { replace: true });
+      return;
+    }
+    if (route.area === "login" && !login) {
+      navigate(
+        loginRole === "student" ? "portal" : "app",
+        loginRole === "student" ? undefined : active,
+        { replace: true },
+      );
+      return;
+    }
+    if (route.area === "home" && !login) {
+      navigate(
+        loginRole === "student" ? "portal" : "app",
+        loginRole === "student" ? undefined : active,
+        { replace: true },
+      );
+      return;
+    }
+    if (!login && loginRole === "student" && route.area !== "portal" && route.area !== "platform") {
+      navigate("portal", undefined, { replace: true });
+      return;
+    }
+    if (!login && loginRole !== "student" && route.area === "portal") {
+      navigate("app", active, { replace: true });
+      return;
+    }
+    if (route.area === "platform" && !PLATFORM_PAGES.has(route.page)) {
+      navigate("platform", "overview", { replace: true });
+    }
+  }, [route, login, loginRole, authChecking, active, navigate]);
+
+  // Each section gets its own tab title so several open tabs stay readable.
+  useEffect(() => {
+    if (route.area === "app") {
+      const label = NAV_PAGE_LABELS[route.page];
+      document.title = label
+        ? `${label} | حضوربان`
+        : "حضوربان | سامانه هوشمند حضور و غیاب";
+    } else if (route.area === "platform") {
+      document.title = "پنل سامانه | حضوربان";
+    } else if (route.area === "login") {
+      document.title = "ورود به پنل | حضوربان";
+    }
+  }, [route.area, route.page]);
+
+  useEffect(() => {
+    if (route.area !== "app") return;
+    window.scrollTo({ top: 0, behavior: "auto" });
+  }, [route.area, route.page]);
+
+  // A stored API token survives a reload; verify it once with /me and rebuild
+  // the session instead of forcing the user through the login screen again.
+  useEffect(() => {
+    if (!authChecking) return undefined;
+    let cancelled = false;
+    (async () => {
+      try {
+        const result = await fetchMe();
+        if (cancelled) return;
+        if (!result?.user) {
+          clearApiToken();
+          return;
+        }
+        setApiUser(result.user);
+        await finishLogin({ user: result.user }, result.user.email, {
+          announce: false,
+        });
+      } catch {
+        if (!cancelled) clearApiToken();
+      } finally {
+        if (!cancelled) setAuthChecking(false);
+      }
+    })();
+    return () => {
+      cancelled = true;
     };
-    syncHomeFromHash();
-    window.addEventListener("hashchange", syncHomeFromHash);
-    return () => window.removeEventListener("hashchange", syncHomeFromHash);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
   useEffect(
     () => () => streamRef.current?.getTracks().forEach((track) => track.stop()),
@@ -1072,14 +1219,15 @@ export default function App() {
   // A role change (or a stale deep link) may leave the current page outside the
   // allowed set; fall back to the first permitted screen instead of a blank page.
   useEffect(() => {
+    if (login || route.area !== "app") return;
     if (allowedPages.has(active)) return;
     const fallback =
       [...navGroups.flatMap((group) => group.items)]
         .map((item) => item.id)
         .find((id) => allowedPages.has(id)) || "dashboard";
-    setActive(fallback);
+    navigate("app", fallback, { replace: true });
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [allowedPagesKey, active]);
+  }, [allowedPagesKey, active, login, route.area, navigate]);
   const currentFaculty =
     authUser?.faculty ||
     faculties.find((faculty) => faculty.id === facultyId) ||
@@ -1708,7 +1856,7 @@ export default function App() {
       notify("دسترسی به این بخش برای نقش کاربری شما فعال نیست.");
       return;
     }
-    setActive(id);
+    navigate("app", id);
     setMobileMenu(false);
     setQuery("");
   }
@@ -2782,7 +2930,7 @@ export default function App() {
     notify("فایل گزارش آماده شد.");
   }
 
-  async function finishLogin(result, email) {
+  async function finishLogin(result, email, { announce = true } = {}) {
     let user = result.user;
     // A staff account always carries its permission list. If an endpoint ever
     // returns a reduced payload, reload the canonical session once instead of
@@ -2805,10 +2953,12 @@ export default function App() {
     setAuthUser(user);
     try {
       await loadFromServer({ silent: true });
-      notify("اتصال به PostgreSQL برقرار شد و اطلاعات از دیتابیس بارگذاری شد.");
+      if (announce)
+        notify("اتصال به PostgreSQL برقرار شد و اطلاعات از دیتابیس بارگذاری شد.");
     } catch (apiError) {
       console.error("Bootstrap error:", apiError);
-      notify("ورود موفق بود، اما دریافت اطلاعات دیتابیس با مشکل مواجه شد.");
+      if (announce)
+        notify("ورود موفق بود، اما دریافت اطلاعات دیتابیس با مشکل مواجه شد.");
     }
     const signedInName = user.name;
     const signedInStudentId = user.studentId || "";
@@ -2867,11 +3017,8 @@ export default function App() {
         studentId: "",
       }),
     );
-    setPlatformMode(false);
-    setShowHome(false);
     setLogin(false);
-    setActive("dashboard");
-    if (window.location.hash !== "#/") window.location.hash = "#/";
+    navigate("app", "dashboard");
     try {
       await loadFromServer({ silent: true });
     } catch (error) {
@@ -2899,9 +3046,7 @@ export default function App() {
     setAuthUser(null);
     setLogin(true);
     setLoginPassword("");
-    setPlatformMode(true);
-    setShowHome(false);
-    if (window.location.hash !== "#/platform") window.location.hash = "#/platform";
+    navigate("platform", "overview");
     setImpersonationExiting(false);
   }
 
@@ -2937,18 +3082,32 @@ export default function App() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [login, authUser]);
 
+  if (authChecking)
+    return (
+      <div className="app-boot" role="status" aria-live="polite">
+        <span className="app-boot-mark">
+          <Icon name="bi-shield-check" />
+        </span>
+        <span>
+          <strong>حضوربان</strong>
+          <small>در حال بازیابی نشست…</small>
+        </span>
+      </div>
+    );
+
   if (platformMode)
     return (
       <PlatformArea
         theme={theme}
+        page={route.page}
+        onNavigate={(nextPage) => navigate("platform", nextPage)}
         onToggleTheme={() =>
           setTheme((current) => (current === "dark" ? "light" : "dark"))
         }
         onEnterFaculty={handleEnterFaculty}
         onExitToSite={() => {
-          setPlatformMode(false);
           setLogin(true);
-          setShowHome(false);
+          navigate("login");
         }}
       />
     );
@@ -2964,10 +3123,7 @@ export default function App() {
           }
           onToggleRtl={() => setRtl((current) => !current)}
           onEnter={() => {
-            setShowHome(false);
-            if (window.location.hash !== "#/login") {
-              window.location.hash = "#/login";
-            }
+            navigate("login");
             window.scrollTo({ top: 0, behavior: "smooth" });
           }}
         />
@@ -3005,6 +3161,7 @@ export default function App() {
               setForcedPasswordChange(null);
               setLoginPassword("");
               setLoginError("");
+              navigate("login");
             }}
           />
         )}
@@ -3205,10 +3362,7 @@ export default function App() {
               className="login-home-link"
               type="button"
               onClick={() => {
-                setPlatformMode(true);
-                if (window.location.hash !== "#/platform") {
-                  window.location.hash = "#/platform";
-                }
+                navigate("platform", "overview");
               }}
             >
               <Icon name="bi-buildings" /> ورود مدیر سامانه
@@ -3217,10 +3371,7 @@ export default function App() {
               className="login-home-link"
               type="button"
               onClick={() => {
-                setShowHome(true);
-                if (window.location.hash !== "#/" && window.location.hash !== "") {
-                  window.location.hash = "#/";
-                }
+                navigate("home");
               }}
             >
               <Icon name="bi-arrow-right" /> بازگشت به صفحهٔ اصلی
@@ -3400,6 +3551,7 @@ export default function App() {
           setLogin(true);
           setLoginName("student@hozorban.local");
           setLoginPassword("");
+          navigate("login");
         }}
         tickets={tickets}
         onCreateTicket={createTicket}
