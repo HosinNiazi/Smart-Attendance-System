@@ -35,6 +35,7 @@ import {
   createCourse,
   createSession,
   createRegistration,
+  fetchRegistrationCaptcha,
   fetchRegistrations,
   fetchFaculties,
   switchFaculty,
@@ -872,6 +873,9 @@ export default function App() {
   const [regPending, setRegPending] = useState(false);
   const [regError, setRegError] = useState("");
   const [regNotice, setRegNotice] = useState("");
+  const [regCaptcha, setRegCaptcha] = useState(null);
+  const [regCaptchaAnswer, setRegCaptchaAnswer] = useState("");
+  const [regCaptchaLoading, setRegCaptchaLoading] = useState(false);
   const [helpOpen, setHelpOpen] = useState(false);
   const [loginHistory, setLoginHistory] = useState([]);
   const [historyError, setHistoryError] = useState("");
@@ -3028,6 +3032,66 @@ export default function App() {
     refreshNotifications().catch(() => {});
   }
 
+  async function loadRegistrationCaptcha() {
+    setRegCaptchaLoading(true);
+    try {
+      const challenge = await fetchRegistrationCaptcha();
+      setRegCaptcha(challenge);
+      setRegCaptchaAnswer("");
+    } catch (error) {
+      setRegCaptcha(null);
+      setRegError(
+        error.message || "دریافت سؤال امنیتی انجام نشد؛ دوباره تلاش کنید.",
+      );
+    } finally {
+      setRegCaptchaLoading(false);
+    }
+  }
+
+  // Drop every locally cached copy of faculty data when a session ends. Without
+  // this, a shared device could briefly show one user's students or settings to
+  // the next person who signs in.
+  function clearCachedAppData() {
+    for (const key of [
+      "smart-attendance:students",
+      "smart-attendance:courses",
+      "smart-attendance:attendance",
+      "smart-attendance:sessions",
+      "smart-attendance:settings",
+    ]) {
+      try {
+        localStorage.removeItem(key);
+      } catch {
+        /* ignore storage failures */
+      }
+    }
+    try {
+      sessionStorage.removeItem("smart-attendance:profile");
+    } catch {
+      /* ignore storage failures */
+    }
+    setStudents([]);
+    setCourses([]);
+    setAttendance([]);
+    setSessionHistory({});
+    setSettings({
+      name: "سامانه حضوربان",
+      lateAfter: "10",
+      notifications: true,
+      faceRecognition: true,
+      faceDistance: 0.54,
+      faceMargin: 0.035,
+      faceMinFrames: 3,
+      faceLiveness: true,
+    });
+    setRegistrations([]);
+    setTeachers([]);
+    setTickets([]);
+    setLeaveRequests([]);
+    setNotifications([]);
+    setUnreadCount(0);
+  }
+
   async function handleExitImpersonation({ skipApi = false } = {}) {
     if (impersonationExiting) return;
     setImpersonationExiting(true);
@@ -3042,6 +3106,7 @@ export default function App() {
     }
     clearImpersonation();
     clearApiToken();
+    clearCachedAppData();
     setImpersonationState(null);
     setAuthUser(null);
     setLogin(true);
@@ -3157,6 +3222,7 @@ export default function App() {
             }}
             onLogout={() => {
               clearApiToken();
+              clearCachedAppData();
               setAuthUser(null);
               setForcedPasswordChange(null);
               setLoginPassword("");
@@ -3354,6 +3420,7 @@ export default function App() {
                 setRegError("");
                 setRegNotice("");
                 setRegModal(true);
+                loadRegistrationCaptcha();
               }}
             >
               <Icon name="bi-person-plus" /> ثبت‌نام دانشجوی جدید
@@ -3455,6 +3522,50 @@ export default function App() {
                   </label>
                 ))}
               </div>
+              <div className="form-label" style={{ marginTop: 12 }}>
+                <span>
+                  پاسخ سؤال امنیتی <span className="text-danger">*</span>
+                </span>
+                <div
+                  style={{
+                    display: "flex",
+                    alignItems: "center",
+                    gap: 10,
+                    margin: "6px 0",
+                  }}
+                >
+                  <strong
+                    aria-live="polite"
+                    style={{ minWidth: 90, fontSize: 18, letterSpacing: 1 }}
+                  >
+                    {regCaptchaLoading
+                      ? "در حال دریافت…"
+                      : regCaptcha?.question || "—"}
+                  </strong>
+                  <button
+                    type="button"
+                    className="btn btn-light"
+                    disabled={regPending || regCaptchaLoading}
+                    onClick={loadRegistrationCaptcha}
+                  >
+                    <Icon name="bi-arrow-clockwise" /> سؤال جدید
+                  </button>
+                </div>
+                <input
+                  id="reg-captcha"
+                  className="form-control"
+                  type="text"
+                  inputMode="numeric"
+                  autoComplete="off"
+                  value={regCaptchaAnswer}
+                  disabled={regPending || !regCaptcha}
+                  onChange={(e) => {
+                    setRegError("");
+                    setRegCaptchaAnswer(e.target.value);
+                  }}
+                  placeholder="پاسخ را به عدد وارد کنید"
+                />
+              </div>
               {regError ? (
                 <div className="exam-form-error" role="alert">
                   <Icon name="bi-exclamation-triangle-fill" />
@@ -3488,17 +3599,32 @@ export default function App() {
                       setRegError("کد ملی را وارد کنید.");
                       return;
                     }
+                    if (!regCaptcha?.token) {
+                      setRegError(
+                        "سؤال امنیتی بارگذاری نشده است؛ روی «سؤال جدید» بزنید.",
+                      );
+                      loadRegistrationCaptcha();
+                      return;
+                    }
+                    if (!regCaptchaAnswer.trim()) {
+                      setRegError("پاسخ سؤال امنیتی را وارد کنید.");
+                      return;
+                    }
                     setRegPending(true);
                     try {
                       await createRegistration({
                         ...regForm,
                         facultyId: selectedRegistrationFaculty,
+                        captchaToken: regCaptcha.token,
+                        captchaAnswer: regCaptchaAnswer.trim(),
                       });
                       notify("درخواست ثبت‌نام ارسال شد؛ پس از تأیید مدیر می‌توانید وارد شوید.");
                       setRegNotice(
                         "درخواست ثبت‌نام شما ثبت شد. پس از تأیید مدیر دانشکده می‌توانید با نام کاربری و رمز انتخابی وارد شوید.",
                       );
                       setRegModal(false);
+                      setRegCaptcha(null);
+                      setRegCaptchaAnswer("");
                       setRegForm({
                         fullName: "",
                         username: "",
@@ -3511,6 +3637,9 @@ export default function App() {
                       });
                     } catch (error) {
                       setRegError(error.message || "ارسال درخواست انجام نشد.");
+                      // Every attempt gets a fresh challenge; a wrong answer or
+                      // an expired token must not be reusable.
+                      loadRegistrationCaptcha();
                     } finally {
                       setRegPending(false);
                     }
@@ -3548,6 +3677,8 @@ export default function App() {
           setTheme((current) => (current === "dark" ? "light" : "dark"))
         }
         onLogout={() => {
+          clearApiToken();
+          clearCachedAppData();
           setLogin(true);
           setLoginName("student@hozorban.local");
           setLoginPassword("");

@@ -61,6 +61,9 @@ export async function changePassword(currentPassword, newPassword) {
     method: 'POST',
     body: JSON.stringify({ currentPassword, newPassword }),
   });
+  // Changing the password increments token_version and invalidates every old
+  // token, so the fresh one from the response must replace the stored session.
+  if (result?.token) sessionStorage.setItem(tokenKey, result.token);
   setApiUser(result.user);
   return result;
 }
@@ -322,6 +325,9 @@ export function revokeFingerprintCredential(credentialId) {
 }
 export function createRegistration(payload) {
   return api('/registrations', { method: 'POST', body: JSON.stringify(payload) });
+}
+export function fetchRegistrationCaptcha() {
+  return api('/registrations/captcha');
 }
 export function fetchRegistrations() {
   return api('/registrations');

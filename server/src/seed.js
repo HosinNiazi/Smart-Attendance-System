@@ -2,6 +2,42 @@ import 'dotenv/config';
 import bcrypt from 'bcryptjs';
 import { pool, withTransaction } from './db.js';
 
+const isProduction = process.env.NODE_ENV === 'production';
+
+// Demo data must never be created implicitly on a live deployment: it contains
+// well-known accounts and sample students. An operator can still opt in on a
+// controlled staging server with ALLOW_DEMO_SEED=true.
+if (isProduction && process.env.ALLOW_DEMO_SEED !== 'true') {
+  console.error(
+    'Demo seeding is disabled in production. Set ALLOW_DEMO_SEED=true only on a controlled non-live server.',
+  );
+  process.exit(1);
+}
+
+// Known demo credentials are fine for a local presentation but must not be
+// used in production. There, passwords come from the environment and have to
+// be explicitly strong and non-default.
+const DEFAULT_DEMO_PASSWORDS = {
+  DEMO_ADMIN_PASSWORD: 'Admin@123456',
+  DEMO_TEACHER_PASSWORD: 'Teacher@123456',
+  DEMO_STUDENT_PASSWORD: 'Student@123456',
+};
+
+function resolveDemoPassword(envName) {
+  const fallback = DEFAULT_DEMO_PASSWORDS[envName];
+  const provided = process.env[envName];
+  if (!isProduction) return provided || fallback;
+  const weak =
+    !provided ||
+    provided.length < 12 ||
+    Object.values(DEFAULT_DEMO_PASSWORDS).includes(provided);
+  if (weak)
+    throw new Error(
+      `Set a strong, non-default ${envName} (at least 12 characters) before seeding in production.`,
+    );
+  return provided;
+}
+
 // Demo data used for the local presentation.  Every insert is idempotent, so the
 // script can be re-run without duplicating rows.
 const students = [
@@ -29,9 +65,27 @@ const today = new Date();
 const yesterday = new Date(today.getTime() - 24 * 60 * 60 * 1000);
 
 const demoUsers = [
-  ['admin@hozorban.local', 'Admin@123456', 'مدیر سامانه', 'admin', null],
-  ['teacher@hozorban.local', 'Teacher@123456', 'مهندس نادری', 'teacher', null],
-  ['student@hozorban.local', 'Student@123456', 'آرمان محمدی', 'student', '40123001'],
+  [
+    'admin@hozorban.local',
+    resolveDemoPassword('DEMO_ADMIN_PASSWORD'),
+    'مدیر سامانه',
+    'admin',
+    null,
+  ],
+  [
+    'teacher@hozorban.local',
+    resolveDemoPassword('DEMO_TEACHER_PASSWORD'),
+    'مهندس نادری',
+    'teacher',
+    null,
+  ],
+  [
+    'student@hozorban.local',
+    resolveDemoPassword('DEMO_STUDENT_PASSWORD'),
+    'آرمان محمدی',
+    'student',
+    '40123001',
+  ],
 ];
 
 const orgRow = await pool.query(
@@ -167,7 +221,12 @@ await withTransaction(async (client) => {
 
 console.log('Demo data is ready.');
 console.log('Demo accounts:');
-console.log('  admin@hozorban.local / Admin@123456');
-console.log('  teacher@hozorban.local / Teacher@123456');
-console.log('  student@hozorban.local / Student@123456');
+if (isProduction) {
+  console.log('  admin@hozorban.local   (password: $DEMO_ADMIN_PASSWORD)');
+  console.log('  teacher@hozorban.local (password: $DEMO_TEACHER_PASSWORD)');
+  console.log('  student@hozorban.local (password: $DEMO_STUDENT_PASSWORD)');
+} else {
+  for (const [email, password] of demoUsers)
+    console.log(`  ${email} / ${password}`);
+}
 await pool.end();

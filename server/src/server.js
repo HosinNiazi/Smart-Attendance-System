@@ -143,6 +143,70 @@ function signUploadField(row, field) {
   return row ? { ...row, [field]: signedUploadUrl(row[field]) } : row;
 }
 
+// A small self-hosted CAPTCHA: the server signs an arithmetic question, the
+// public registration form shows it and sends the signed token plus the answer
+// back. No third-party service or cookie is involved.
+const CAPTCHA_TTL_SECONDS = 5 * 60;
+const PERSIAN_DIGITS = ["۰", "۱", "۲", "۳", "۴", "۵", "۶", "۷", "۸", "۹"];
+
+function toPersianDigits(value) {
+  return String(value).replace(/[0-9]/g, (digit) => PERSIAN_DIGITS[Number(digit)]);
+}
+
+function captchaSignature(payload) {
+  return crypto
+    .createHmac("sha256", jwtSecret)
+    .update(`captcha\n${payload}`)
+    .digest("base64url");
+}
+
+function createCaptchaChallenge() {
+  const a = crypto.randomInt(2, 10);
+  const b = crypto.randomInt(2, 10);
+  const op = crypto.randomInt(0, 2) === 0 ? "+" : "×";
+  const expires = Math.floor(Date.now() / 1000) + CAPTCHA_TTL_SECONDS;
+  const payload = Buffer.from(
+    JSON.stringify({ a, b, op, exp: expires }),
+  ).toString("base64url");
+  return {
+    question: `${toPersianDigits(a)} ${op} ${toPersianDigits(b)} = ?`,
+    token: `${payload}.${captchaSignature(payload)}`,
+    expiresIn: CAPTCHA_TTL_SECONDS,
+  };
+}
+
+function normalizeCaptchaAnswer(value) {
+  return String(value ?? "")
+    .replace(/[۰-۹]/g, (digit) => String("۰۱۲۳۴۵۶۷۸۹".indexOf(digit)))
+    .replace(/[٠-٩]/g, (digit) => String("٠١٢٣٤٥٦٧٨٩".indexOf(digit)))
+    .trim();
+}
+
+function verifyCaptcha(token, answer) {
+  if (typeof token !== "string" || !token.includes(".")) return false;
+  const [payload, signature] = token.split(".");
+  if (!payload || !signature) return false;
+  const expected = Buffer.from(captchaSignature(payload));
+  const given = Buffer.from(signature);
+  if (
+    expected.length !== given.length ||
+    !crypto.timingSafeEqual(expected, given)
+  )
+    return false;
+  let data;
+  try {
+    data = JSON.parse(Buffer.from(payload, "base64url").toString("utf8"));
+  } catch {
+    return false;
+  }
+  if (!Number.isInteger(data?.exp) || data.exp < Math.floor(Date.now() / 1000))
+    return false;
+  const normalized = normalizeCaptchaAnswer(answer);
+  if (!/^-?\d+$/.test(normalized)) return false;
+  const correct = data.op === "+" ? data.a + data.b : data.a * data.b;
+  return Number(normalized) === correct;
+}
+
 // The declared MIME type is client-controlled, so also check the first bytes
 // of the file. Extension and stored content then always agree.
 const FILE_SIGNATURES = {
@@ -282,7 +346,12 @@ const IMPERSONATION_TTL_MINUTES = 60;
 
 function tokenFor(user, organizationId = user.organization_id) {
   return jwt.sign(
-    { sub: user.id, org: organizationId, role: user.role },
+    {
+      sub: user.id,
+      org: organizationId,
+      role: user.role,
+      tv: Number(user.token_version || 0),
+    },
     jwtSecret,
     { expiresIn: "8h", issuer: "hozorban-api", audience: "hozorban-web" },
   );
@@ -294,6 +363,7 @@ function tokenForPlatform(user) {
       org: user.organization_id,
       role: "admin",
       plat: user.platform_level,
+      tv: Number(user.token_version || 0),
     },
     jwtSecret,
     { expiresIn: "8h", issuer: "hozorban-api", audience: "hozorban-web" },
@@ -310,6 +380,7 @@ function tokenForImpersonation(platformUser, organizationId, sessionId) {
       role: "admin",
       adminLevel: "owner",
       imp: { sid: sessionId, by: platformUser.id },
+      tv: Number(platformUser.token_version || 0),
     },
     jwtSecret,
     {
@@ -370,7 +441,7 @@ async function authenticate(req, res, next) {
     // revoked immediately.
     if (req.user.imp?.sid) {
       const { rows } = await pool.query(
-        `SELECT i.id
+        `SELECT i.id, u.token_version
            FROM admin_impersonations i
            JOIN users u ON u.id = i.platform_user_id
           WHERE i.id = $1
@@ -381,7 +452,10 @@ async function authenticate(req, res, next) {
             AND u.platform_level IS NOT NULL`,
         [req.user.imp.sid, req.user.org],
       );
-      if (!rows[0])
+      if (
+        !rows[0] ||
+        Number(req.user.tv || 0) !== Number(rows[0].token_version || 0)
+      )
         return res.status(401).json({
           message: "نشست ورود به دانشکده پایان یافته است؛ دوباره از پنل سامانه وارد شوید.",
         });
@@ -394,7 +468,7 @@ async function authenticate(req, res, next) {
     // Platform (control plane) token: trust only the database, not the claim.
     if (req.user.plat) {
       const { rows } = await pool.query(
-        `SELECT u.platform_level, u.must_change_password
+        `SELECT u.platform_level, u.must_change_password, u.token_version
            FROM users u
            JOIN organizations o ON o.id = u.organization_id
           WHERE u.id = $1 AND u.is_active = true
@@ -406,6 +480,10 @@ async function authenticate(req, res, next) {
         return res
           .status(401)
           .json({ message: "دسترسی مدیر سامانه معتبر نیست." });
+      if (Number(req.user.tv || 0) !== Number(rows[0].token_version || 0))
+        return res.status(401).json({
+          message: "نشست شما منقضی شده است؛ دوباره وارد شوید.",
+        });
       req.user.plat = rows[0].platform_level;
       const currentPath = req.originalUrl.split("?")[0];
       if (
@@ -423,7 +501,7 @@ async function authenticate(req, res, next) {
     // is immediate. Students are included here so a temporary password really
     // forces a change before the panel (and its API) opens.
     const { rows } = await pool.query(
-      `SELECT u.must_change_password, u.role, u.admin_level
+      `SELECT u.must_change_password, u.role, u.admin_level, u.token_version
          FROM users u
         WHERE u.id = $1 AND u.is_active = true AND u.role = $3
           AND (u.organization_id = $2 OR EXISTS (
@@ -435,6 +513,10 @@ async function authenticate(req, res, next) {
       return res
         .status(401)
         .json({ message: "دسترسی شما به این دانشکده معتبر نیست." });
+    if (Number(req.user.tv || 0) !== Number(rows[0].token_version || 0))
+      return res.status(401).json({
+        message: "نشست شما منقضی شده است؛ دوباره وارد شوید.",
+      });
     req.user.adminLevel =
       rows[0].admin_level || (rows[0].role === "admin" ? "owner" : null);
     // A temporary password may only be used to reach the change-password
@@ -1241,8 +1323,27 @@ app.post(
   }),
 );
 
+app.get(
+  "/api/registrations/captcha",
+  rateLimit({
+    windowMs: 15 * 60_000,
+    limit: 30,
+    standardHeaders: true,
+    legacyHeaders: false,
+  }),
+  asyncRoute(async (_req, res) => {
+    res.json(createCaptchaChallenge());
+  }),
+);
+
 app.post(
   "/api/registrations",
+  rateLimit({
+    windowMs: 60 * 60_000,
+    limit: 10,
+    standardHeaders: true,
+    legacyHeaders: false,
+  }),
   validate(
     z.object({
       fullName: z.string().trim().min(2).max(120),
@@ -1253,11 +1354,30 @@ app.post(
       major: z.string().trim().max(120).optional().default(""),
       term: z.string().trim().max(20).optional().default(""),
       phone: z.string().trim().max(40).optional().default(""),
+      captchaToken: z.string().trim().min(10).max(2000),
+      captchaAnswer: z
+        .union([z.string(), z.number()])
+        .transform((value) => String(value)),
     }),
   ),
   asyncRoute(async (req, res) => {
-    const { fullName, username, password, facultyId, nationalId, major, term, phone } =
-      req.body;
+    const {
+      fullName,
+      username,
+      password,
+      facultyId,
+      nationalId,
+      major,
+      term,
+      phone,
+      captchaToken,
+      captchaAnswer,
+    } = req.body;
+    if (!verifyCaptcha(captchaToken, captchaAnswer))
+      return res.status(400).json({
+        message:
+          "پاسخ سؤال امنیتی نادرست یا منقضی شده است؛ سؤال جدید را دوباره پاسخ دهید.",
+      });
     // A registration always belongs to exactly one faculty, chosen explicitly by
     // the applicant. We never guess a default faculty.
     const faculty = await loadFaculty(facultyId);
@@ -1950,7 +2070,8 @@ app.post(
       `UPDATE users
           SET password_hash = $2, must_change_password = true,
               password_last_changed = now(), failed_login_attempts = 0,
-              account_locked_until = NULL, updated_at = now()
+              account_locked_until = NULL, token_version = token_version + 1,
+              updated_at = now()
         WHERE id = $1`,
       [target.id, passwordHash],
     );
@@ -2269,7 +2390,8 @@ app.post(
       `UPDATE users
           SET password_hash = $2, must_change_password = true,
               password_last_changed = now(), failed_login_attempts = 0,
-              account_locked_until = NULL, updated_at = now()
+              account_locked_until = NULL, token_version = token_version + 1,
+              updated_at = now()
         WHERE id = $1`,
       [target.id, passwordHash],
     );
@@ -2614,6 +2736,7 @@ app.post(
           SET password_hash = $1,
               must_change_password = false,
               password_last_changed = now(),
+              token_version = token_version + 1,
               updated_at = now()
         WHERE id = $2
         RETURNING *`,
@@ -2625,6 +2748,9 @@ app.post(
     );
     res.json({
       ok: true,
+      // Every previously issued token is now invalid; hand this session a new
+      // one so the user is not logged out by their own password change.
+      token: tokenFor(updated.rows[0], req.user.org),
       user: { ...publicUser(updated.rows[0]), ...staffFields(updated.rows[0]) },
     });
   }),
@@ -2922,7 +3048,7 @@ app.post(
       [teacher.id, passwordHash],
     );
     await pool.query(
-      `UPDATE users SET password_hash = $1, must_change_password = true, password_last_changed = now() WHERE id = $2`,
+      `UPDATE users SET password_hash = $1, must_change_password = true, password_last_changed = now(), token_version = token_version + 1 WHERE id = $2`,
       [passwordHash, teacher.id],
     );
     await audit(pool, req.user.org, req.user.sub, "reset_password", "teacher", teacher.id, {
@@ -3275,7 +3401,8 @@ app.post(
       `UPDATE users
           SET password_hash = $2, must_change_password = true,
               password_last_changed = now(), failed_login_attempts = 0,
-              account_locked_until = NULL, updated_at = now()
+              account_locked_until = NULL, token_version = token_version + 1,
+              updated_at = now()
         WHERE id = $1`,
       [target.id, passwordHash],
     );
@@ -3866,7 +3993,8 @@ app.post(
         `UPDATE users
             SET password_hash = $1, must_change_password = true,
                 failed_login_attempts = 0, account_locked_until = NULL,
-                password_last_changed = now(), updated_at = now()
+                password_last_changed = now(), token_version = token_version + 1,
+                updated_at = now()
           WHERE id = $2`,
         [passwordHash, student.userId],
       );
@@ -4358,46 +4486,61 @@ app.post(
 
 app.put(
   "/api/settings",
-  authorize("admin", "teacher"),
+  // Settings change security behaviour for the whole faculty, so only a dean
+  // (admin) may change them.  Teachers keep read-only access through bootstrap.
+  authorize("admin"),
   validate(settingsSchema),
   asyncRoute(async (req, res) => {
     const s = req.body;
-    const { rows } = await pool.query(
-      `INSERT INTO organization_settings
-         (organization_id, system_name, late_after_minutes, notifications_enabled,
-          face_recognition_enabled, face_match_distance, face_match_margin,
-          face_min_frames, face_liveness_required)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)
-       ON CONFLICT (organization_id) DO UPDATE
-       SET system_name=EXCLUDED.system_name,
-           late_after_minutes=EXCLUDED.late_after_minutes,
-           notifications_enabled=EXCLUDED.notifications_enabled,
-           face_recognition_enabled=EXCLUDED.face_recognition_enabled,
-           face_match_distance=EXCLUDED.face_match_distance,
-           face_match_margin=EXCLUDED.face_match_margin,
-           face_min_frames=EXCLUDED.face_min_frames,
-           face_liveness_required=EXCLUDED.face_liveness_required,
-           updated_at=now()
-       RETURNING system_name AS "systemName", late_after_minutes AS "lateAfterMinutes",
-                 notifications_enabled AS "notificationsEnabled",
-                 face_recognition_enabled AS "faceRecognitionEnabled",
-                 face_match_distance AS "faceMatchDistance",
-                 face_match_margin AS "faceMatchMargin",
-                 face_min_frames AS "faceMinFrames",
-                 face_liveness_required AS "faceLivenessRequired"`,
-      [
-        req.user.org,
-        s.systemName,
-        s.lateAfterMinutes,
-        s.notificationsEnabled,
-        s.faceRecognitionEnabled,
-        s.faceMatchDistance,
-        s.faceMatchMargin,
-        s.faceMinFrames,
-        s.faceLivenessRequired,
-      ],
-    );
-    res.json(rows[0]);
+    const settings = await withTransaction(async (client) => {
+      const { rows } = await client.query(
+        `INSERT INTO organization_settings
+           (organization_id, system_name, late_after_minutes, notifications_enabled,
+            face_recognition_enabled, face_match_distance, face_match_margin,
+            face_min_frames, face_liveness_required)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)
+         ON CONFLICT (organization_id) DO UPDATE
+         SET system_name=EXCLUDED.system_name,
+             late_after_minutes=EXCLUDED.late_after_minutes,
+             notifications_enabled=EXCLUDED.notifications_enabled,
+             face_recognition_enabled=EXCLUDED.face_recognition_enabled,
+             face_match_distance=EXCLUDED.face_match_distance,
+             face_match_margin=EXCLUDED.face_match_margin,
+             face_min_frames=EXCLUDED.face_min_frames,
+             face_liveness_required=EXCLUDED.face_liveness_required,
+             updated_at=now()
+         RETURNING system_name AS "systemName", late_after_minutes AS "lateAfterMinutes",
+                   notifications_enabled AS "notificationsEnabled",
+                   face_recognition_enabled AS "faceRecognitionEnabled",
+                   face_match_distance AS "faceMatchDistance",
+                   face_match_margin AS "faceMatchMargin",
+                   face_min_frames AS "faceMinFrames",
+                   face_liveness_required AS "faceLivenessRequired"`,
+        [
+          req.user.org,
+          s.systemName,
+          s.lateAfterMinutes,
+          s.notificationsEnabled,
+          s.faceRecognitionEnabled,
+          s.faceMatchDistance,
+          s.faceMatchMargin,
+          s.faceMinFrames,
+          s.faceLivenessRequired,
+        ],
+      );
+      await audit(client, req.user.org, req.user.sub, "update", "settings", null, {
+        systemName: s.systemName,
+        lateAfterMinutes: s.lateAfterMinutes,
+        notificationsEnabled: s.notificationsEnabled,
+        faceRecognitionEnabled: s.faceRecognitionEnabled,
+        faceMatchDistance: s.faceMatchDistance,
+        faceMatchMargin: s.faceMatchMargin,
+        faceMinFrames: s.faceMinFrames,
+        faceLivenessRequired: s.faceLivenessRequired,
+      });
+      return rows[0];
+    });
+    res.json(settings);
   }),
 );
 
