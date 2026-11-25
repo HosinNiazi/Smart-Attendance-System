@@ -95,10 +95,85 @@ const uploadsRoot = path.resolve(process.cwd(), "uploads");
 const studentPhotosDir = path.join(uploadsRoot, "students");
 
 fs.mkdirSync(studentPhotosDir, { recursive: true });
-// Uploaded reference photos are served to the face-recognition engine in the
-// browser.  They are intentionally outside /api so the static middleware does
-// not require a JWT.
-app.use("/uploads", express.static(uploadsRoot, { fallthrough: true }));
+
+// Uploaded files are private. Instead of serving the whole folder statically,
+// every response hands out a short-lived signed link. The link works inside a
+// plain <img>/<a> tag (no Authorization header needed) but grants access to
+// exactly one file and expires on its own.
+const PUBLIC_UPLOAD_EXTENSIONS = new Set([".jpg", ".jpeg", ".png", ".webp", ".pdf"]);
+const IMAGE_UPLOAD_EXTENSIONS = new Set([".jpg", ".jpeg", ".png", ".webp"]);
+const UPLOAD_URL_TTL_SECONDS = 12 * 60 * 60;
+
+function uploadSignature(relativePath, expires) {
+  return crypto
+    .createHmac("sha256", jwtSecret)
+    .update(`${relativePath}\n${expires}`)
+    .digest("base64url");
+}
+
+// Reject traversal, absolute paths and anything that is not a known media
+// type before the file is touched.
+function safeUploadPath(relativePath) {
+  if (typeof relativePath !== "string" || !relativePath) return null;
+  const normalized = relativePath.replace(/^\/+/, "");
+  if (normalized.includes("..") || normalized.includes("\\")) return null;
+  if (!/^[A-Za-z0-9._/-]+$/.test(normalized)) return null;
+  const absolute = path.resolve(uploadsRoot, normalized);
+  if (!absolute.startsWith(uploadsRoot + path.sep)) return null;
+  if (!PUBLIC_UPLOAD_EXTENSIONS.has(path.extname(absolute).toLowerCase()))
+    return null;
+  return { relativePath: normalized, absolute };
+}
+
+// Turn a stored path such as "/uploads/students/<uuid>.jpg" into a signed URL.
+// Values that are not upload paths (empty, external) pass through untouched.
+function signedUploadUrl(value) {
+  if (typeof value !== "string" || !value) return value;
+  const relativePath = value.startsWith("/uploads/")
+    ? value.slice("/uploads/".length)
+    : value;
+  const safe = safeUploadPath(relativePath);
+  if (!safe) return value;
+  const expires = Math.floor(Date.now() / 1000) + UPLOAD_URL_TTL_SECONDS;
+  const signature = uploadSignature(safe.relativePath, expires);
+  return `/uploads/${safe.relativePath}?expires=${expires}&sig=${signature}`;
+}
+
+function signUploadField(row, field) {
+  return row ? { ...row, [field]: signedUploadUrl(row[field]) } : row;
+}
+
+// The declared MIME type is client-controlled, so also check the first bytes
+// of the file. Extension and stored content then always agree.
+const FILE_SIGNATURES = {
+  "image/jpeg": (buffer) =>
+    buffer.length >= 3 && buffer[0] === 0xff && buffer[1] === 0xd8 && buffer[2] === 0xff,
+  "image/png": (buffer) =>
+    buffer.length >= 8 &&
+    buffer.subarray(0, 8).equals(
+      Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]),
+    ),
+  "image/webp": (buffer) =>
+    buffer.length >= 12 &&
+    buffer.toString("ascii", 0, 4) === "RIFF" &&
+    buffer.toString("ascii", 8, 12) === "WEBP",
+  "application/pdf": (buffer) =>
+    buffer.length >= 5 && buffer.toString("ascii", 0, 5) === "%PDF-",
+};
+
+async function uploadedFileMatchesMime(file) {
+  const check = FILE_SIGNATURES[file?.mimetype];
+  if (!check) return false;
+  const handle = await fs.promises.open(file.path, "r");
+  try {
+    const buffer = Buffer.alloc(16);
+    const { bytesRead } = await handle.read(buffer, 0, buffer.length, 0);
+    return check(buffer.subarray(0, bytesRead));
+  } finally {
+    await handle.close();
+  }
+}
+
 const studentPhotoStorage = multer.diskStorage({
   destination: (req, file, cb) => {
     cb(null, studentPhotosDir);
@@ -167,6 +242,41 @@ app.use(
 
 const asyncRoute = (handler) => (req, res, next) =>
   Promise.resolve(handler(req, res, next)).catch(next);
+
+// Signed, expiring links for uploaded files. No JWT header is required, so the
+// URL can be used directly by <img> and <a>, but it only unlocks one file.
+app.get(
+  "/uploads/*",
+  asyncRoute(async (req, res) => {
+    const safe = safeUploadPath(req.params[0] || "");
+    if (!safe) return res.status(404).end();
+    const expires = Number(req.query.expires);
+    const signature = String(req.query.sig || "");
+    const now = Math.floor(Date.now() / 1000);
+    if (!signature || !Number.isInteger(expires) || expires < now)
+      return res.status(401).json({ message: "لینک فایل معتبر یا منقضی نشده است." });
+    const expected = uploadSignature(safe.relativePath, expires);
+    const given = Buffer.from(signature);
+    const wanted = Buffer.from(expected);
+    if (given.length !== wanted.length || !crypto.timingSafeEqual(given, wanted))
+      return res.status(401).json({ message: "لینک فایل معتبر نیست." });
+
+    const extension = path.extname(safe.absolute).toLowerCase();
+    const isImage = IMAGE_UPLOAD_EXTENSIONS.has(extension);
+    res.sendFile(safe.absolute, {
+      cacheControl: false,
+      headers: {
+        "Cache-Control": "private, max-age=300",
+        "X-Content-Type-Options": "nosniff",
+        // Documents are forced to download so a malicious PDF/HTML can never
+        // execute in the app origin.
+        "Content-Disposition": `${isImage ? "inline" : "attachment"}; filename="${path.basename(
+          safe.absolute,
+        )}"`,
+      },
+    });
+  }),
+);
 
 const IMPERSONATION_TTL_MINUTES = 60;
 
@@ -511,7 +621,7 @@ function publicUser(row) {
     name: row.display_name,
     role: row.role,
     studentId: row.student_id,
-    avatarUrl: row.avatar_url,
+    avatarUrl: signedUploadUrl(row.avatar_url),
     mustChangePassword: row.must_change_password === true,
   };
 }
@@ -3212,16 +3322,49 @@ app.get(
 );
 app.get(
   "/api/bootstrap",
+  authorize("admin", "teacher", "student"),
   asyncRoute(async (req, res) => {
     const params = [req.user.org];
     const teacher = req.user.role === "teacher";
-    if (teacher) params.push(req.user.sub);
-    // Teachers only receive their own courses, sessions, attendance and the
-    // students enrolled in them. Admins keep the whole faculty.
-    const courseScope = teacher ? " AND c.teacher_user_id=$2" : "";
+    const studentRole = req.user.role === "student";
+    let student = null;
+    if (studentRole) {
+      student = await findStudentByUserId(req.user.sub, req.user.org);
+      if (!student) {
+        return res.json({
+          students: [],
+          courses: [],
+          sessions: [],
+          attendance: [],
+          settings: null,
+          faceImages: [],
+          voiceSamples: [],
+        });
+      }
+      params.push(student.id);
+    } else if (teacher) {
+      params.push(req.user.sub);
+    }
+    // Teachers only receive their own courses/sessions/students; students only
+    // receive the courses they belong to and their own row. Admins keep the
+    // whole faculty.
+    const studentCoursesSql = `(
+      SELECT course_id FROM course_students WHERE student_id=$2
+      UNION
+      SELECT s2.course_id FROM session_students ss2
+        JOIN class_sessions s2 ON s2.id = ss2.session_id
+       WHERE ss2.student_id=$2
+    )`;
+    const courseScope = teacher
+      ? " AND c.teacher_user_id=$2"
+      : studentRole
+        ? ` AND c.id IN ${studentCoursesSql}`
+        : "";
     const sessionScope = teacher
       ? " AND s.course_id IN (SELECT id FROM courses WHERE organization_id=$1 AND teacher_user_id=$2)"
-      : "";
+      : studentRole
+        ? ` AND s.course_id IN ${studentCoursesSql}`
+        : "";
     const studentScope = teacher
       ? ` AND st.id IN (
             SELECT cs.student_id
@@ -3235,7 +3378,13 @@ app.get(
               JOIN courses c ON c.id = s.course_id
              WHERE s.organization_id = $1 AND c.teacher_user_id = $2
           )`
-      : "";
+      : studentRole
+        ? " AND st.id=$2"
+        : "";
+    // For a student only their own id may appear in course/session rosters.
+    const courseRosterScope = studentRole ? " AND cs.student_id=$2" : "";
+    const sessionRosterScope = studentRole ? " AND ss.student_id=$2" : "";
+    const attendanceScope = studentRole ? " AND a.student_id=$2" : "";
     const staffCan = (permission) =>
       req.user.role !== "admin" ||
       staffRoleAllows(req.user.adminLevel, permission);
@@ -3248,15 +3397,15 @@ app.get(
           params,
         ),
         pool.query(
-          `SELECT c.id, c.code, c.title, c.teacher_name AS "teacherName", c.teacher_user_id AS "teacherUserId", c.room, c.weekday, to_char(c.start_time,'HH24:MI') AS "startTime", to_char(c.end_time,'HH24:MI') AS "endTime", COALESCE(array_agg(cs.student_id) FILTER (WHERE cs.student_id IS NOT NULL), '{}') AS "studentIds" FROM courses c LEFT JOIN course_students cs ON cs.course_id=c.id WHERE c.organization_id=$1${courseScope} GROUP BY c.id ORDER BY c.title`,
+          `SELECT c.id, c.code, c.title, c.teacher_name AS "teacherName", c.teacher_user_id AS "teacherUserId", c.room, c.weekday, to_char(c.start_time,'HH24:MI') AS "startTime", to_char(c.end_time,'HH24:MI') AS "endTime", COALESCE(array_agg(cs.student_id) FILTER (WHERE cs.student_id IS NOT NULL), '{}') AS "studentIds" FROM courses c LEFT JOIN course_students cs ON cs.course_id=c.id${courseRosterScope} WHERE c.organization_id=$1${courseScope} GROUP BY c.id ORDER BY c.title`,
           params,
         ),
         pool.query(
-          `SELECT s.id, s.course_id AS "courseId", to_char(s.session_date,'YYYY-MM-DD') AS date, s.teacher_name AS "teacherName", to_char(s.start_time,'HH24:MI') AS "startTime", to_char(s.end_time,'HH24:MI') AS "endTime", s.grace_minutes AS "graceMinutes", s.open_before_minutes AS "openBeforeMinutes", s.close_after_minutes AS "closeAfterMinutes", s.status, s.live_status AS "liveStatus", s.started_at AS "startedAt", s.ended_at AS "endedAt", COALESCE(array_agg(ss.student_id) FILTER (WHERE ss.student_id IS NOT NULL), '{}') AS "studentIds" FROM class_sessions s LEFT JOIN session_students ss ON ss.session_id=s.id WHERE s.organization_id=$1${sessionScope} GROUP BY s.id ORDER BY s.session_date DESC, s.start_time DESC`,
+          `SELECT s.id, s.course_id AS "courseId", to_char(s.session_date,'YYYY-MM-DD') AS date, s.teacher_name AS "teacherName", to_char(s.start_time,'HH24:MI') AS "startTime", to_char(s.end_time,'HH24:MI') AS "endTime", s.grace_minutes AS "graceMinutes", s.open_before_minutes AS "openBeforeMinutes", s.close_after_minutes AS "closeAfterMinutes", s.status, s.live_status AS "liveStatus", s.started_at AS "startedAt", s.ended_at AS "endedAt", COALESCE(array_agg(ss.student_id) FILTER (WHERE ss.student_id IS NOT NULL), '{}') AS "studentIds" FROM class_sessions s LEFT JOIN session_students ss ON ss.session_id=s.id${sessionRosterScope} WHERE s.organization_id=$1${sessionScope} GROUP BY s.id ORDER BY s.session_date DESC, s.start_time DESC`,
           params,
         ),
         pool.query(
-          `SELECT a.id, a.session_id AS "sessionId", a.student_id AS "studentId", a.status, a.method, a.checked_at AS "checkedAt", a.updated_at AS "updatedAt" FROM attendance_records a JOIN class_sessions s ON s.id=a.session_id WHERE s.organization_id=$1${sessionScope}`,
+          `SELECT a.id, a.session_id AS "sessionId", a.student_id AS "studentId", a.status, a.method, a.checked_at AS "checkedAt", a.updated_at AS "updatedAt" FROM attendance_records a JOIN class_sessions s ON s.id=a.session_id WHERE s.organization_id=$1${sessionScope}${attendanceScope}`,
           params,
         ),
         pool.query(
@@ -3301,7 +3450,10 @@ app.get(
       sessions: sessions.rows,
       attendance: attendance.rows,
       settings: settings.rows[0] || null,
-      faceImages: faceImages.rows,
+      faceImages: faceImages.rows.map((row) => ({
+        ...row,
+        url: signedUploadUrl(`/uploads/students/${row.objectKey}`),
+      })),
       voiceSamples: voiceSamples.rows,
     });
   }),
@@ -3891,6 +4043,12 @@ app.post(
         message: "لطفاً یک تصویر انتخاب کنید.",
       });
     }
+    if (!(await uploadedFileMatchesMime(req.file))) {
+      await fs.promises.unlink(req.file.path).catch(() => {});
+      return res.status(400).json({
+        message: "محتوای فایل با فرمت تصویر مطابقت ندارد.",
+      });
+    }
     if (!(await teacherOwnsStudent(req, req.params.studentId))) {
       await fs.promises.unlink(req.file.path).catch(() => {});
       return res
@@ -3936,6 +4094,12 @@ app.post(
     if (!req.file) {
       return res.status(400).json({ message: "لطفاً یک تصویر انتخاب کنید." });
     }
+    if (!(await uploadedFileMatchesMime(req.file))) {
+      await fs.promises.unlink(req.file.path).catch(() => {});
+      return res.status(400).json({
+        message: "محتوای فایل با فرمت تصویر مطابقت ندارد.",
+      });
+    }
 
     const { rows } = await pool.query(
       `SELECT student_id AS "studentId" FROM users
@@ -3977,13 +4141,13 @@ app.post(
       return res.status(404).json({ message: "دانشجو پیدا نشد." });
     }
 
-    const url = `/uploads/students/${record.objectKey}`;
+    const storedUrl = `/uploads/students/${record.objectKey}`;
     await pool.query(
       `UPDATE users SET avatar_url = $1, updated_at = now() WHERE id = $2`,
-      [url, req.user.sub],
+      [storedUrl, req.user.sub],
     );
 
-    return res.status(201).json({ ...record, url });
+    return res.status(201).json({ ...record, url: signedUploadUrl(storedUrl) });
   }),
 );
 app.post(
@@ -5746,8 +5910,19 @@ fs.mkdirSync(leaveProofsDir, { recursive: true });
 const leaveProofStorage = multer.diskStorage({
   destination: (_req, _file, cb) => cb(null, leaveProofsDir),
   filename: (_req, file, cb) => {
-    const ext = path.extname(file.originalname || "").toLowerCase().slice(0, 10) || ".bin";
-    cb(null, `${crypto.randomUUID()}${ext}`);
+    // Never trust the client filename: the extension comes from the declared
+    // MIME type, and the bytes are checked after the upload. This keeps stored
+    // files from ever becoming .html/.js on the app origin.
+    const extension = FILE_SIGNATURES[file.mimetype]
+      ? { "image/jpeg": ".jpg", "image/png": ".png", "image/webp": ".webp", "application/pdf": ".pdf" }[file.mimetype]
+      : null;
+    if (!extension)
+      return cb(
+        Object.assign(new Error("فقط تصویر یا فایل PDF مجاز است."), {
+          status: 400,
+        }),
+      );
+    cb(null, `${crypto.randomUUID()}${extension}`);
   },
 });
 const uploadLeaveProof = multer({
@@ -5881,9 +6056,17 @@ app.post(
   uploadLeaveProof.single("proof"),
   validate(leaveSchema),
   asyncRoute(async (req, res) => {
+    if (req.file && !(await uploadedFileMatchesMime(req.file))) {
+      await fs.promises.unlink(req.file.path).catch(() => {});
+      return res.status(400).json({
+        message: "محتوای فایل با فرمت اعلام‌شده مطابقت ندارد.",
+      });
+    }
     const student = await findStudentByUserId(req.user.sub, req.user.org);
-    if (!student)
+    if (!student) {
+      if (req.file) await fs.promises.unlink(req.file.path).catch(() => {});
       return res.status(404).json({ message: "حساب دانشجویی پیدا نشد." });
+    }
     const { type, sessionId, reason } = req.body;
     let startDate = req.body.startDate;
     let endDate = req.body.endDate || startDate;
@@ -5892,16 +6075,20 @@ app.post(
         `SELECT session_date AS "date" FROM class_sessions WHERE id=$1 AND organization_id=$2`,
         [sessionId, req.user.org],
       );
-      if (!rows[0])
+      if (!rows[0]) {
+        if (req.file) await fs.promises.unlink(req.file.path).catch(() => {});
         return res.status(404).json({ message: "جلسه یافت نشد." });
+      }
       const date = String(rows[0].date).slice(0, 10);
       startDate = date;
       endDate = date;
     }
-    if (endDate < startDate)
+    if (endDate < startDate) {
+      if (req.file) await fs.promises.unlink(req.file.path).catch(() => {});
       return res
         .status(400)
         .json({ message: "تاریخ پایان نمی‌تواند قبل از تاریخ شروع باشد." });
+    }
     const proofFile = req.file
       ? `/uploads/leave-proofs/${req.file.filename}`
       : null;
@@ -5935,7 +6122,7 @@ app.post(
       `${leaveSelect} WHERE lr.id=$1`,
       [rows[0].id],
     );
-    res.status(201).json(created[0]);
+    res.status(201).json(signUploadField(created[0], "proofFile"));
   }),
 );
 
@@ -6055,7 +6242,7 @@ app.post(
       groupId,
       created: result.created,
       affectedRecords: result.affectedRecords,
-      requests: created,
+      requests: created.map((row) => signUploadField(row, "proofFile")),
     });
   }),
 );
@@ -6074,7 +6261,7 @@ app.get(
     }
     sql += ` ORDER BY lr.created_at DESC`;
     const { rows } = await pool.query(sql, params);
-    res.json(rows);
+    res.json(rows.map((row) => signUploadField(row, "proofFile")));
   }),
 );
 

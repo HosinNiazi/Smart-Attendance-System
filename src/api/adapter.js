@@ -48,7 +48,8 @@ export function adaptBootstrap(data) {
   const referencesByStudent = new Map();
   for (const image of data.faceImages || []) {
     const list = photosByStudent.get(image.studentId) || [];
-    const url = photoUrl(image.objectKey);
+    // The API now returns a short-lived signed URL for each private file.
+    const url = image.url || photoUrl(image.objectKey);
     list.push(url);
     photosByStudent.set(image.studentId, list);
 
