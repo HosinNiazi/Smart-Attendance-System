@@ -2095,3 +2095,21 @@ html[lang="en"] body,html[lang="en"] button,html[lang="en"] input,html[lang="en"
 :root[data-theme="dark"] .app-boot{background:radial-gradient(circle at 50% 0%,#111a2b,#0b1220 60%,#080d16)}
 :root[data-theme="dark"] .app-boot>span:last-child strong{color:#e8eefb}
 :root[data-theme="dark"] .app-boot>span:last-child small{color:#93a1bb}
+
+/* Course cards: in dark mode the light banner gradients clashed with the dark
+   card and left the light icon on a near-white chip. Use dark tinted banners
+   with matching accent icons so the card stays readable and consistent. */
+:root[data-theme="dark"] .course-banner{border-bottom:1px solid #263349}
+:root[data-theme="dark"] .banner-0{background:linear-gradient(120deg,#1b2547,#151d2e)}
+:root[data-theme="dark"] .banner-1{background:linear-gradient(120deg,#122f28,#14202b)}
+:root[data-theme="dark"] .banner-2{background:linear-gradient(120deg,#342510,#1f1d27)}
+:root[data-theme="dark"] .banner-3{background:linear-gradient(120deg,#261b3d,#191f2e)}
+:root[data-theme="dark"] .course-banner .course-color{background:#ffffff14;border:1px solid #ffffff1f}
+:root[data-theme="dark"] .banner-0 .course-color{color:#a9b8ff}
+:root[data-theme="dark"] .banner-1 .course-color{color:#7fe3bd}
+:root[data-theme="dark"] .banner-2 .course-color{color:#ffca8a}
+:root[data-theme="dark"] .banner-3 .course-color{color:#cfb5ff}
+:root[data-theme="dark"] .course-code{background:#ffffff1a;color:#cbd5e4}
+:root[data-theme="dark"] .teacher-avatar{background:#22304a;color:#a8b8ff}
+:root[data-theme="dark"] .course-detail{border-color:#2a3648}
+:root[data-theme="dark"] .course-detail i{color:#7f8da3}
