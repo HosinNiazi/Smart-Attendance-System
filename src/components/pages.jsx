@@ -5729,7 +5729,9 @@ export function Teachers({
 
   async function copyCredentials() {
     if (!created) return;
-    const text = `ایمیل: ${created.teacher.email}\nرمز موقت: ${created.temporaryPassword}`;
+    const text = created.temporaryPassword
+      ? `ایمیل: ${created.teacher.email}\nرمز موقت: ${created.temporaryPassword}`
+      : `ایمیل: ${created.teacher.email}`;
     try {
       await navigator.clipboard.writeText(text);
       setCopied(true);
@@ -6103,8 +6105,9 @@ export function Teachers({
               </button>
             </div>
             <p className="page-note">
-              این رمز فقط یک‌بار نمایش داده می‌شود. آن را به استاد تحویل دهید تا از
-              صفحهٔ ورود، دانشکدهٔ مربوطه را انتخاب کند.
+              {created.temporaryPassword
+                ? "این رمز فقط یک‌بار نمایش داده می‌شود. آن را به استاد تحویل دهید تا از صفحهٔ ورود، دانشکدهٔ مربوطه را انتخاب کند."
+                : "رمز موقت در پاسخ API نمایش داده نمی‌شود و به ایمیل استاد ارسال شد."}
             </p>
             <div className="teacher-credential">
               <div>
@@ -6113,7 +6116,15 @@ export function Teachers({
               </div>
               <div>
                 <span>رمز موقت</span>
-                <strong dir="ltr">{created.temporaryPassword}</strong>
+                {created.temporaryPassword ? (
+                  <strong dir="ltr">{created.temporaryPassword}</strong>
+                ) : (
+                  <strong>
+                    {created.emailSent
+                      ? "به ایمیل استاد ارسال شد."
+                      : "ارسال ایمیل انجام نشد؛ با مدیر سامانه تماس بگیرید."}
+                  </strong>
+                )}
               </div>
             </div>
             <div className="modal-actions" style={{ marginTop: 14 }}>
@@ -6156,8 +6167,9 @@ export function Teachers({
               </button>
             </div>
             <p className="page-note">
-              این رمز فقط یک‌بار نمایش داده می‌شود. آن را به استاد تحویل دهید تا
-              وارد شود و سپس رمز خود را عوض کند.
+              {resetResult.temporaryPassword
+                ? "این رمز فقط یک‌بار نمایش داده می‌شود. آن را به استاد تحویل دهید تا وارد شود و سپس رمز خود را عوض کند."
+                : "رمز موقت در پاسخ API نمایش داده نمی‌شود و به ایمیل استاد ارسال شد."}
             </p>
             <div className="teacher-credential">
               <div>
@@ -6166,12 +6178,22 @@ export function Teachers({
               </div>
               <div>
                 <span>رمز موقت</span>
-                <strong dir="ltr">{resetResult.temporaryPassword}</strong>
+                {resetResult.temporaryPassword ? (
+                  <strong dir="ltr">{resetResult.temporaryPassword}</strong>
+                ) : (
+                  <strong>
+                    {resetResult.emailSent
+                      ? "به ایمیل استاد ارسال شد."
+                      : "ارسال ایمیل انجام نشد؛ با مدیر سامانه تماس بگیرید."}
+                  </strong>
+                )}
               </div>
             </div>
             <div className="modal-actions" style={{ marginTop: 14 }}>
               <button className="btn btn-primary" onClick={() => {
-                const text = `ایمیل: ${resetResult.teacher.email}\nرمز موقت: ${resetResult.temporaryPassword}`;
+                const text = resetResult.temporaryPassword
+                  ? `ایمیل: ${resetResult.teacher.email}\nرمز موقت: ${resetResult.temporaryPassword}`
+                  : `ایمیل: ${resetResult.teacher.email}`;
                 navigator.clipboard.writeText(text).then(() => {});
               }}>
                 <Icon name="bi-clipboard" /> کپی اطلاعات

@@ -146,6 +146,8 @@ export function permissionForRequest(method, rawPath) {
   if (path.startsWith("/api/platform/")) return "staff.manage";
   if (path === "/api/staff" || path.startsWith("/api/staff/"))
     return "staff.manage";
+  // Account unlocks are a staff-management action.
+  if (path.startsWith("/api/users/")) return "staff.manage";
 
   if (path.startsWith("/api/import/students")) return "students.manage";
   if (path.startsWith("/api/import/courses")) return "courses.manage";

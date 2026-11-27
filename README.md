@@ -69,7 +69,8 @@
 
 - احراز هویت JWT با کنترل دسترسی مبتنی بر نقش (`admin` / `teacher` / `student`)
 - **امنیت حساب استاد:** رمز موقت یک‌بارمصرف هنگام ساخت حساب؛ اجبار به تعیین رمز جدید در نخستین ورود (دیالوگ غیرقابل بستن)؛ رمز جدید حداقل ۸ کاراکتر، متفاوت از رمز فعلی و غیرقابل تکرار از ۵ رمز اخیر؛ قفل خودکار حساب پس از ۵ تلاش ناموفق ورود (به مدت ۵ دقیقه)؛ تاریخچهٔ ورود (IP، زمان، دستگاه) در صفحهٔ پروفایل
-- **بازنشانی رمز استاد توسط مدیر:** تولید رمز موقت جدید، اجبار به تغییر در ورود بعدی و ارسال خودکار رمز موقت از طریق ایمیل (SMTP)؛ در صورت نبود SMTP، رمز در لاگ سرور و پاسخ API نمایش داده می‌شود
+- **بازنشانی رمز استاد توسط مدیر:** تولید رمز موقت جدید، اجبار به تغییر در ورود بعدی و ارسال خودکار رمز موقت از طریق ایمیل (SMTP)؛ در محیط توسعه اگر SMTP تنظیم نشده باشد، رمز در لاگ سرور و پاسخ API نمایش داده می‌شود، اما در تولید فقط ایمیل تحویل می‌شود
+- **بازیابی رمز توسط کاربر:** پیوند یک‌بارمصرف «رمز را فراموش کرده‌ام» با توکن هش‌شده و انقضای محدود؛ پاسخ درخواست برای حساب موجود و ناموجود یکسان است
 - **شفافیت مدیریتی (فاز ۳):** نمایش «چه کسی این استاد را اضافه کرده» از `user_faculties.added_by` در صفحهٔ اساتید؛ **گزارش فعالیت مدیران** در صفحهٔ «گزارش فعالیت مدیران» (زمان، مدیر، عملیات، موجودیت، جزئیات + فیلتر نوع موجودیت)؛ **اعلان به استاد هنگام افزوده‌شدن به دانشکدهٔ جدید** (اعلان نوع `membership` در زنگ اعلان)؛ همهٔ این‌ها روی همان جدول حسابرسی `audit_logs` و بدون مایگریشن جدید انجام می‌شود؛ ماتریس نقش/دسترسی در [`docs/PERMISSIONS.md`](docs/PERMISSIONS.md)
 - **تقویم کاملاً شمسی:** تمام تاریخ‌ها شمسی نمایش داده می‌شوند؛ مقادیر داخلی ISO میلادی هستند
 - نوتیفیکیشن واقعی (ذخیره در دیتابیس + شمارندهٔ خوانده‌نشده)
@@ -139,7 +140,7 @@ copy .env.example .env
 copy server\.env.example server\.env
 ```
 
-فایل `server/.env` را ویرایش کنید: `DATABASE_URL`، `JWT_SECRET` (حداقل ۳۲ کاراکتر) و `CORS_ORIGIN` را درست تنظیم کنید.
+فایل `server/.env` را ویرایش کنید: `DATABASE_URL`، `JWT_SECRET` (حداقل ۳۲ کاراکتر)، `CORS_ORIGIN` و در محیط تولید `APP_BASE_URL` را درست تنظیم کنید.
 
 نمونهٔ `server/.env` برای محیط توسعه:
 
@@ -150,7 +151,14 @@ DATABASE_URL=postgres://postgres:password@localhost:5432/hozorban
 JWT_SECRET=replace_with_a_long_random_secret_of_at_least_32_characters
 CORS_ORIGIN=http://localhost:5173
 
-# اختیاری: ارسال رمز موقت استاد با ایمیل (در صورت عدم تنظیم، رمز در لاگ سرور چاپ و در پنل مدیر نمایش داده می‌شود)
+# تعداد پراکسی‌های جلوی API؛ اگر API مستقیم در دسترس است خالی بماند و پشت یک nginx/CDN مقدار 1 بگذارید.
+TRUST_PROXY=
+# نشانی عمومی فرانت‌اند برای ساخت پیوند بازیابی رمز (بدون / انتهایی)
+APP_BASE_URL=http://localhost:5173
+PASSWORD_RESET_TTL_MINUTES=30
+
+# در تولید الزامی است: رمزهای موقت و پیوند بازیابی فقط با ایمیل تحویل می‌شوند.
+# در توسعه بدون SMTP، محتوای ایمیل در لاگ سرور چاپ می‌شود.
 # SMTP_HOST=smtp.example.com
 # SMTP_PORT=587
 # SMTP_SECURE=false
@@ -247,7 +255,7 @@ docker compose up -d --build
 
 ### مایگریشن‌های دیتابیس
 
-`001_initial` (سازمان‌ها، کاربران، دانشجویان، درس‌ها، جلسات، حضور) → `002_biometrics_enhancements` → `003_consolidate_organizations` → `004_registration_requests` → `005_fingerprint` (WebAuthn) → `006_support_tickets` → `007_leave_objections_notifications` → `008_phase2` (مرخصی گروهی، پنل زنده، ایندکس‌های تحلیل روند) → `009_faculties` → `010_teacher_management` → `011_teacher_password_change` → `012_course_ownership` → `013_password_recovery` (تاریخچهٔ ورود، جلوگیری از تکرار رمز) → `014_add_user_security_columns` (قفل حساب و تلاش‌های ناموفق)
+`001_initial` (سازمان‌ها، کاربران، دانشجویان، درس‌ها، جلسات، حضور) → `002_biometrics_enhancements` → `003_consolidate_organizations` → `004_registration_requests` → `005_fingerprint` (WebAuthn) → `006_support_tickets` → `007_leave_objections_notifications` → `008_phase2` (مرخصی گروهی، پنل زنده، ایندکس‌های تحلیل روند) → `009_faculties` → `010_teacher_management` → `011_teacher_password_change` → `012_course_ownership` → `013_password_recovery` (تاریخچهٔ ورود، جلوگیری از تکرار رمز) → `014_add_user_security_columns` (قفل حساب و تلاش‌های ناموفق) → `015_exams` → `016_exam_resilience` → `017_platform_admin` → `018_face_enrollment` → `019_face_phase2` → `020_drop_camera_health` → `021_token_version` (ابطال نشست‌ها) → `022_password_reset_tokens` (بازیابی رمز با توکن یک‌بارمصرف)
 
 ### خلاصهٔ API (بیش از ۶۰ مسیر)
 
@@ -267,7 +275,12 @@ docker compose up -d --build
 ### امنیت و حریم خصوصی
 
 - گذرواژه‌ها با **bcrypt (cost=12)** هش می‌شوند؛ توکن JWT با نقش و شناسهٔ سازمان صادر می‌شود.
-- helmet، محدودسازی نرخ درخواست (express-rate-limit)، اعتبارسنجی ورودی‌ها با **zod**، CORS محدود به CORS_ORIGIN.
+- helmet با CSP سخت‌گیرانه، HSTS در تولید، `X-Frame-Options: DENY` و `Referrer-Policy: no-referrer`؛ هدرهای امنیتی فرانت‌اند در `public/_headers`.
+- محدودسازی نرخ درخواست (express-rate-limit) برای ورود، بازیابی رمز، ثبت‌نام و CAPTCHA؛ اعتبارسنجی ورودی‌ها با **zod**؛ CORS محدود به `CORS_ORIGIN`.
+- `TRUST_PROXY` به‌صورت صریح تنظیم می‌شود؛ مقدار نامناسب باعث جعل `X-Forwarded-For` و دور زدن محدودیت نرخ می‌شود.
+- **بازیابی رمز:** پیوند یک‌بارمصرف با توکن هش‌شده و انقضای محدود؛ پاسخ درخواست بازیابی برای حساب موجود و ناموجود یکسان است و مقایسهٔ رمز برای حساب ناموجود زمان‌بندی مشابهی دارد.
+- **قفل حساب:** پس از ۵ تلاش ناموفق، قفل ۵ دقیقه‌ای خودکار آزاد می‌شود؛ مدیر دانشکده یا مدیر سامانه می‌تواند قفل را دستی باز کند.
+- در تولید، رمزهای موقت در پاسخ API برگردانده نمی‌شوند و فقط با ایمیل تحویل می‌شوند؛ SMTP الزامی است.
 - **دادهٔ بیومتریک:** اثر انگشت فقط به‌شکل اعتبارنامهٔ WebAuthn (کلید عمومی) ذخیره می‌شود؛ چهره و صدا بیشتر در مرورگر پردازش می‌شوند و فقط ارجاع/ویژگی ذخیره می‌گردد.
 - برای داده‌های هویتی، رضایت آگاهانه و امکان بازبینی انسانی نتیجهٔ تشخیص الزامی است؛ لاگ عملیات مهم نگهداری کنید.
 - در تولید حتماً JWT_SECRET قوی، HTTPS و محدودسازی دسترسی دیتابیس اعمال شود.
@@ -424,7 +437,14 @@ DATABASE_URL=postgres://postgres:password@localhost:5432/hozorban
 JWT_SECRET=replace_with_a_long_random_secret_of_at_least_32_characters
 CORS_ORIGIN=http://localhost:5173
 
-# اختیاری: ارسال رمز موقت استاد با ایمیل (در صورت عدم تنظیم، رمز در لاگ سرور چاپ و در پنل مدیر نمایش داده می‌شود)
+# Number of proxy hops in front of the API (empty = direct, 1 = one nginx/CDN).
+TRUST_PROXY=
+# Public frontend URL used in password-reset emails (no trailing slash).
+APP_BASE_URL=http://localhost:5173
+PASSWORD_RESET_TTL_MINUTES=30
+
+# Required in production: temporary passwords and reset links are email-only.
+# Without SMTP in development the email body is logged to the server console.
 # SMTP_HOST=smtp.example.com
 # SMTP_PORT=587
 # SMTP_SECURE=false
@@ -485,7 +505,7 @@ Starts PostgreSQL 16 (with healthcheck) and the API on `127.0.0.1:8080`; the API
 
 ### Database migrations
 
-`001_initial` (organizations, users, students, courses, sessions, attendance) → `002_biometrics_enhancements` → `003_consolidate_organizations` → `004_registration_requests` → `005_fingerprint` (WebAuthn) → `006_support_tickets` → `007_leave_objections_notifications` → `008_phase2` (group leave, live sessions, trend-analytics indexes) → `009_faculties` → `010_teacher_management` → `011_teacher_password_change` → `012_course_ownership` → `013_password_recovery` (login history, password reuse prevention) → `014_add_user_security_columns` (account lockout, failed attempts)
+`001_initial` (organizations, users, students, courses, sessions, attendance) → `002_biometrics_enhancements` → `003_consolidate_organizations` → `004_registration_requests` → `005_fingerprint` (WebAuthn) → `006_support_tickets` → `007_leave_objections_notifications` → `008_phase2` (group leave, live sessions, trend-analytics indexes) → `009_faculties` → `010_teacher_management` → `011_teacher_password_change` → `012_course_ownership` → `013_password_recovery` (login history, password reuse prevention) → `014_add_user_security_columns` (account lockout, failed attempts) → `015_exams` → `016_exam_resilience` → `017_platform_admin` → `018_face_enrollment` → `019_face_phase2` → `020_drop_camera_health` → `021_token_version` (session revocation) → `022_password_reset_tokens` (single-use reset tokens)
 
 ### API overview (60+ routes)
 
@@ -505,7 +525,12 @@ Starts PostgreSQL 16 (with healthcheck) and the API on `127.0.0.1:8080`; the API
 ### Security & privacy
 
 - Passwords hashed with **bcrypt (cost 12)**; JWT carries role + organization id.
-- `helmet`, `express-rate-limit`, **zod**-validated inputs, CORS locked to `CORS_ORIGIN`.
+- `helmet` with a strict CSP, production HSTS, `X-Frame-Options: DENY` and `Referrer-Policy: no-referrer`; frontend static headers live in `public/_headers`.
+- `express-rate-limit` on login, password recovery, registration and CAPTCHA; **zod**-validated inputs; CORS locked to `CORS_ORIGIN`.
+- `TRUST_PROXY` must be set explicitly; a wrong value lets clients spoof `X-Forwarded-For` and bypass rate limits.
+- **Password recovery:** single-use links backed by hashed tokens with a short TTL; the request response is identical for existing and missing accounts, and missing accounts spend the same bcrypt time.
+- **Account lockout:** after 5 failed logins the account unlocks automatically after 5 minutes; a faculty or platform admin can also unlock it manually.
+- In production temporary passwords are never returned by the API and are delivered by email only, so SMTP is required.
 - **Biometric data:** fingerprints are stored only as WebAuthn public-key credentials; face and voice are processed in-browser and only references/features are persisted.
 - For identity data: informed consent and human review of uncertain recognitions are mandatory; keep audit logs of important actions.
 - In production always set a strong `JWT_SECRET`, enforce HTTPS, and restrict database access.

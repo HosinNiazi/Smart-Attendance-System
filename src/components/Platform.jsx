@@ -282,7 +282,9 @@ function CredentialsModal({ title, rows, onClose }) {
   const [copied, setCopied] = useState("");
   const titleId = useId();
   const copy = (row) => {
-    const text = `نام کاربری: ${row.username}\nرمز موقت: ${row.temporaryPassword}`;
+    const text = row.temporaryPassword
+      ? `نام کاربری: ${row.username}\nرمز موقت: ${row.temporaryPassword}`
+      : `نام کاربری: ${row.username}`;
     if (!navigator.clipboard?.writeText) {
       setCopied("copy-failed");
       return;
@@ -318,8 +320,10 @@ function CredentialsModal({ title, rows, onClose }) {
           </button>
         </div>
         <p className="credentials-warning">
-          <Icon name="bi-shield-exclamation" /> این رمزها فقط همین یک‌بار نمایش داده
-          می‌شوند؛ در پایگاه داده تنها نسخهٔ هش‌شده ذخیره شده است.
+          <Icon name="bi-shield-exclamation" />{" "}
+          {rows.some((row) => row.temporaryPassword)
+            ? "این رمزها فقط همین یک‌بار نمایش داده می‌شوند؛ در پایگاه داده تنها نسخهٔ هش‌شده ذخیره شده است."
+            : "رمز موقت در پاسخ API نمایش داده نمی‌شود و فقط به ایمیل کاربر ارسال شده است."}
         </p>
         <div className="credentials-list">
           {rows.map((row, index) => (
@@ -333,10 +337,21 @@ function CredentialsModal({ title, rows, onClose }) {
                   <span className="credentials-label">نام کاربری</span>
                   <code>{row.username}</code>
                 </span>
-                <span>
-                  <span className="credentials-label">رمز موقت</span>
-                  <code>{row.temporaryPassword}</code>
-                </span>
+                {row.temporaryPassword ? (
+                  <span>
+                    <span className="credentials-label">رمز موقت</span>
+                    <code>{row.temporaryPassword}</code>
+                  </span>
+                ) : (
+                  <span>
+                    <span className="credentials-label">رمز موقت</span>
+                    <small>
+                      {row.emailSent
+                        ? "به ایمیل کاربر ارسال شد."
+                        : "ارسال ایمیل انجام نشد؛ با مدیر سامانه تماس بگیرید."}
+                    </small>
+                  </span>
+                )}
                 <button type="button" className="btn btn-light-outline" onClick={() => copy(row)}>
                   <Icon name={copied === row.username ? "bi-check2" : "bi-clipboard"} />{" "}
                   {copied === row.username ? "کپی شد" : "کپی"}
@@ -707,6 +722,7 @@ export default function PlatformArea({ theme, onToggleTheme, onEnterFaculty, onE
               fullName: result.admin?.fullName || values.adminFullName,
               username: result.account?.username,
               temporaryPassword: result.account?.temporaryPassword,
+              emailSent: result.account?.emailSent === true,
               note: "مدیر دانشکده؛ رمز باید در اولین ورود تغییر کند.",
             },
           ],
@@ -781,6 +797,7 @@ export default function PlatformArea({ theme, onToggleTheme, onEnterFaculty, onE
             fullName: result.admin?.fullName,
             username: result.account?.username,
             temporaryPassword: result.account?.temporaryPassword,
+            emailSent: result.account?.emailSent === true,
             note: `سطح دسترسی: ${FACULTY_LEVEL_LABELS[result.admin?.level] || result.admin?.level}`,
           },
         ],
@@ -824,6 +841,7 @@ export default function PlatformArea({ theme, onToggleTheme, onEnterFaculty, onE
               fullName: admin.fullName,
               username: result.username,
               temporaryPassword: result.temporaryPassword,
+              emailSent: result.emailSent === true,
               note: "رمز باید در اولین ورود تغییر کند.",
             },
           ],
@@ -872,6 +890,7 @@ export default function PlatformArea({ theme, onToggleTheme, onEnterFaculty, onE
             fullName: result.admin?.fullName,
             username: result.account?.username,
             temporaryPassword: result.account?.temporaryPassword,
+            emailSent: result.account?.emailSent === true,
             note: `سطح دسترسی: ${PLATFORM_LEVEL_LABELS[result.admin?.level] || result.admin?.level}`,
           },
         ],
@@ -913,6 +932,7 @@ export default function PlatformArea({ theme, onToggleTheme, onEnterFaculty, onE
               fullName: admin.fullName,
               username: result.username,
               temporaryPassword: result.temporaryPassword,
+              emailSent: result.emailSent === true,
               note: "رمز باید در اولین ورود تغییر کند.",
             },
           ],

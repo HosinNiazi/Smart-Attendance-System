@@ -43,7 +43,7 @@ import {
 import multer from "multer";
 import path from "node:path";
 import fs from "node:fs";
-import { sendPasswordEmail } from "./mail.js";
+import { sendPasswordEmail, sendPasswordResetEmail } from "./mail.js";
 import {
   generateAuthenticationOptions,
   generateRegistrationOptions,
@@ -55,6 +55,36 @@ const app = express();
 
 const port = Number(process.env.PORT || 8080);
 const jwtSecret = process.env.JWT_SECRET;
+const isProduction = process.env.NODE_ENV === "production";
+const appBaseUrl = (process.env.APP_BASE_URL || "http://localhost:5173").replace(
+  /\/+$/,
+  "",
+);
+const PASSWORD_RESET_TTL_MINUTES = Number(
+  process.env.PASSWORD_RESET_TTL_MINUTES || 30,
+);
+
+// Express must trust the exact number of reverse proxies in front of it. With a
+// blanket `trust proxy = 1` any direct client could spoof X-Forwarded-For and
+// evade the IP-based rate limits. The safe default is "no proxy"; production
+// deployments behind nginx/CDN set TRUST_PROXY explicitly (e.g. `1`).
+function parseTrustProxy(value) {
+  if (value === undefined || value === "") return false;
+  const trimmed = String(value).trim();
+  // Trusting every hop lets any client forge X-Forwarded-For; require an
+  // explicit hop count or subnet list instead.
+  if (trimmed === "true")
+    throw new Error(
+      "TRUST_PROXY=true is unsafe; set the number of proxy hops (e.g. 1) or a subnet list.",
+    );
+  if (trimmed === "false") return false;
+  if (/^\d+$/.test(trimmed)) return Number(trimmed);
+  return trimmed
+    .split(",")
+    .map((item) => item.trim())
+    .filter(Boolean);
+}
+
 if (!jwtSecret || jwtSecret.length < 32)
   throw new Error("JWT_SECRET must contain at least 32 characters.");
 
@@ -78,8 +108,30 @@ const statusMap = {
   ثبت‌نشده: "unmarked",
 };
 const bodyLimit = "1mb";
-app.set("trust proxy", 1);
-app.use(helmet({ crossOriginResourcePolicy: { policy: "cross-origin" } }));
+app.disable("x-powered-by");
+app.set("trust proxy", parseTrustProxy(process.env.TRUST_PROXY));
+app.use(
+  helmet({
+    crossOriginResourcePolicy: { policy: "cross-origin" },
+    // The API only returns JSON and uploaded files. Nothing it serves should
+    // ever run a script or be framed, so lock those contexts down explicitly.
+    contentSecurityPolicy: {
+      useDefaults: false,
+      directives: {
+        defaultSrc: ["'none'"],
+        baseUri: ["'none'"],
+        frameAncestors: ["'none'"],
+        formAction: ["'none'"],
+        objectSrc: ["'none'"],
+      },
+    },
+    strictTransportSecurity: isProduction
+      ? { maxAge: 31536000, includeSubDomains: true, preload: false }
+      : false,
+    frameguard: { action: "deny" },
+    referrerPolicy: { policy: "no-referrer" },
+  }),
+);
 app.use(
   cors({
     origin:
@@ -857,6 +909,44 @@ function generateTemporaryPassword(length = 12) {
   return value;
 }
 
+// bcrypt.compare against a real hash costs the same as a real account, so a
+// missing account cannot be told apart from a wrong password by timing.
+const BCRYPT_ROUNDS = 12;
+const DUMMY_PASSWORD_HASH = bcrypt.hashSync(
+  "hozorban-timing-equalizer-not-a-real-password",
+  BCRYPT_ROUNDS,
+);
+
+// Temporary passwords are delivered out-of-band (email). In production they are
+// never serialised into an API response.
+async function deliverTemporaryPassword(email, password, name) {
+  const address = String(email || "").trim();
+  if (!address || address.endsWith("@students.local"))
+    return { ok: true, delivered: false, skipped: true };
+  try {
+    return await sendPasswordEmail(address, password, name);
+  } catch (error) {
+    console.warn("[mail] temporary password delivery failed:", error.message);
+    return { ok: false, delivered: false, error: error.message };
+  }
+}
+
+function temporaryPasswordResponse(password) {
+  return isProduction ? {} : { temporaryPassword: password };
+}
+
+function hashResetToken(token) {
+  return crypto.createHash("sha256").update(String(token)).digest("hex");
+}
+
+function generatePasswordResetToken() {
+  return crypto.randomBytes(32).toString("base64url");
+}
+
+function passwordResetLink(token) {
+  return `${appBaseUrl}/?resetToken=${encodeURIComponent(token)}`;
+}
+
 // A student logs in with the student number, so that number is the username.
 // users.email still has to be unique per faculty; when the faculty does not
 // collect a real address an internal placeholder keeps the constraint happy.
@@ -883,7 +973,7 @@ async function createAdminAccount(
   { organizationId, fullName, email, level, platformLevel = null, createdBy = null },
 ) {
   const temporaryPassword = generateTemporaryPassword();
-  const passwordHash = await bcrypt.hash(temporaryPassword, 10);
+  const passwordHash = await bcrypt.hash(temporaryPassword, BCRYPT_ROUNDS);
   const { rows } = await client.query(
     `INSERT INTO users
        (organization_id, email, password_hash, display_name, role, is_active,
@@ -940,7 +1030,7 @@ async function createStudentAccount(
 ) {
   const username = student.student_number;
   const temporaryPassword = generateTemporaryPassword();
-  const passwordHash = await bcrypt.hash(temporaryPassword, 10);
+  const passwordHash = await bcrypt.hash(temporaryPassword, BCRYPT_ROUNDS);
   const loginEmail =
     String(email || "").trim().toLowerCase() || studentAccountEmail(username);
   const { rows } = await client.query(
@@ -1125,17 +1215,34 @@ app.post(
     );
     const user = rows[0];
     if (!user) {
+      // Spend the same hashing time as a real account so the response cannot be
+      // used to enumerate platform administrators.
+      await bcrypt.compare(password, DUMMY_PASSWORD_HASH);
       return res
         .status(401)
         .json({ message: "نام کاربری یا رمز عبور مدیر سامانه نادرست است." });
     }
-    if (user.account_locked_until && user.account_locked_until > new Date()) {
-      const seconds = Math.ceil((user.account_locked_until - new Date()) / 1000);
+    const lockedUntil = user.account_locked_until
+      ? new Date(user.account_locked_until)
+      : null;
+    if (lockedUntil && lockedUntil <= new Date()) {
+      // The automatic lock window is over; give the account a fresh set of
+      // attempts instead of re-locking it on the very next typo.
+      user.account_locked_until = null;
+      user.failed_login_attempts = 0;
+      await pool.query(
+        `UPDATE users SET failed_login_attempts = 0, account_locked_until = NULL
+          WHERE id = $1 AND account_locked_until IS NOT NULL AND account_locked_until <= now()`,
+        [user.id],
+      );
+    }
+    const valid = await bcrypt.compare(password, user.password_hash);
+    if (lockedUntil && lockedUntil > new Date()) {
+      const seconds = Math.ceil((lockedUntil - new Date()) / 1000);
       return res.status(423).json({
         message: `حساب مدیر سامانه موقتاً قفل است. لطفاً ${Math.ceil(seconds / 60)} دقیقه دیگر تلاش کنید.`,
       });
     }
-    const valid = await bcrypt.compare(password, user.password_hash);
     if (!valid) {
       const attempts = Number(user.failed_login_attempts || 0) + 1;
       await pool.query(
@@ -1237,40 +1344,51 @@ app.post(
     }
 
     if (!user) {
-      // Increment failed attempts for any account matching this identifier.
-      const { rowCount } = await pool.query(
+      // Any account already inside an active lock window stays locked at its
+      // original expiry; a wrong password must not extend the lock or reveal
+      // whether the supplied password matched.
+      const activeLock = result.rows.find(
+        (candidate) =>
+          candidate.account_locked_until &&
+          new Date(candidate.account_locked_until) > new Date(),
+      );
+      if (activeLock) {
+        const remainingSec = Math.ceil(
+          (new Date(activeLock.account_locked_until) - new Date()) / 1000,
+        );
+        return res.status(423).json({
+          message:
+            remainingSec > 60
+              ? `حساب شما به دلیل تلاش‌های ناموفق موقت قفل شده است. لطفاً بعد از ${Math.ceil(remainingSec / 60)} دقیقه دوباره تلاش کنید.`
+              : `حساب شما به دلیل تلاش‌های ناموفق موقت قفل شده است. لطفاً بعد از ${remainingSec} ثانیه دوباره تلاش کنید.`,
+        });
+      }
+      // Same hashing cost for an identifier that does not exist.
+      if (!result.rows.length) await bcrypt.compare(password, DUMMY_PASSWORD_HASH);
+      // Increment failed attempts for any account matching this identifier and
+      // re-arm the lock in the same statement.
+      await pool.query(
         `UPDATE users u
-            SET failed_login_attempts = failed_login_attempts + 1,
-                last_failed_login = now()
+            SET failed_login_attempts =
+                  CASE WHEN u.account_locked_until IS NOT NULL
+                            AND u.account_locked_until <= now()
+                       THEN 1 ELSE u.failed_login_attempts + 1 END,
+                last_failed_login = now(),
+                account_locked_until =
+                  CASE WHEN (CASE WHEN u.account_locked_until IS NOT NULL
+                                       AND u.account_locked_until <= now()
+                                  THEN 1 ELSE u.failed_login_attempts + 1 END) >= 5
+                       THEN now() + interval '5 minutes'
+                       ELSE NULL END
            FROM organizations o
           WHERE o.id = u.organization_id
             AND o.kind = 'faculty'
             AND o.is_active = true
             AND u.is_active = true
             AND ($2::uuid IS NULL OR u.organization_id = $2)
-            AND ${LOGIN_IDENTIFIER_MATCH}
-          RETURNING u.id, u.email`,
+            AND ${LOGIN_IDENTIFIER_MATCH}`,
         [identifier, facultyId || null],
       );
-      if (rowCount > 0) {
-        const { rows: lockedRows } = await pool.query(
-          `SELECT u.id FROM users u
-             JOIN organizations o ON o.id = u.organization_id
-            WHERE o.kind = 'faculty'
-              AND o.is_active = true
-              AND u.is_active = true
-              AND u.failed_login_attempts >= 5
-              AND ($2::uuid IS NULL OR u.organization_id = $2)
-              AND ${LOGIN_IDENTIFIER_MATCH}`,
-          [identifier, facultyId || null],
-        );
-        for (const lock of lockedRows) {
-          await pool.query(
-            `UPDATE users SET account_locked_until = now() + interval '5 minutes' WHERE id = $1`,
-            [lock.id],
-          );
-        }
-      }
       return res
         .status(401)
         .json({ message: "نام کاربری یا رمز عبور نادرست است." });
@@ -1320,6 +1438,173 @@ app.post(
       });
 
     res.json(await authPayload(user, selectedOrg));
+  }),
+);
+
+/* ---------------------- self-service password recovery -------------------- */
+
+const passwordResetResultMessage =
+  "اگر حسابی با این مشخصات وجود داشته باشد، پیوند بازیابی به ایمیل ثبت‌شده ارسال می‌شود.";
+
+app.post(
+  "/api/auth/forgot-password",
+  rateLimit({
+    windowMs: 15 * 60_000,
+    limit: 5,
+    standardHeaders: true,
+    legacyHeaders: false,
+  }),
+  validate(
+    z.object({
+      identifier: z.string().trim().min(3).max(254),
+      facultyId: z.string().uuid().optional(),
+    }),
+  ),
+  asyncRoute(async (req, res) => {
+    const { identifier, facultyId } = req.body;
+    const { rows } = await pool.query(
+      `SELECT u.id, u.email, u.display_name AS "fullName"
+         FROM users u
+         JOIN organizations o
+           ON o.id = u.organization_id
+          AND o.kind = 'faculty'
+          AND o.is_active = true
+        WHERE u.is_active = true
+          AND ($2::uuid IS NULL OR u.organization_id = $2)
+          AND ${LOGIN_IDENTIFIER_MATCH}
+        ORDER BY u.created_at`,
+      [identifier, facultyId || null],
+    );
+
+    const deliveries = [];
+    const expiresAt = new Date(
+      Date.now() + PASSWORD_RESET_TTL_MINUTES * 60_000,
+    );
+    for (const recipient of rows) {
+      // Student placeholder addresses cannot receive mail; the response stays
+      // generic so the account existence is still not revealed.
+      if (!recipient.email || recipient.email.endsWith("@students.local"))
+        continue;
+      const token = generatePasswordResetToken();
+      await pool.query(
+        `UPDATE password_reset_tokens
+            SET used_at = now()
+          WHERE user_id = $1 AND used_at IS NULL`,
+        [recipient.id],
+      );
+      await pool.query(
+        `INSERT INTO password_reset_tokens
+           (user_id, token_hash, requested_ip, expires_at)
+         VALUES ($1, $2, $3, $4)`,
+        [recipient.id, hashResetToken(token), req.ip || null, expiresAt],
+      );
+      deliveries.push(
+        sendPasswordResetEmail(
+          recipient.email,
+          passwordResetLink(token),
+          recipient.fullName,
+        ),
+      );
+    }
+
+    res.json({ message: passwordResetResultMessage });
+    // Email dispatch must not change the response time for existing vs missing
+    // accounts, so it happens after the generic answer is sent.
+    Promise.allSettled(deliveries).catch(() => {});
+  }),
+);
+
+app.post(
+  "/api/auth/reset-password",
+  rateLimit({
+    windowMs: 15 * 60_000,
+    limit: 10,
+    standardHeaders: true,
+    legacyHeaders: false,
+  }),
+  validate(
+    z.object({
+      token: z.string().trim().min(20).max(256),
+      newPassword: z.string().min(8).max(128),
+    }),
+  ),
+  asyncRoute(async (req, res) => {
+    const { token, newPassword } = req.body;
+    const result = await withTransaction(async (client) => {
+      const { rows } = await client.query(
+        `SELECT t.id AS "tokenId", t.user_id AS "userId",
+                u.organization_id AS "organizationId", u.password_hash AS "passwordHash"
+           FROM password_reset_tokens t
+           JOIN users u ON u.id = t.user_id
+          WHERE t.token_hash = $1
+            AND t.used_at IS NULL
+            AND t.expires_at > now()
+            AND u.is_active = true
+          FOR UPDATE OF t`,
+        [hashResetToken(token)],
+      );
+      const record = rows[0];
+      if (!record)
+        return {
+          error: "پیوند بازیابی رمز نامعتبر یا منقضی شده است؛ درخواست جدیدی ثبت کنید.",
+        };
+
+      if (await bcrypt.compare(newPassword, record.passwordHash))
+        return { error: "رمز عبور جدید باید با رمز فعلی متفاوت باشد." };
+
+      const historyLimit = Number(process.env.PASSWORD_HISTORY_LIMIT || 5);
+      const { rows: history } = await client.query(
+        "SELECT password_hash FROM password_history WHERE user_id = $1 ORDER BY created_at DESC LIMIT $2",
+        [record.userId, historyLimit],
+      );
+      for (const entry of history) {
+        if (await bcrypt.compare(newPassword, entry.password_hash))
+          return {
+            error: "رمز عبور جدید نباید با رمزهای قبلی یکسان باشد.",
+          };
+      }
+
+      const passwordHash = await bcrypt.hash(newPassword, BCRYPT_ROUNDS);
+      await client.query(
+        `UPDATE users
+            SET password_hash = $1,
+                must_change_password = false,
+                password_last_changed = now(),
+                failed_login_attempts = 0,
+                account_locked_until = NULL,
+                token_version = token_version + 1,
+                updated_at = now()
+          WHERE id = $2`,
+        [passwordHash, record.userId],
+      );
+      await client.query(
+        `INSERT INTO password_history (user_id, password_hash, created_at)
+         VALUES ($1, $2, now())`,
+        [record.userId, passwordHash],
+      );
+      await client.query(
+        `UPDATE password_reset_tokens SET used_at = now()
+          WHERE user_id = $1 AND used_at IS NULL`,
+        [record.userId],
+      );
+      await audit(
+        client,
+        record.organizationId,
+        null,
+        "password.reset",
+        "user",
+        record.userId,
+        { method: "self_service" },
+      );
+      return { ok: true };
+    });
+
+    if (result.error) return res.status(400).json({ message: result.error });
+    res.json({
+      ok: true,
+      message:
+        "رمز عبور تغییر کرد. اکنون با رمز جدید وارد شوید؛ نشست‌های قبلی بسته شدند.",
+    });
   }),
 );
 
@@ -1435,7 +1720,7 @@ app.post(
         message: "درخواستی با این نام کاربری یا کد ملی در انتظار بررسی وجود دارد.",
       });
 
-    const passwordHash = await bcrypt.hash(password, 10);
+    const passwordHash = await bcrypt.hash(password, BCRYPT_ROUNDS);
     const { rows } = await pool.query(
       `INSERT INTO registration_requests
          (organization_id, full_name, username, password_hash, national_id, major, term, phone)
@@ -1479,6 +1764,70 @@ app.use("/api", (req, res, next) => {
   return next();
 });
 app.use("/api", enforceFacultyAdminLevel);
+
+/* ------------------------------- account unlock ---------------------------- */
+
+app.post(
+  "/api/users/:userId/unlock",
+  authorize("admin"),
+  asyncRoute(async (req, res) => {
+    const parsed = id.safeParse(req.params.userId);
+    if (!parsed.success)
+      return res.status(400).json({ message: "شناسهٔ کاربر معتبر نیست." });
+    const unlocked = await withTransaction(async (client) => {
+      const { rows } = await client.query(
+        `UPDATE users
+            SET failed_login_attempts = 0,
+                account_locked_until = NULL,
+                last_failed_login = NULL,
+                updated_at = now()
+          WHERE id = $1 AND organization_id = $2 AND platform_level IS NULL
+          RETURNING id, email, display_name AS "fullName", role`,
+        [parsed.data, req.user.org],
+      );
+      if (!rows[0]) return null;
+      await audit(client, req.user.org, req.user.sub, "unlock", "user", rows[0].id, {
+        email: rows[0].email,
+      });
+      return rows[0];
+    });
+    if (!unlocked)
+      return res.status(404).json({ message: "کاربری برای بازکردن قفل یافت نشد." });
+    res.json({ ok: true, user: unlocked });
+  }),
+);
+
+app.post(
+  "/api/platform/users/:userId/unlock",
+  requirePlatform("operator"),
+  asyncRoute(async (req, res) => {
+    const parsed = id.safeParse(req.params.userId);
+    if (!parsed.success)
+      return res.status(400).json({ message: "شناسهٔ کاربر معتبر نیست." });
+    const platform = await platformOrganization();
+    const unlocked = await withTransaction(async (client) => {
+      const { rows } = await client.query(
+        `UPDATE users
+            SET failed_login_attempts = 0,
+                account_locked_until = NULL,
+                last_failed_login = NULL,
+                updated_at = now()
+          WHERE id = $1
+          RETURNING id, email, display_name AS "fullName", role, organization_id AS "organizationId"`,
+        [parsed.data],
+      );
+      if (!rows[0]) return null;
+      await audit(client, platform?.id || rows[0].organizationId, req.user.sub, "unlock", "user", rows[0].id, {
+        email: rows[0].email,
+        scope: "platform",
+      });
+      return rows[0];
+    });
+    if (!unlocked)
+      return res.status(404).json({ message: "کاربری برای بازکردن قفل یافت نشد." });
+    res.json({ ok: true, user: unlocked });
+  }),
+);
 
 // Leaving an impersonation session is the only endpoint that a faculty-scoped
 // platform token may call outside the faculty data set.
@@ -1733,6 +2082,11 @@ app.post(
       );
       await client.query("COMMIT");
       const faculty = await loadFacultyForPlatform(pool, facultyId);
+      const delivery = await deliverTemporaryPassword(
+        account.email,
+        account.temporaryPassword,
+        account.fullName,
+      );
       res.status(201).json({
         faculty,
         admin: {
@@ -1743,7 +2097,8 @@ app.post(
         },
         account: {
           username: account.email,
-          temporaryPassword: account.temporaryPassword,
+          emailSent: delivery.delivered === true,
+          ...temporaryPasswordResponse(account.temporaryPassword),
         },
       });
     } catch (error) {
@@ -1952,6 +2307,11 @@ app.post(
       } catch (notifyError) {
         console.warn("[platform] admin notification failed:", notifyError.message);
       }
+      const delivery = await deliverTemporaryPassword(
+        account.email,
+        account.temporaryPassword,
+        account.fullName,
+      );
       res.status(201).json({
         admin: {
           id: account.id,
@@ -1962,7 +2322,8 @@ app.post(
         },
         account: {
           username: account.email,
-          temporaryPassword: account.temporaryPassword,
+          emailSent: delivery.delivered === true,
+          ...temporaryPasswordResponse(account.temporaryPassword),
         },
       });
     } catch (error) {
@@ -2057,7 +2418,7 @@ app.post(
   requirePlatform("operator"),
   asyncRoute(async (req, res) => {
     const { rows } = await pool.query(
-      `SELECT id, email FROM users
+      `SELECT id, email, display_name AS "fullName" FROM users
         WHERE id = $1 AND organization_id = $2 AND role = 'admin'`,
       [req.params.userId, req.params.id],
     );
@@ -2065,7 +2426,7 @@ app.post(
     if (!target)
       return res.status(404).json({ message: "مدیر دانشکده یافت نشد." });
     const temporaryPassword = generateTemporaryPassword();
-    const passwordHash = await bcrypt.hash(temporaryPassword, 10);
+    const passwordHash = await bcrypt.hash(temporaryPassword, BCRYPT_ROUNDS);
     await pool.query(
       `UPDATE users
           SET password_hash = $2, must_change_password = true,
@@ -2089,7 +2450,16 @@ app.post(
       target.id,
       { scope: "platform" },
     );
-    res.json({ username: target.email, temporaryPassword });
+    const delivery = await deliverTemporaryPassword(
+      target.email,
+      temporaryPassword,
+      target.fullName,
+    );
+    res.json({
+      username: target.email,
+      emailSent: delivery.delivered === true,
+      ...temporaryPasswordResponse(temporaryPassword),
+    });
   }),
 );
 
@@ -2282,6 +2652,11 @@ app.post(
         { email, level, scope: "platform" },
       );
       await client.query("COMMIT");
+      const delivery = await deliverTemporaryPassword(
+        account.email,
+        account.temporaryPassword,
+        account.fullName,
+      );
       res.status(201).json({
         admin: {
           id: account.id,
@@ -2292,7 +2667,8 @@ app.post(
         },
         account: {
           username: account.email,
-          temporaryPassword: account.temporaryPassword,
+          emailSent: delivery.delivered === true,
+          ...temporaryPasswordResponse(account.temporaryPassword),
         },
       });
     } catch (error) {
@@ -2377,7 +2753,7 @@ app.post(
   asyncRoute(async (req, res) => {
     const platform = await platformOrganization();
     const { rows } = await pool.query(
-      `SELECT id, email FROM users
+      `SELECT id, email, display_name AS "fullName" FROM users
         WHERE id = $1 AND organization_id = $2 AND platform_level IS NOT NULL`,
       [req.params.userId, platform?.id],
     );
@@ -2385,7 +2761,7 @@ app.post(
     if (!target)
       return res.status(404).json({ message: "مدیر سامانه یافت نشد." });
     const temporaryPassword = generateTemporaryPassword();
-    const passwordHash = await bcrypt.hash(temporaryPassword, 10);
+    const passwordHash = await bcrypt.hash(temporaryPassword, BCRYPT_ROUNDS);
     await pool.query(
       `UPDATE users
           SET password_hash = $2, must_change_password = true,
@@ -2409,7 +2785,16 @@ app.post(
       target.id,
       { scope: "platform" },
     );
-    res.json({ username: target.email, temporaryPassword });
+    const delivery = await deliverTemporaryPassword(
+      target.email,
+      temporaryPassword,
+      target.fullName,
+    );
+    res.json({
+      username: target.email,
+      emailSent: delivery.delivered === true,
+      ...temporaryPasswordResponse(temporaryPassword),
+    });
   }),
 );
 
@@ -2730,7 +3115,7 @@ app.post(
       }
     }
 
-    const passwordHash = await bcrypt.hash(newPassword, 10);
+    const passwordHash = await bcrypt.hash(newPassword, BCRYPT_ROUNDS);
     const updated = await pool.query(
       `UPDATE users
           SET password_hash = $1,
@@ -2895,7 +3280,7 @@ app.post(
     }
 
     const temporaryPassword = generateTemporaryPassword();
-    const passwordHash = await bcrypt.hash(temporaryPassword, 10);
+    const passwordHash = await bcrypt.hash(temporaryPassword, BCRYPT_ROUNDS);
     const client = await pool.connect();
     try {
       await client.query("BEGIN");
@@ -2932,13 +3317,19 @@ app.post(
       } catch (notifyError) {
         console.warn("[teachers] welcome notification failed:", notifyError.message);
       }
+      const delivery = await deliverTemporaryPassword(
+        email,
+        temporaryPassword,
+        fullName,
+      );
       res.status(201).json({
         teacher: {
           ...created.rows[0],
           isHome: true,
           otherFaculties: 0,
         },
-        temporaryPassword,
+        emailSent: delivery.delivered === true,
+        ...temporaryPasswordResponse(temporaryPassword),
       });
     } catch (error) {
       await client.query("ROLLBACK");
@@ -3041,7 +3432,7 @@ app.post(
       });
 
     const temporaryPassword = generateTemporaryPassword();
-    const passwordHash = await bcrypt.hash(temporaryPassword, 10);
+    const passwordHash = await bcrypt.hash(temporaryPassword, BCRYPT_ROUNDS);
     const passwordResult = await pool.query(
       `INSERT INTO password_history (user_id, password_hash, created_at)
         VALUES ($1, $2, now())`,
@@ -3055,13 +3446,13 @@ app.post(
       email: teacher.email,
       fullName: teacher.fullName,
     });
-    const emailResult = await sendPasswordEmail(
+    const delivery = await deliverTemporaryPassword(
       teacher.email,
       temporaryPassword,
       teacher.fullName,
     );
-    if (!emailResult.ok) {
-      console.warn("[reset-password] email failed, password reset applied:", emailResult.error);
+    if (!delivery.ok) {
+      console.warn("[reset-password] email failed, password reset applied:", delivery.error);
     }
     res.status(200).json({
       teacher: {
@@ -3070,7 +3461,8 @@ app.post(
         email: teacher.email,
         isActive: true,
       },
-      temporaryPassword,
+      emailSent: delivery.delivered === true,
+      ...temporaryPasswordResponse(temporaryPassword),
       message: "رمز موقت برای این استاد ارسال شد و باید تغییر رمز شود.",
     });
   }),
@@ -3286,14 +3678,11 @@ app.post(
       } catch (notifyError) {
         console.warn("[staff] notification failed:", notifyError.message);
       }
-      sendPasswordEmail(account.email, account.temporaryPassword, fullName)
-        .then((sent) => {
-          if (!sent?.ok)
-            console.warn("[staff] password email failed:", sent?.error);
-        })
-        .catch((mailError) =>
-          console.warn("[staff] password email failed:", mailError.message),
-        );
+      const delivery = await deliverTemporaryPassword(
+        account.email,
+        account.temporaryPassword,
+        fullName,
+      );
       res.status(201).json({
         staff: {
           id: account.id,
@@ -3305,7 +3694,8 @@ app.post(
         },
         account: {
           username: account.email,
-          temporaryPassword: account.temporaryPassword,
+          emailSent: delivery.delivered === true,
+          ...temporaryPasswordResponse(account.temporaryPassword),
         },
       });
     } catch (error) {
@@ -3396,7 +3786,7 @@ app.post(
     const target = await loadStaffMember(req.user.org, parsed.data);
     if (!target) return res.status(404).json({ message: "کارمند یافت نشد." });
     const temporaryPassword = generateTemporaryPassword();
-    const passwordHash = await bcrypt.hash(temporaryPassword, 10);
+    const passwordHash = await bcrypt.hash(temporaryPassword, BCRYPT_ROUNDS);
     await pool.query(
       `UPDATE users
           SET password_hash = $2, must_change_password = true,
@@ -3420,15 +3810,16 @@ app.post(
       target.id,
       {},
     );
-    sendPasswordEmail(target.email, temporaryPassword, target.fullName)
-      .then((sent) => {
-        if (!sent?.ok)
-          console.warn("[staff] password email failed:", sent?.error);
-      })
-      .catch((mailError) =>
-        console.warn("[staff] password email failed:", mailError.message),
-      );
-    res.json({ username: target.email, temporaryPassword });
+    const delivery = await deliverTemporaryPassword(
+      target.email,
+      temporaryPassword,
+      target.fullName,
+    );
+    res.json({
+      username: target.email,
+      emailSent: delivery.delivered === true,
+      ...temporaryPasswordResponse(temporaryPassword),
+    });
   }),
 );
 
@@ -3695,13 +4086,19 @@ app.post(
       console.warn("[students] welcome notification failed:", notifyError.message);
     }
 
+    const delivery = await deliverTemporaryPassword(
+      account.email,
+      account.temporaryPassword,
+      account.fullName,
+    );
     res.status(201).json({
       ...student,
       hasAccount: true,
       account: {
         username: account.username,
         email: account.email,
-        temporaryPassword: account.temporaryPassword,
+        emailSent: delivery.delivered === true,
+        ...temporaryPasswordResponse(account.temporaryPassword),
         mustChangePassword: true,
       },
     });
@@ -3832,13 +4229,19 @@ app.post(
       console.warn("[students] welcome notification failed:", notifyError.message);
     }
 
+    const delivery = await deliverTemporaryPassword(
+      account.email,
+      account.temporaryPassword,
+      account.fullName,
+    );
     res.status(201).json({
       account: {
         studentId: account.studentId,
         fullName: account.fullName,
         username: account.username,
         email: account.email,
-        temporaryPassword: account.temporaryPassword,
+        emailSent: delivery.delivered === true,
+        ...temporaryPasswordResponse(account.temporaryPassword),
         mustChangePassword: true,
       },
     });
@@ -3935,14 +4338,24 @@ app.post(
       console.warn("[students] bulk welcome notification failed:", notifyError.message);
     }
 
+    const deliveries = await Promise.all(
+      accounts.map((account) =>
+        deliverTemporaryPassword(
+          account.email,
+          account.temporaryPassword,
+          account.fullName,
+        ),
+      ),
+    );
     res.status(201).json({
       created: accounts.length,
-      accounts: accounts.map((account) => ({
+      accounts: accounts.map((account, index) => ({
         studentId: account.studentId,
         fullName: account.fullName,
         username: account.username,
         email: account.email,
-        temporaryPassword: account.temporaryPassword,
+        emailSent: deliveries[index]?.delivered === true,
+        ...temporaryPasswordResponse(account.temporaryPassword),
       })),
     });
   }),
@@ -3982,7 +4395,7 @@ app.post(
     }
 
     const temporaryPassword = generateTemporaryPassword();
-    const passwordHash = await bcrypt.hash(temporaryPassword, 10);
+    const passwordHash = await bcrypt.hash(temporaryPassword, BCRYPT_ROUNDS);
     await withTransaction(async (client) => {
       await client.query(
         `INSERT INTO password_history (user_id, password_hash, created_at)
@@ -4009,13 +4422,19 @@ app.post(
       );
     });
 
+    const delivery = await deliverTemporaryPassword(
+      student.email,
+      temporaryPassword,
+      student.full_name,
+    );
     res.json({
       student: {
         id: student.id,
         fullName: student.full_name,
         username: student.student_number,
       },
-      temporaryPassword,
+      emailSent: delivery.delivered === true,
+      ...temporaryPasswordResponse(temporaryPassword),
     });
   }),
 );
@@ -6743,6 +7162,7 @@ app.post(
           result.accounts.push({
             fullName: account.fullName,
             username: account.username,
+            email: account.email,
             temporaryPassword: account.temporaryPassword,
           });
           result.created += 1;
@@ -6757,6 +7177,22 @@ app.post(
         }
       }
     });
+    const deliveries = await Promise.all(
+      result.accounts.map((account) =>
+        deliverTemporaryPassword(
+          account.email,
+          account.temporaryPassword,
+          account.fullName,
+        ),
+      ),
+    );
+    result.accounts = result.accounts.map((account, index) => ({
+      fullName: account.fullName,
+      username: account.username,
+      email: account.email,
+      emailSent: deliveries[index]?.delivered === true,
+      ...temporaryPasswordResponse(account.temporaryPassword),
+    }));
     res.status(201).json(result);
   }),
 );

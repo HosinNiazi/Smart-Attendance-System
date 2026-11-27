@@ -128,6 +128,7 @@ export function Staff({ onNotify }) {
         title: "حساب کارمند ساخته شد",
         username: result?.account?.username || email,
         password: result?.account?.temporaryPassword || "",
+        emailSent: result?.account?.emailSent === true,
       });
       await load();
     } catch (err) {
@@ -182,6 +183,7 @@ export function Staff({ onNotify }) {
         title: "رمز موقت جدید",
         username: result?.username || member.email,
         password: result?.temporaryPassword || "",
+        emailSent: result?.emailSent === true,
       });
     } catch (err) {
       onNotify?.(err.message || "بازنشانی رمز انجام نشد.");
@@ -192,7 +194,9 @@ export function Staff({ onNotify }) {
 
   async function copyCredentials() {
     if (!credentials) return;
-    const text = `نام کاربری: ${credentials.username}\nرمز موقت: ${credentials.password}`;
+    const text = credentials.password
+      ? `نام کاربری: ${credentials.username}\nرمز موقت: ${credentials.password}`
+      : `نام کاربری: ${credentials.username}`;
     try {
       await navigator.clipboard.writeText(text);
       setCopied(true);
@@ -486,12 +490,21 @@ export function Staff({ onNotify }) {
               </button>
             </div>
             <p className="staff-form-hint">
-              این رمز فقط یک‌بار نمایش داده می‌شود و در اولین ورود باید تغییر
-              کند.
+              {credentials.password
+                ? "این رمز فقط یک‌بار نمایش داده می‌شود و در اولین ورود باید تغییر کند."
+                : "رمز موقت در پاسخ API نمایش داده نمی‌شود و فقط به ایمیل کاربر ارسال شده است."}
             </p>
             <div className="staff-credential-box" dir="ltr">
               <span>{credentials.username}</span>
-              <strong>{credentials.password}</strong>
+              {credentials.password ? (
+                <strong>{credentials.password}</strong>
+              ) : (
+                <strong>
+                  {credentials.emailSent
+                    ? "رمز موقت به ایمیل کاربر ارسال شد."
+                    : "ارسال ایمیل انجام نشد؛ با مدیر سامانه تماس بگیرید."}
+                </strong>
+              )}
             </div>
             <div className="modal-actions">
               <button

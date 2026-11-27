@@ -329,6 +329,21 @@ export function createRegistration(payload) {
 export function fetchRegistrationCaptcha() {
   return api('/registrations/captcha');
 }
+export function requestPasswordReset(identifier, facultyId) {
+  return api('/auth/forgot-password', {
+    method: 'POST',
+    body: JSON.stringify({ identifier, ...(facultyId ? { facultyId } : {}) }),
+  });
+}
+export function confirmPasswordReset(token, newPassword) {
+  return api('/auth/reset-password', {
+    method: 'POST',
+    body: JSON.stringify({ token, newPassword }),
+  });
+}
+export function unlockUser(userId) {
+  return api(`/users/${encodeURIComponent(userId)}/unlock`, { method: 'POST' });
+}
 export function fetchRegistrations() {
   return api('/registrations');
 }

@@ -58,6 +58,8 @@ import {
   getApiToken,
   changePassword,
   clearApiToken,
+  requestPasswordReset,
+  confirmPasswordReset,
   exitImpersonation,
   getImpersonation,
   clearImpersonation,
@@ -851,6 +853,22 @@ export default function App() {
   const [loginError, setLoginError] = useState("");
   const [loginPending, setLoginPending] = useState(false);
   const [forcedPasswordChange, setForcedPasswordChange] = useState(null);
+  const [forgotOpen, setForgotOpen] = useState(false);
+  const [forgotIdentifier, setForgotIdentifier] = useState("");
+  const [forgotPending, setForgotPending] = useState(false);
+  const [forgotMessage, setForgotMessage] = useState("");
+  const [resetToken, setResetToken] = useState(() => {
+    try {
+      return new URLSearchParams(window.location.search).get("resetToken") || "";
+    } catch {
+      return "";
+    }
+  });
+  const [resetNewPassword, setResetNewPassword] = useState("");
+  const [resetConfirmPassword, setResetConfirmPassword] = useState("");
+  const [resetPending, setResetPending] = useState(false);
+  const [resetError, setResetError] = useState("");
+  const [resetNotice, setResetNotice] = useState("");
   const [faculties, setFaculties] = useState([]);
   const [authUser, setAuthUser] = useState(() => getApiUser());
   const [facultyId, setFacultyId] = useState(
@@ -1908,6 +1926,7 @@ export default function App() {
             fullName: created.fullName || fullName,
             username: created.account?.username || studentNumberValue,
             temporaryPassword: created.account?.temporaryPassword || "",
+            emailSent: created.account?.emailSent === true,
             note: "نام کاربری همان شماره دانشجویی است.",
           },
         ],
@@ -1930,7 +1949,8 @@ export default function App() {
           {
             fullName: result.account.fullName,
             username: result.account.username,
-            temporaryPassword: result.account.temporaryPassword,
+            temporaryPassword: result.account.temporaryPassword || "",
+            emailSent: result.account.emailSent === true,
             note: "نام کاربری همان شماره دانشجویی است.",
           },
         ],
@@ -1952,7 +1972,8 @@ export default function App() {
         rows: result.accounts.map((account) => ({
           fullName: account.fullName,
           username: account.username,
-          temporaryPassword: account.temporaryPassword,
+          temporaryPassword: account.temporaryPassword || "",
+          emailSent: account.emailSent === true,
         })),
       });
       await loadFromServer({ silent: true });
@@ -1973,7 +1994,8 @@ export default function App() {
           {
             fullName: result.student.fullName,
             username: result.student.username,
-            temporaryPassword: result.temporaryPassword,
+            temporaryPassword: result.temporaryPassword || "",
+            emailSent: result.emailSent === true,
             note: "رمز قبلی دیگر کار نمی‌کند و دانشجو باید در اولین ورود رمز را تغییر دهد.",
           },
         ],
@@ -3032,6 +3054,67 @@ export default function App() {
     refreshNotifications().catch(() => {});
   }
 
+  async function submitForgotPassword(event) {
+    event.preventDefault();
+    const identifier = (forgotIdentifier || loginName).trim();
+    setForgotMessage("");
+    if (identifier.length < 3) {
+      setForgotMessage("نام کاربری، شماره دانشجویی یا ایمیل را وارد کنید.");
+      return;
+    }
+    setForgotPending(true);
+    try {
+      const result = await requestPasswordReset(
+        identifier,
+        facultyId || undefined,
+      );
+      setForgotMessage(
+        result?.message ||
+          "اگر حسابی با این مشخصات وجود داشته باشد، پیوند بازیابی به ایمیل ثبت‌شده ارسال می‌شود.",
+      );
+    } catch (error) {
+      setForgotMessage(error.message || "ارسال درخواست بازیابی انجام نشد.");
+    } finally {
+      setForgotPending(false);
+    }
+  }
+
+  async function submitResetPassword(event) {
+    event.preventDefault();
+    setResetError("");
+    setResetNotice("");
+    if (resetNewPassword.length < 8) {
+      setResetError("رمز عبور جدید باید حداقل ۸ کاراکتر باشد.");
+      return;
+    }
+    if (resetNewPassword !== resetConfirmPassword) {
+      setResetError("تکرار رمز عبور با رمز جدید یکسان نیست.");
+      return;
+    }
+    setResetPending(true);
+    try {
+      const result = await confirmPasswordReset(resetToken, resetNewPassword);
+      setResetNotice(
+        result?.message ||
+          "رمز عبور تغییر کرد. اکنون با رمز جدید وارد شوید.",
+      );
+      setResetToken("");
+      setResetNewPassword("");
+      setResetConfirmPassword("");
+      try {
+        const url = new URL(window.location.href);
+        url.searchParams.delete("resetToken");
+        window.history.replaceState({}, "", url.pathname + url.search + url.hash);
+      } catch {
+        /* ignore history failures */
+      }
+    } catch (error) {
+      setResetError(error.message || "تغییر رمز عبور انجام نشد.");
+    } finally {
+      setResetPending(false);
+    }
+  }
+
   async function loadRegistrationCaptcha() {
     setRegCaptchaLoading(true);
     try {
@@ -3209,6 +3292,163 @@ export default function App() {
   if (login)
     return (
       <div className="login-screen">
+        {resetToken && (
+          <div className="modal-backdrop-custom" role="presentation">
+            <section
+              className="custom-modal"
+              role="dialog"
+              aria-modal="true"
+              aria-labelledby="reset-password-title"
+              style={{ maxWidth: 460 }}
+            >
+              <div className="modal-head">
+                <div>
+                  <div className="eyebrow">بازیابی رمز عبور</div>
+                  <h3 id="reset-password-title">تعیین رمز جدید</h3>
+                </div>
+              </div>
+              {resetNotice ? (
+                <p className="login-success" role="status">
+                  {resetNotice}
+                </p>
+              ) : (
+                <form onSubmit={submitResetPassword}>
+                  <label className="form-label" htmlFor="reset-new-password">
+                    رمز عبور جدید
+                    <input
+                      id="reset-new-password"
+                      className="form-control"
+                      type="password"
+                      value={resetNewPassword}
+                      autoComplete="new-password"
+                      onChange={(e) => setResetNewPassword(e.target.value)}
+                      minLength={8}
+                      required
+                    />
+                  </label>
+                  <label className="form-label mt-3" htmlFor="reset-confirm-password">
+                    تکرار رمز عبور جدید
+                    <input
+                      id="reset-confirm-password"
+                      className="form-control"
+                      type="password"
+                      value={resetConfirmPassword}
+                      autoComplete="new-password"
+                      onChange={(e) => setResetConfirmPassword(e.target.value)}
+                      minLength={8}
+                      required
+                    />
+                  </label>
+                  {resetError && (
+                    <div className="exam-form-error" role="alert">
+                      <Icon name="bi-exclamation-triangle-fill" />
+                      <span>{resetError}</span>
+                    </div>
+                  )}
+                  <div className="modal-actions" style={{ marginTop: 12 }}>
+                    <button
+                      className="btn btn-primary"
+                      type="submit"
+                      disabled={resetPending}
+                    >
+                      {resetPending ? "در حال ذخیره…" : "تغییر رمز عبور"}
+                    </button>
+                  </div>
+                </form>
+              )}
+              <button
+                type="button"
+                className="btn btn-light w-100"
+                style={{ marginTop: 10 }}
+                onClick={() => {
+                  setResetToken("");
+                  setResetError("");
+                  setResetNotice("");
+                  setResetNewPassword("");
+                  setResetConfirmPassword("");
+                  try {
+                    const url = new URL(window.location.href);
+                    url.searchParams.delete("resetToken");
+                    window.history.replaceState(
+                      {},
+                      "",
+                      url.pathname + url.search + url.hash,
+                    );
+                  } catch {
+                    /* ignore history failures */
+                  }
+                }}
+              >
+                بازگشت به صفحهٔ ورود
+              </button>
+            </section>
+          </div>
+        )}
+        {forgotOpen && (
+          <div
+            className="modal-backdrop-custom"
+            role="presentation"
+            onMouseDown={(e) => {
+              if (e.target === e.currentTarget && !forgotPending)
+                setForgotOpen(false);
+            }}
+          >
+            <section
+              className="custom-modal"
+              role="dialog"
+              aria-modal="true"
+              aria-labelledby="forgot-password-title"
+              style={{ maxWidth: 460 }}
+            >
+              <div className="modal-head">
+                <div>
+                  <div className="eyebrow">بازیابی رمز عبور</div>
+                  <h3 id="forgot-password-title">ارسال پیوند بازیابی</h3>
+                </div>
+                <button
+                  type="button"
+                  className="icon-button"
+                  disabled={forgotPending}
+                  onClick={() => setForgotOpen(false)}
+                >
+                  <Icon name="bi-x-lg" />
+                </button>
+              </div>
+              <form onSubmit={submitForgotPassword}>
+                <label className="form-label" htmlFor="forgot-identifier">
+                  ایمیل یا شماره دانشجویی
+                  <input
+                    id="forgot-identifier"
+                    className="form-control"
+                    type="text"
+                    value={forgotIdentifier}
+                    autoComplete="username"
+                    onChange={(e) => {
+                      setForgotIdentifier(e.target.value);
+                      setForgotMessage("");
+                    }}
+                    placeholder={loginName || "ایمیل یا شماره دانشجویی"}
+                    required
+                  />
+                </label>
+                {forgotMessage && (
+                  <p className="login-success" role="status">
+                    {forgotMessage}
+                  </p>
+                )}
+                <div className="modal-actions" style={{ marginTop: 12 }}>
+                  <button
+                    className="btn btn-primary"
+                    type="submit"
+                    disabled={forgotPending}
+                  >
+                    {forgotPending ? "در حال ارسال…" : "ارسال پیوند بازیابی"}
+                  </button>
+                </div>
+              </form>
+            </section>
+          </div>
+        )}
         {forcedPasswordChange && (
           <ForcedPasswordChange
             user={forcedPasswordChange.user}
@@ -3398,17 +3638,30 @@ export default function App() {
                 {loginError}
               </p>
             )}
-            <div className="login-hint">
-              <Icon name="bi-info-circle" /> حساب‌های نمایشی: admin@hozorban.local /
-              Admin@123456 &nbsp;·&nbsp; teacher@hozorban.local / Teacher@123456
-              &nbsp;·&nbsp; student@hozorban.local / Student@123456
-            </div>
+            {import.meta.env.DEV && (
+              <div className="login-hint">
+                <Icon name="bi-info-circle" /> حساب‌های نمایشی: admin@hozorban.local /
+                Admin@123456 &nbsp;·&nbsp; teacher@hozorban.local / Teacher@123456
+                &nbsp;·&nbsp; student@hozorban.local / Student@123456
+              </div>
+            )}
             <button
               className="btn btn-primary w-100 login-submit"
               type="submit"
               disabled={loginPending}
             >
               ورود به سامانه <Icon name="bi-arrow-left-short" />
+            </button>
+            <button
+              className="login-home-link"
+              type="button"
+              onClick={() => {
+                setForgotIdentifier(loginName || "");
+                setForgotMessage("");
+                setForgotOpen(true);
+              }}
+            >
+              رمز عبور را فراموش کرده‌ام
             </button>
             <button
               className="btn btn-light-outline w-100"
@@ -4556,9 +4809,10 @@ export default function App() {
               </button>
             </div>
             <p className="credentials-warning">
-              <Icon name="bi-shield-exclamation" /> این رمزها فقط همین یک‌بار
-              نمایش داده می‌شوند؛ در پایگاه داده تنها نسخهٔ هش‌شده ذخیره شده
-              است. همین حالا کپی یا چاپ کنید.
+              <Icon name="bi-shield-exclamation" />{" "}
+              {credentials.rows.some((row) => row.temporaryPassword)
+                ? "این رمزها فقط همین یک‌بار نمایش داده می‌شوند؛ در پایگاه داده تنها نسخهٔ هش‌شده ذخیره شده است. همین حالا کپی یا چاپ کنید."
+                : "رمز موقت در پاسخ API نمایش داده نمی‌شود و فقط به ایمیل کاربر ارسال شده است."}
             </p>
             <div className="credentials-list">
               {credentials.rows.map((row, index) => (
@@ -4574,26 +4828,39 @@ export default function App() {
                       <span className="credentials-label">نام کاربری</span>
                       <code>{row.username}</code>
                     </span>
-                    <span>
-                      <span className="credentials-label">رمز موقت</span>
-                      <code>{row.temporaryPassword}</code>
-                    </span>
-                    <button
-                      type="button"
-                      className="btn btn-light-outline"
-                      onClick={() => {
-                        const text = `نام کاربری: ${row.username}\nرمز موقت: ${row.temporaryPassword}`;
-                        if (!navigator.clipboard?.writeText) {
-                          return notify("کپی در این مرورگر پشتیبانی نمی‌شود.");
-                        }
-                        navigator.clipboard
-                          .writeText(text)
-                          .then(() => notify("در حافظه کپی شد."))
-                          .catch(() => notify("کپی انجام نشد."));
-                      }}
-                    >
-                      <Icon name="bi-clipboard" /> کپی
-                    </button>
+                    {row.temporaryPassword ? (
+                      <span>
+                        <span className="credentials-label">رمز موقت</span>
+                        <code>{row.temporaryPassword}</code>
+                      </span>
+                    ) : (
+                      <span>
+                        <span className="credentials-label">رمز موقت</span>
+                        <small>
+                          {row.emailSent
+                            ? "به ایمیل کاربر ارسال شد."
+                            : "ارسال ایمیل انجام نشد؛ با مدیر سامانه تماس بگیرید."}
+                        </small>
+                      </span>
+                    )}
+                    {row.temporaryPassword && (
+                      <button
+                        type="button"
+                        className="btn btn-light-outline"
+                        onClick={() => {
+                          const text = `نام کاربری: ${row.username}\nرمز موقت: ${row.temporaryPassword}`;
+                          if (!navigator.clipboard?.writeText) {
+                            return notify("کپی در این مرورگر پشتیبانی نمی‌شود.");
+                          }
+                          navigator.clipboard
+                            .writeText(text)
+                            .then(() => notify("در حافظه کپی شد."))
+                            .catch(() => notify("کپی انجام نشد."));
+                        }}
+                      >
+                        <Icon name="bi-clipboard" /> کپی
+                      </button>
+                    )}
                   </div>
                 </div>
               ))}
