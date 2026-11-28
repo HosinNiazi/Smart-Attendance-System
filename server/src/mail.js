@@ -7,6 +7,7 @@
 
 import nodemailer from "nodemailer";
 
+const isProduction = process.env.NODE_ENV === "production";
 const smtpHost = process.env.SMTP_HOST;
 const smtpPort = Number(process.env.SMTP_PORT || 587);
 const smtpUser = process.env.SMTP_USER;
@@ -36,6 +37,14 @@ function escapeHtml(value) {
 
 async function deliver({ toEmail, subject, text, html, logLabel }) {
   if (!transporter) {
+    // In production a reset link or temporary password must never fall back to
+    // the server log; fail closed and let the caller report delivery failure.
+    if (isProduction) {
+      console.error(
+        "[mail] SMTP is not configured; refusing to log sensitive email content.",
+      );
+      return { ok: false, delivered: false, error: "SMTP is not configured" };
+    }
     console.log(`[mail] SMTP not configured; ${logLabel} for ${toEmail}`);
     return { ok: true, delivered: false };
   }

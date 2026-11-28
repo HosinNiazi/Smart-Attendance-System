@@ -156,6 +156,8 @@ TRUST_PROXY=
 # نشانی عمومی فرانت‌اند برای ساخت پیوند بازیابی رمز (بدون / انتهایی)
 APP_BASE_URL=http://localhost:5173
 PASSWORD_RESET_TTL_MINUTES=30
+# عمر توکن ورود؛ مقدار کوتاه‌تر امنیت بیشتر و ورود مجدد زودتر
+AUTH_TOKEN_TTL=8h
 
 # در تولید الزامی است: رمزهای موقت و پیوند بازیابی فقط با ایمیل تحویل می‌شوند.
 # در توسعه بدون SMTP، محتوای ایمیل در لاگ سرور چاپ می‌شود.
@@ -170,7 +172,7 @@ PASSWORD_RESET_TTL_MINUTES=30
 #### ۴) مایگریشن و دادهٔ نمونه
 
 ```bash
-npm run api:migrate          # ساخت/به‌روزرسانی جداول (۱۷ مایگریشن)
+npm run api:migrate          # ساخت/به‌روزرسانی جداول (۲۳ مایگریشن)
 npm --prefix server run seed # دادهٔ نمونه: مدیر، دانشجو، درس‌ها
 ```
 
@@ -255,7 +257,7 @@ docker compose up -d --build
 
 ### مایگریشن‌های دیتابیس
 
-`001_initial` (سازمان‌ها، کاربران، دانشجویان، درس‌ها، جلسات، حضور) → `002_biometrics_enhancements` → `003_consolidate_organizations` → `004_registration_requests` → `005_fingerprint` (WebAuthn) → `006_support_tickets` → `007_leave_objections_notifications` → `008_phase2` (مرخصی گروهی، پنل زنده، ایندکس‌های تحلیل روند) → `009_faculties` → `010_teacher_management` → `011_teacher_password_change` → `012_course_ownership` → `013_password_recovery` (تاریخچهٔ ورود، جلوگیری از تکرار رمز) → `014_add_user_security_columns` (قفل حساب و تلاش‌های ناموفق) → `015_exams` → `016_exam_resilience` → `017_platform_admin` → `018_face_enrollment` → `019_face_phase2` → `020_drop_camera_health` → `021_token_version` (ابطال نشست‌ها) → `022_password_reset_tokens` (بازیابی رمز با توکن یک‌بارمصرف)
+`001_initial` (سازمان‌ها، کاربران، دانشجویان، درس‌ها، جلسات، حضور) → `002_biometrics_enhancements` → `003_consolidate_organizations` → `004_registration_requests` → `005_fingerprint` (WebAuthn) → `006_support_tickets` → `007_leave_objections_notifications` → `008_phase2` (مرخصی گروهی، پنل زنده، ایندکس‌های تحلیل روند) → `009_faculties` → `010_teacher_management` → `011_teacher_password_change` → `012_course_ownership` → `013_password_recovery` (تاریخچهٔ ورود، جلوگیری از تکرار رمز) → `014_add_user_security_columns` (قفل حساب و تلاش‌های ناموفق) → `015_exams` → `016_exam_resilience` → `017_platform_admin` → `018_face_enrollment` → `019_face_phase2` → `020_drop_camera_health` → `021_token_version` (ابطال نشست‌ها) → `022_password_reset_tokens` (بازیابی رمز با توکن یک‌بارمصرف) → `023_rate_limit_hits`
 
 ### خلاصهٔ API (بیش از ۶۰ مسیر)
 
@@ -276,7 +278,10 @@ docker compose up -d --build
 
 - گذرواژه‌ها با **bcrypt (cost=12)** هش می‌شوند؛ توکن JWT با نقش و شناسهٔ سازمان صادر می‌شود.
 - helmet با CSP سخت‌گیرانه، HSTS در تولید، `X-Frame-Options: DENY` و `Referrer-Policy: no-referrer`؛ هدرهای امنیتی فرانت‌اند در `public/_headers`.
-- محدودسازی نرخ درخواست (express-rate-limit) برای ورود، بازیابی رمز، ثبت‌نام و CAPTCHA؛ اعتبارسنجی ورودی‌ها با **zod**؛ CORS محدود به `CORS_ORIGIN`.
+- محدودسازی نرخ درخواست (express-rate-limit) برای ورود، بازیابی رمز، ثبت‌نام و CAPTCHA؛ شمارنده‌ها در جدول `rate_limit_hits` نگهداری می‌شوند، بنابراین با ریاستارت صفر نمی‌شوند و بین چند نمونهٔ API مشترک‌اند.
+- `Cache-Control: no-store` روی پاسخ‌های API تا توکن‌ها و دادهٔ شخصی در کش مرورگر/پراکسی نمانند.
+- **مدیریت نشست:** توکن قابل تنظیم با `AUTH_TOKEN_TTL`؛ دکمهٔ «خروج از همهٔ دستگاه‌های دیگر» با افزایش `token_version` همهٔ نشست‌های قبلی را باطل می‌کند.
+- در تولید اگر SMTP تنظیم نشده باشد، هیچ رمز موقت یا پیوند بازیابی در لاگ سرور چاپ نمی‌شود (fail-closed).
 - `TRUST_PROXY` به‌صورت صریح تنظیم می‌شود؛ مقدار نامناسب باعث جعل `X-Forwarded-For` و دور زدن محدودیت نرخ می‌شود.
 - **بازیابی رمز:** پیوند یک‌بارمصرف با توکن هش‌شده و انقضای محدود؛ پاسخ درخواست بازیابی برای حساب موجود و ناموجود یکسان است و مقایسهٔ رمز برای حساب ناموجود زمان‌بندی مشابهی دارد.
 - **قفل حساب:** پس از ۵ تلاش ناموفق، قفل ۵ دقیقه‌ای خودکار آزاد می‌شود؛ مدیر دانشکده یا مدیر سامانه می‌تواند قفل را دستی باز کند.
@@ -442,6 +447,8 @@ TRUST_PROXY=
 # Public frontend URL used in password-reset emails (no trailing slash).
 APP_BASE_URL=http://localhost:5173
 PASSWORD_RESET_TTL_MINUTES=30
+# Access-token lifetime; shorter is safer but forces earlier re-login.
+AUTH_TOKEN_TTL=8h
 
 # Required in production: temporary passwords and reset links are email-only.
 # Without SMTP in development the email body is logged to the server console.
@@ -505,7 +512,7 @@ Starts PostgreSQL 16 (with healthcheck) and the API on `127.0.0.1:8080`; the API
 
 ### Database migrations
 
-`001_initial` (organizations, users, students, courses, sessions, attendance) → `002_biometrics_enhancements` → `003_consolidate_organizations` → `004_registration_requests` → `005_fingerprint` (WebAuthn) → `006_support_tickets` → `007_leave_objections_notifications` → `008_phase2` (group leave, live sessions, trend-analytics indexes) → `009_faculties` → `010_teacher_management` → `011_teacher_password_change` → `012_course_ownership` → `013_password_recovery` (login history, password reuse prevention) → `014_add_user_security_columns` (account lockout, failed attempts) → `015_exams` → `016_exam_resilience` → `017_platform_admin` → `018_face_enrollment` → `019_face_phase2` → `020_drop_camera_health` → `021_token_version` (session revocation) → `022_password_reset_tokens` (single-use reset tokens)
+`001_initial` (organizations, users, students, courses, sessions, attendance) → `002_biometrics_enhancements` → `003_consolidate_organizations` → `004_registration_requests` → `005_fingerprint` (WebAuthn) → `006_support_tickets` → `007_leave_objections_notifications` → `008_phase2` (group leave, live sessions, trend-analytics indexes) → `009_faculties` → `010_teacher_management` → `011_teacher_password_change` → `012_course_ownership` → `013_password_recovery` (login history, password reuse prevention) → `014_add_user_security_columns` (account lockout, failed attempts) → `015_exams` → `016_exam_resilience` → `017_platform_admin` → `018_face_enrollment` → `019_face_phase2` → `020_drop_camera_health` → `021_token_version` (session revocation) → `022_password_reset_tokens` (single-use reset tokens) → `023_rate_limit_hits` (shared rate-limit counters)
 
 ### API overview (60+ routes)
 
@@ -526,7 +533,12 @@ Starts PostgreSQL 16 (with healthcheck) and the API on `127.0.0.1:8080`; the API
 
 - Passwords hashed with **bcrypt (cost 12)**; JWT carries role + organization id.
 - `helmet` with a strict CSP, production HSTS, `X-Frame-Options: DENY` and `Referrer-Policy: no-referrer`; frontend static headers live in `public/_headers`.
-- `express-rate-limit` on login, password recovery, registration and CAPTCHA; **zod**-validated inputs; CORS locked to `CORS_ORIGIN`.
+- `express-rate-limit` on login, password recovery, registration and CAPTCHA; counters live in the `rate_limit_hits` table so they survive restarts and are shared across API instances.
+- API responses send `Cache-Control: no-store` so tokens and personal data never sit in a browser or proxy cache.
+- **Session control:** configurable token lifetime via `AUTH_TOKEN_TTL`; the “sign out of all other devices” action bumps `token_version` and revokes every earlier session.
+- In production, if SMTP is not configured no temporary password or reset link is ever written to the server log (fail-closed).
+- **zod**-validated inputs; CORS locked to `CORS_ORIGIN`; the frontend CSP also sets `script-src-attr 'none'`.
+- CI (`.github/workflows/security.yml`) runs `npm audit` (high+), API unit tests and the production build on every push and pull request.
 - `TRUST_PROXY` must be set explicitly; a wrong value lets clients spoof `X-Forwarded-For` and bypass rate limits.
 - **Password recovery:** single-use links backed by hashed tokens with a short TTL; the request response is identical for existing and missing accounts, and missing accounts spend the same bcrypt time.
 - **Account lockout:** after 5 failed logins the account unlocks automatically after 5 minutes; a faculty or platform admin can also unlock it manually.

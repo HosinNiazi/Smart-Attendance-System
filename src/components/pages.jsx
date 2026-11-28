@@ -3911,7 +3911,7 @@ export function FingerprintAttendance({
   );
 }
 
-export function Profile({ name, role, photo, onSave, loginHistory = [], historyError = "" }) {
+export function Profile({ name, role, photo, onSave, loginHistory = [], historyError = "", onLogoutAll, logoutAllPending = false }) {
   const [draftName, setDraftName] = useState(name);
   const [draftPhoto, setDraftPhoto] = useState(photo || "");
   const [error, setError] = useState("");
@@ -4062,6 +4062,28 @@ export function Profile({ name, role, photo, onSave, loginHistory = [], historyE
             </strong>
           </div>
         </aside>
+      </div>
+
+      <div className="content-card data-card" style={{ marginTop: 16 }}>
+        <div className="panel-title-inline" style={{ marginBottom: 12 }}>
+          <div className="eyebrow">امنیت حساب</div>
+          <h4>نشست‌های فعال</h4>
+        </div>
+        <p className="page-note">
+          اگر در دستگاهی وارد شده‌اید که در اختیار شما نیست، با دکمهٔ زیر همهٔ
+          نشست‌های دیگر را ببندید. نشست فعلی همین مرورگر باز می‌ماند.
+        </p>
+        <button
+          type="button"
+          className="btn btn-light-outline"
+          onClick={onLogoutAll}
+          disabled={logoutAllPending || !onLogoutAll}
+        >
+          <Icon name="bi-box-arrow-right" />{" "}
+          {logoutAllPending
+            ? "در حال بستن نشست‌ها…"
+            : "خروج از همهٔ دستگاه‌های دیگر"}
+        </button>
       </div>
 
       <div className="content-card data-card" style={{ marginTop: 16 }}>

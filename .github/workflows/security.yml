@@ -1,0 +1,37 @@
+name: Security and build
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  audit-test-build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Install frontend dependencies
+        run: npm ci
+
+      - name: Install API dependencies
+        run: npm --prefix server ci
+
+      - name: Audit dependencies (high and above)
+        run: |
+          npm audit --audit-level=high
+          npm --prefix server audit --audit-level=high
+
+      - name: API unit tests
+        run: npm --prefix server test
+
+      - name: Frontend production build
+        run: npm run build

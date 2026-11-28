@@ -4,6 +4,7 @@ import express from "express";
 import helmet from "helmet";
 import cors from "cors";
 import rateLimit from "express-rate-limit";
+import { createPgRateLimitStore } from "./rateLimitStore.js";
 import bcrypt from "bcryptjs";
 import jwt from "jsonwebtoken";
 import { z } from "zod";
@@ -63,6 +64,22 @@ const appBaseUrl = (process.env.APP_BASE_URL || "http://localhost:5173").replace
 const PASSWORD_RESET_TTL_MINUTES = Number(
   process.env.PASSWORD_RESET_TTL_MINUTES || 30,
 );
+const AUTH_TOKEN_TTL = /^\d+[smhd]$/.test(
+  String(process.env.AUTH_TOKEN_TTL || ""),
+)
+  ? String(process.env.AUTH_TOKEN_TTL)
+  : "8h";
+
+if (isProduction) {
+  if (!process.env.SMTP_HOST)
+    console.warn(
+      "[security] SMTP_HOST is not set; temporary passwords and password-reset emails cannot be delivered.",
+    );
+  if (!process.env.APP_BASE_URL)
+    console.warn(
+      "[security] APP_BASE_URL is not set; password-reset links will point at localhost.",
+    );
+}
 
 // Express must trust the exact number of reverse proxies in front of it. With a
 // blanket `trust proxy = 1` any direct client could spoof X-Forwarded-For and
@@ -342,6 +359,7 @@ app.use(
     standardHeaders: true,
     legacyHeaders: false,
     skipSuccessfulRequests: true,
+    store: createPgRateLimitStore("login", 15 * 60_000),
   }),
 );
 // The platform login is a separate surface; give it the same brute-force guard.
@@ -353,8 +371,16 @@ app.use(
     standardHeaders: true,
     legacyHeaders: false,
     skipSuccessfulRequests: true,
+    store: createPgRateLimitStore("platform-login", 15 * 60_000),
   }),
 );
+// Sensitive API responses (tokens, personal data) must never sit in a shared
+// browser or proxy cache.
+app.use("/api", (_req, res, next) => {
+  res.set("Cache-Control", "no-store");
+  res.set("Pragma", "no-cache");
+  next();
+});
 
 const asyncRoute = (handler) => (req, res, next) =>
   Promise.resolve(handler(req, res, next)).catch(next);
@@ -405,7 +431,7 @@ function tokenFor(user, organizationId = user.organization_id) {
       tv: Number(user.token_version || 0),
     },
     jwtSecret,
-    { expiresIn: "8h", issuer: "hozorban-api", audience: "hozorban-web" },
+    { expiresIn: AUTH_TOKEN_TTL, issuer: "hozorban-api", audience: "hozorban-web" },
   );
 }
 function tokenForPlatform(user) {
@@ -418,7 +444,7 @@ function tokenForPlatform(user) {
       tv: Number(user.token_version || 0),
     },
     jwtSecret,
-    { expiresIn: "8h", issuer: "hozorban-api", audience: "hozorban-web" },
+    { expiresIn: AUTH_TOKEN_TTL, issuer: "hozorban-api", audience: "hozorban-web" },
   );
 }
 // Short lived, faculty-scoped token.  The platform token stays in the browser
@@ -1453,6 +1479,7 @@ app.post(
     limit: 5,
     standardHeaders: true,
     legacyHeaders: false,
+    store: createPgRateLimitStore("forgot-password", 15 * 60_000),
   }),
   validate(
     z.object({
@@ -1521,6 +1548,7 @@ app.post(
     limit: 10,
     standardHeaders: true,
     legacyHeaders: false,
+    store: createPgRateLimitStore("reset-password", 15 * 60_000),
   }),
   validate(
     z.object({
@@ -1615,6 +1643,7 @@ app.get(
     limit: 30,
     standardHeaders: true,
     legacyHeaders: false,
+    store: createPgRateLimitStore("captcha", 15 * 60_000),
   }),
   asyncRoute(async (_req, res) => {
     res.json(createCaptchaChallenge());
@@ -1628,6 +1657,7 @@ app.post(
     limit: 10,
     standardHeaders: true,
     legacyHeaders: false,
+    store: createPgRateLimitStore("registration", 60 * 60_000),
   }),
   validate(
     z.object({
@@ -3131,12 +3161,49 @@ app.post(
       "INSERT INTO password_history (user_id, password_hash, created_at) VALUES ($1, $2, now())",
       [user.id, passwordHash],
     );
+    // A reset link issued before this change must not stay usable.
+    await pool.query(
+      "UPDATE password_reset_tokens SET used_at = now() WHERE user_id = $1 AND used_at IS NULL",
+      [user.id],
+    );
     res.json({
       ok: true,
       // Every previously issued token is now invalid; hand this session a new
       // one so the user is not logged out by their own password change.
       token: tokenFor(updated.rows[0], req.user.org),
       user: { ...publicUser(updated.rows[0]), ...staffFields(updated.rows[0]) },
+    });
+  }),
+);
+
+// Revokes every other session by bumping token_version, while returning a fresh
+// token for the browser that made the request.
+app.post(
+  "/api/auth/logout-all",
+  asyncRoute(async (req, res) => {
+    const { rows } = await pool.query(
+      `UPDATE users
+          SET token_version = token_version + 1,
+              updated_at = now()
+        WHERE id = $1 AND is_active = true
+        RETURNING *`,
+      [req.user.sub],
+    );
+    const updated = rows[0];
+    if (!updated)
+      return res.status(401).json({ message: "حساب کاربری فعال نیست." });
+    await pool.query(
+      `UPDATE password_reset_tokens SET used_at = now()
+        WHERE user_id = $1 AND used_at IS NULL`,
+      [updated.id],
+    );
+    res.json({
+      ok: true,
+      token: req.user.plat
+        ? tokenForPlatform(updated)
+        : tokenFor(updated, req.user.org),
+      message:
+        "نشست‌های دیگر بسته شدند. اگر دستگاه دیگری وارد شده بود، باید دوباره وارد شود.",
     });
   }),
 );

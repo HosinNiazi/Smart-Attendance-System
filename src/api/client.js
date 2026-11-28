@@ -72,6 +72,12 @@ export async function changePassword(currentPassword, newPassword) {
 export function fetchLoginHistory() {
   return api('/auth/login-history');
 }
+export async function logoutAllSessions() {
+  const result = await api('/auth/logout-all', { method: 'POST' });
+  // The server returns a fresh token for this browser; all others are revoked.
+  if (result?.token) sessionStorage.setItem(tokenKey, result.token);
+  return result;
+}
 export function fetchAdminActivity(entityType) {
   const qs = entityType ? `?entityType=${encodeURIComponent(entityType)}` : '';
   return api(`/admin/activity${qs}`);

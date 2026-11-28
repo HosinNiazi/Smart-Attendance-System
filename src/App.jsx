@@ -47,6 +47,7 @@ import {
   setTeacherActive,
   resetTeacherPassword,
   fetchLoginHistory,
+  logoutAllSessions,
   fetchAdminActivity,
   approveRegistration,
   rejectRegistration,
@@ -852,6 +853,7 @@ export default function App() {
   const [loginPassword, setLoginPassword] = useState("");
   const [loginError, setLoginError] = useState("");
   const [loginPending, setLoginPending] = useState(false);
+  const [logoutAllPending, setLogoutAllPending] = useState(false);
   const [forcedPasswordChange, setForcedPasswordChange] = useState(null);
   const [forgotOpen, setForgotOpen] = useState(false);
   const [forgotIdentifier, setForgotIdentifier] = useState("");
@@ -1835,6 +1837,22 @@ export default function App() {
       notify("ذخیره پروفایل انجام نشد؛ تصویر کوچک‌تری انتخاب کنید.");
     }
   }
+  async function handleLogoutAllSessions() {
+    if (logoutAllPending) return;
+    setLogoutAllPending(true);
+    try {
+      const result = await logoutAllSessions();
+      notify(
+        result?.message ||
+          "نشست‌های دیگر بسته شدند. اگر دستگاه دیگری وارد شده بود، باید دوباره وارد شود.",
+      );
+    } catch (error) {
+      notify(error.message || "بستن نشست‌های دیگر انجام نشد.");
+    } finally {
+      setLogoutAllPending(false);
+    }
+  }
+
   function chooseRole(role) {
     setLoginRole(role);
     setLoginError("");
@@ -4490,6 +4508,8 @@ export default function App() {
               onSave={saveProfile}
               loginHistory={loginHistory}
               historyError={historyError}
+              onLogoutAll={handleLogoutAllSessions}
+              logoutAllPending={logoutAllPending}
             />
           )}
           {active === "registrations" && (
